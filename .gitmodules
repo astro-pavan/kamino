@@ -4,6 +4,3 @@
 [submodule "src/kamino/seafloor_weathering/chili"]
 	path = src/kamino/seafloor_weathering/chili
 	url = https://github.com/astro-pavan/chili.git
-[submodule "src/kamino/ocean_chemistry/phreeqc"]
-	path = src/kamino/ocean_chemistry/phreeqc
-	url = https://github.com/usgs-coupled/phreeqc3.git
