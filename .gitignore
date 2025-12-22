@@ -1,6 +1,7 @@
 src/kamino/ocean_chemistry/phreeqc_bin
-src/kamino/speedy_climate/data/emulators/
-*.pkl
+#src/kamino/speedy_climate/data/emulators
+#*.pkl
+*.jpeg.xml
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
