@@ -1434,14 +1434,25 @@ K-Feldspar
 
 # Pyroxene
 
-Diopside
-	CaMgSi2O6 + 4 H+ = Ca+2 + Mg+2 + 2 H2O + 2 SiO2
-	log_k		20.9643
-	-delta_H	-133.775	kJ/mol
-#	deltafH		-765.378	kcal/mol
-	-analytic	7.1240e1 1.5514e-2 8.1437e3 -3.0672e1 -5.6880e5
+Ferrosilite
+	FeSiO3 + 2 H+ = Fe+2 + H2O + SiO2
+	log_k		7.4471
+	-delta_H	-60.6011	kJ/mol
+#	deltafH		-285.658	kcal/mol
+	-analytic	9.0041 3.7917e-3 5.1625e3 -6.3009 -3.9565e5
 #	Range		0-350
-	-Vm		66.09
+	-Vm		32.952
+#	Extrapol	supcrt92
+#	Ref		HDN+78
+
+Wollastonite
+	CaSiO3 + 2 H+ = Ca+2 + H2O + SiO2
+	log_k		13.7605
+	-delta_H	-76.5756	kJ/mol
+#	deltafH		-389.59		kcal/mol
+	-analytic	3.0931e1 6.7466e-3 5.1749e3 -1.3209e1 -3.4579e5
+#	Range		0-350
+	-Vm		39.93
 #	Extrapol	supcrt92
 #	Ref		HDN+78
 
@@ -1540,6 +1551,23 @@ Aragonite
 	-Vm		34.15 # thermo.com.V8.R6+.tdat
 #	Extrapol	supcrt92
 #	Ref		HDN+78
+
+Magnesite
+	MgCO3 + H+ = HCO3- + Mg+2
+	log_k		2.2936
+	-delta_H	-44.4968	kJ/mol
+#	deltafH		-265.63		kcal/mol
+	-analytic	-1.6665e2 -4.9469e-2 6.4344e3 6.5506e1 1.0045e2
+#	Range		0-350
+	-Vm		28.018
+#	Extrapol	supcrt92
+#	Ref		HDN+78
+
+Siderite #M 115.856
+	FeCO3 = Fe+2 + CO3-2
+	log_k		-11.0441 # carbfix.dat
+	-analytic	349.4317054926304 0.03628114046578195 -13573.811090861998 -131.65143185871804 0 0 # carbfix.dat
+	-Vm			29.378 # core10.dat
 
 # Other
 
@@ -2096,6 +2124,101 @@ Quartz#SiO2; M 60.08 g/mol
 2003 rplusb = Ab* (exp(-Eb/ (R * Tk)))*(ACTI^nb)* S
 2009 rplus = rplusa + rplusb
 3000 rate = rplus * (1 - (SR("Quartz")^(1/Sig)))
+4000 moles = rate * time
+5000 save moles
+-end
+
+Magnesite # MgCO3: M 84.314 g/mol
+-start
+1 name$ = "Magnesite"
+2 if (PARM(1) = 0) then  goto 3 else goto 5
+3 if PARM(3) = 0 then S = PARM(2) * m * GFW(PHASE_FORMULA(name$)) else S = m0 * ((m/m0)^(2/3)) * GFW(PHASE_FORMULA(name$)) * PARM(2)
+4 GOTO 100
+5 S = PARM(2)*TOT("water")
+##-----------------Dissolution and precipitation options---------------------##
+100  if (PARM(4) = 0) then  goto 1000 else goto 110 
+110 if (PARM(4) = 1) Then GoTo 150 else goto 200 # 
+150 If (SR (name$) < 1) Then GoTo 5000 else GoTO 1000 # warning no dissolution reaction
+200 If (SR (name$) > 1) Then GoTo 5000 else GoTO 1000 # warning no precipitation reaction#
+##------------------Kinetic calculation---------------------##
+		#Parameters
+1000 Aa =5e-4# mol.m-2.s-1
+1001 Ac = 2.7e-2 # mol.m-2.s-1
+1002 Ea =16000# J/mol
+1003 Eac =45000# J/mol
+1004 R = 8.314 #J.deg-1.mol-1
+1006 Sig = 3.94 
+1007 na =0.66
+1008 kc =380	
+1009 act_c = act("HCO3-")+act("CO3-2")
+1010 carb_term = 1-(kc*act_c)/(1+kc*act_c)
+2000 rplusa = Aa* (exp(-Ea/ (R * Tk)))*(act("H+")^na)* S
+2001 rplusc = Ac* (exp(-Eac/ (R * Tk)))*carb_term
+2002 rplus = rplusa + rplusc
+4000 rate = rplus * (1 - SR("Magnesite")^(1/Sig)) 
+5000 moles = rate * time
+6000 save moles
+-end
+
+Siderite # FeCO3: M 115.856 g/mol !!!
+-start
+1 name$ = "Siderite"
+2 if (PARM(1) = 0) then  goto 3 else goto 5
+3 if PARM(3) = 0 then S = PARM(2) * m * GFW(PHASE_FORMULA(name$)) else S = m0 * ((m/m0)^(2/3)) * GFW(PHASE_FORMULA(name$)) * PARM(2)
+4 GOTO 100
+5 S = PARM(2)*TOT("water")
+##-----------------Dissolution and precipitation options---------------------##
+100  if (PARM(4) = 0) then  goto 1000 else goto 110 
+110 if (PARM(4) = 1) Then GoTo 150 else goto 200 # 
+150 If (SR (name$) < 1) Then GoTo 5000 else GoTO 1000 # warning no dissolution reaction
+200 If (SR (name$) > 1) Then GoTo 5000 else GoTO 1000 # warning no precipitation reaction#
+##------------------Kinetic calculation---------------------##
+		#Parameters
+1000 Aa =2e-3# mol.m-2.s-1
+1001 Ac = 0.2 # mol.m-2.s-1
+1002 Ea =16000# J/mol
+1003 Eac =48000# J/mol
+1004 R = 8.314 #J.deg-1.mol-1
+1006 Sig = 4
+1007 na =0.7
+1008 kc =160	
+1009 act_c = act("HCO3-")+act("CO3-2")
+1010 carb_term = 1-(kc*act_c)/(1+kc*act_c)
+2000 rplusa = Aa* (exp(-Ea/ (R * Tk)))*(act("H+")^na)* S
+2001 rplusc = Ac* (exp(-Eac/ (R * Tk)))*carb_term
+2002 rplus = rplusa + rplusc
+4000 rate = rplus * (1 - SR("Siderite")^(1/Sig)) 
+5000 moles = rate * time
+6000 save moles
+-end
+
+Enstatite#MgSiO3;M 100.387 g/mol
+-start
+1 name$ = "Enstatite"
+2 if (PARM(1) = 0) then  goto 3 else goto 5
+3 if PARM(3) = 0 then S = PARM(2) * m * GFW(PHASE_FORMULA(name$)) else S = m0 * ((m/m0)^(2/3)) * GFW(PHASE_FORMULA(name$)) * PARM(2)
+4 GOTO 100
+5 S = PARM(2)*TOT("water")
+##-----------------Dissolution and precipitation options---------------------##
+100  if (PARM(4) = 0) then  goto 1000 else goto 110 
+110 if (PARM(4) = 1) Then GoTo 150 else goto 200 # 
+150 If (SR (name$) < 1) Then GoTo 5000 else GoTO 1000 # warning no dissolution reaction
+200 If (SR (name$) > 1) Then GoTo 5000 else GoTO 1000 # warning no precipitation reaction#
+##------------------Kinetic calculation---------------------##
+		# parameters
+1000 Aa = 0.574 #mol.m-2.s-1
+1001 An = 6252 #mol.m-2.s-1
+1003 Ea = 46080 #J.mol-1
+1004 En = 89538 #J.mol-1 
+1006 R =  8.314 #J.deg-1.mol-1
+1007 ACTI = act("H+")
+1008 na = 0.5
+1010 Sig = 1
+		#rate equations 
+2000 rplusa = Aa* (exp(-Ea/ (R * Tk)))*(ACTI^na )* S
+2002 rplusn = An* (exp(-En/ (R * Tk)))* S
+2009 rplus = rplusa + rplusn
+3000 rate = rplus * (1 - (SR ("Enstatite")^(1/Sig)))
 4000 moles = rate * time
 5000 save moles
 -end
