@@ -6,8 +6,14 @@ import time
 
 import concurrent.futures
 
+from pathlib import Path
+import os
+
 from climate import run_HELIOS
 from kamino.constants import *
+
+BASE_DIR = Path(__file__).parent
+OUTPUT_DIR = BASE_DIR / 'data' / 'climate_runs'
 
 def generate_input_parameters(n_samples, spectral_type, recirculation_factor):
 
@@ -65,7 +71,7 @@ def run_batch_simulation(inputs, output_csv_name="helios_results.csv"):
     total_models = len(inputs)
     count = 0
 
-    with concurrent.futures.ProcessPoolExecutor(max_workers=2) as executor:
+    with concurrent.futures.ProcessPoolExecutor(max_workers=8) as executor:
         
         futures = []
 
@@ -89,8 +95,13 @@ def run_batch_simulation(inputs, output_csv_name="helios_results.csv"):
 
     if results_list:
         df = pd.DataFrame(results_list)
-        df.to_csv(f'speedy_climate_data/climate_runs/{output_csv_name}', index=False)
-        print(f"\nResults successfully saved to {output_csv_name}")
+        
+        # Ensure the directory exists before writing
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        
+        save_path = OUTPUT_DIR / output_csv_name
+        df.to_csv(save_path, index=False)
+        print(f"\nResults successfully saved to: {save_path}")
     else:
         print("No results were generated.")
         
@@ -101,6 +112,3 @@ if __name__ == '__main__':
 
     inputs = generate_input_parameters(1000, 'M5', 0.6666)
     run_batch_simulation(inputs, 'helios_1000_runs_earth_tidally_locked.csv')
-
-
-	
