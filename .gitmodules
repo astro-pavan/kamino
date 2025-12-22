@@ -1,3 +1,6 @@
 [submodule "src/kamino/speedy_climate/HELIOS"]
 	path = src/kamino/speedy_climate/HELIOS
 	url = https://github.com/exoclime/HELIOS.git
+[submodule "src/kamino/seafloor_weathering/chili"]
+	path = src/kamino/seafloor_weathering/chili
+	url = https://github.com/astro-pavan/chili.git
