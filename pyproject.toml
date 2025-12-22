@@ -32,7 +32,8 @@ dependencies = [
     "scipy",
     "pandas",
     "scikit-learn",
-    "matplotlib"
+    "matplotlib",
+    "astropy"
 ]
 
 [project.optional-dependencies]
