@@ -9,6 +9,11 @@ import importlib.resources
 
 from kamino.constants import *
 
+try:
+    from . import build_phreeqc
+except ImportError:
+    import build_phreeqc
+
 available_elements = ['Si', 'Al', 'Fe', 'Ca', 'Mg', 'Na', 'K', 'C', 'S', 'N', 'F', 'Cl']
 available_element_string = 'Si Al Fe Ca Mg Na K C S N F Cl'
 
@@ -42,8 +47,23 @@ def get_phreeqc_resources():
     
     # Check common locations (bin/phreeqc or just phreeqc)
     executable = bin_dir / "bin" / exe_name
+
     if not executable.exists(): # type: ignore
-        executable = bin_dir / exe_name
+        print(f"PHREEQC executable not found at {executable}")
+        print("Attempting to compile PHREEQC automatically... (This may take a minute)")
+        
+        try:
+            # Call the build function from your build_phreeqc.py script
+            build_phreeqc.build()
+            print("Compilation complete.")
+        except Exception as e:
+            raise RuntimeError(
+                f"Automatic build failed. Please check you have a C++ compiler (g++ or clang) installed.\nError: {e}"
+            )
+
+        # Re-check after build
+        if not executable.exists(): # type: ignore
+             raise FileNotFoundError(f"Build appeared to succeed, but {executable} is still missing.")
         
     database = bin_dir / "basic_v2.dat"
     if not database.exists(): # type: ignore
