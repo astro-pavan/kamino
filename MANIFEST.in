@@ -1,0 +1,16 @@
+# Force pip to include the submodule source code
+recursive-include src/kamino/ocean_chemistry/phreeqc *
+recursive-include src/kamino/seafloor_weathering/chili *
+recursive-include src/kamino/speedy_climate/HELIOS *
+
+# Force pip to include data files (emulators, runs, opacity)
+recursive-include src/kamino/speedy_climate/data *
+
+# Exclude the build artifacts (so you don't package the binary by accident)
+# The build script will regenerate them on the user's machine
+global-exclude *.o
+global-exclude *.so
+global-exclude *.dylib
+global-exclude *.exe
+# You might want to exclude the 'phreeqc_bin' folder so the user builds it fresh
+prune src/kamino/ocean_chemistry/phreeqc_bin
