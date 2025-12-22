@@ -13,13 +13,14 @@ import os
 
 class climate_emulator:
 
-    def __init__(self, emulator_name, data_path=None, make_accuracy_plot=False):
+    def __init__(self, emulator_name, climate_data_file=None, make_accuracy_plot=False):
         
-        self.data_dir = os.path.join(os.path.dirname(__file__), 'data', 'emulators')
-        
-        if data_path is not None:
+        if climate_data_file is not None:
 
-            data = pd.read_csv(data_path)
+            try:
+                data = pd.read_csv(f'speedy_climate_data/climate_runs/{climate_data_file}')
+            except FileNotFoundError:
+                data = pd.read_csv(f'{os.getcwd()}/src/kamino/speedy_climate/data/climate_runs/{climate_data_file}')
 
             input_features = ['Instellation (W/m^2)', 'P_Surface (Pa)', 'x_CO2', 'x_H2O', 'Albedo']
             output_targets = ['Surface_Temp (K)']
@@ -86,14 +87,21 @@ class climate_emulator:
                 plt.savefig("accuracy_check.png")
                 print("Saved accuracy_check.png")
 
-            joblib.dump(gaussian_process, os.path.join(self.data_dir, f'{emulator_name}_gp_climate_emulator.pkl'))
-            joblib.dump(x_scaler, os.path.join(self.data_dir, f'{emulator_name}_inputs_scaler.pkl'))
-            joblib.dump(y_scaler, os.path.join(self.data_dir, f'{emulator_name}_output_scaler.pkl'))
+            joblib.dump(gaussian_process, f'speedy_climate_data/emulators/{emulator_name}_gp_climate_emulator.pkl')
+            joblib.dump(x_scaler, f'speedy_climate_data/emulators/{emulator_name}_inputs_scaler.pkl')
+            joblib.dump(y_scaler, f'speedy_climate_data/emulators/{emulator_name}_output_scaler.pkl')
         
         print("Loading emulator...")
-        self.gaussian_process = joblib.load(os.path.join(self.data_dir, f'{emulator_name}_gp_climate_emulator.pkl'))
-        self.x_scaler = joblib.load(os.path.join(self.data_dir, f'{emulator_name}_inputs_scaler.pkl'))
-        self.y_scaler = joblib.load(os.path.join(self.data_dir, f'{emulator_name}_output_scaler.pkl'))
+
+        try:
+            self.gaussian_process = joblib.load(f'speedy_climate_data/emulators/{emulator_name}_gp_climate_emulator.pkl')
+            self.x_scaler = joblib.load(f'speedy_climate_data/emulators/{emulator_name}_inputs_scaler.pkl')
+            self.y_scaler = joblib.load(f'speedy_climate_data/emulators/{emulator_name}_output_scaler.pkl')
+        except FileNotFoundError:
+            self.gaussian_process = joblib.load(f'{os.getcwd()}/src/kamino/speedy_climate/data/emulators/{emulator_name}_gp_climate_emulator.pkl')
+            self.x_scaler = joblib.load(f'{os.getcwd()}/src/kamino/speedy_climate/data/emulators/{emulator_name}_inputs_scaler.pkl')
+            self.y_scaler = joblib.load(f'{os.getcwd()}/src/kamino/speedy_climate/data/emulators/{emulator_name}_output_scaler.pkl')
+
         print("Emulator loaded.")
 
     def get_temperature(self, instellation, P_surface, x_CO2, x_H2O, albedo):
@@ -116,6 +124,6 @@ class climate_emulator:
 
 if __name__ == '__main__':
 
-    cem = climate_emulator("earth_rapid_rotator", "src/kamino/speedy_climate/data/climate_runs/helios_1000_runs_earth_rapid_rotator.csv")
+    cem = climate_emulator("earth_rapid_rotator")
 
     print(cem.get_temperature(1300, 1e5, 0.003, 0.01, 0.3))
