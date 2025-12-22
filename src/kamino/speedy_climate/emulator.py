@@ -8,10 +8,15 @@ from sklearn.gaussian_process.kernels import RBF, WhiteKernel, ConstantKernel
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 
+from scipy.optimize import least_squares
+from scipy.interpolate import CubicSpline
+
 import joblib
 import os
 import importlib.resources
 from pathlib import Path
+
+from kamino.constants import *
 
 def get_data_paths():
     """
@@ -35,6 +40,11 @@ def get_data_paths():
     emulators_dir.mkdir(parents=True, exist_ok=True)
     
     return runs_dir, emulators_dir
+
+def august_roche_magnus_formula(T: float) -> float:
+
+    T_celsius = T + ABSOLUTE_ZERO
+    return 610.94 * np.exp((17.625 * T_celsius)/(T_celsius + 243.04))
 
 class climate_emulator:
 
@@ -149,11 +159,11 @@ class climate_emulator:
 
             print("Emulator loaded.")
 
-    def get_temperature(self, instellation: float, P_surface: float, x_CO2: float, x_H2O: float, albedo: float) -> tuple[float, float]:
+    def get_temperature_from_emulator(self, instellation: float, P_surface: float, x_CO2: float, x_H2O: float, albedo: float) -> tuple[float, float]:
 
-        log_p = np.log10(P_surface)
-        log_x_co2 = np.log10(x_CO2)
-        log_x_h2o = np.log10(x_H2O)
+        log_p = float(np.log10(P_surface))
+        log_x_co2 = float(np.log10(x_CO2))
+        log_x_h2o = float(np.log10(x_H2O))
 
         features_raw = np.array([[instellation, log_p, log_x_co2, log_x_h2o, albedo]])
         features_scaled = self.x_scaler.transform(features_raw)
@@ -165,3 +175,40 @@ class climate_emulator:
         uncertainty_kelvin = std_scaled[0] * self.y_scaler.scale_[0]
 
         return float(temp_kelvin[0][0]), float(uncertainty_kelvin)
+    
+    def get_temperature(self, instellation: float, P_background: float, P_CO2: float, P_H2O: float, albedo: float):
+
+        P_surface = P_background + P_CO2 + P_H2O
+        x_CO2 = P_CO2 / P_surface
+        x_H2O = P_H2O / P_surface
+
+        return self.get_temperature_from_emulator(instellation, P_surface, x_CO2, x_H2O, albedo)[0]
+    
+    def make_temperature_pco2_interpolator(self, instellation: float, P_background: float, albedo: float):
+
+        log_P_CO2_range = np.linspace(-6, 0)
+        T_results = np.zeros_like(log_P_CO2_range)
+
+        def residual(log_P_CO2: float, T: float) -> float:
+
+            P_H2O = august_roche_magnus_formula(T)
+            P_CO2 = 10 ** log_P_CO2
+            T_from_climate = self.get_temperature(instellation, P_background, P_CO2, P_H2O, albedo)
+
+            return T_from_climate - T
+        
+        for i, log_P_CO2 in enumerate(log_P_CO2_range):
+            
+            target_func = lambda T: residual(log_P_CO2, T) # type: ignore
+
+            sol = least_squares(target_func, 300)
+
+            if sol.success:
+                T_results[i] = sol.x
+            else:
+                raise ValueError
+
+        self.T_pco2_interpolator = CubicSpline(log_P_CO2_range, T_results)
+    
+    def get_temperature_from_pco2(self, P_CO2: float) -> float:
+        return self.T_pco2_interpolator(np.log10(P_CO2)) # type: ignore
