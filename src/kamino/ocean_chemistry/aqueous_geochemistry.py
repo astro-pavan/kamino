@@ -14,6 +14,8 @@ try:
 except ImportError:
     import build_phreeqc
 
+debug_mode = False
+
 available_elements = ['Si', 'Al', 'Fe', 'Ca', 'Mg', 'Na', 'K', 'C', 'S', 'N', 'F', 'Cl']
 available_element_string = 'Si Al Fe Ca Mg Na K C S N F Cl'
 
@@ -99,11 +101,16 @@ def solution_block(P: float, T: float, composition: dict[str, float], pH: Union[
         List of text lines for input file.
     """
 
+    if 'Alkalinity' in composition.keys():
+        pH_line = ''
+    else:
+        pH_line = f'    pH        {pH:.4f}' if pH is not None else '    pH        7.0 charge'
+
     lines: list[str] = [
         'SOLUTION 1',
         f'    pressure  {P / EARTH_ATM:.4f}',
         f'    temp      {T + ABSOLUTE_ZERO:.4f}',
-        f'    pH        {pH:.4f}' if pH is not None else '    pH        7.0 charge',
+        pH_line,
         f'    units     mol/kgw'
     ]
 
@@ -208,7 +215,8 @@ def output_block(saturation_indexes: list[str]=[], equilibrium_phases: list[str]
     lines: list[str] = [
         'SELECTED_OUTPUT',
         '    -file output.txt',
-        f'    -totals {available_element_string}'
+        f'    -totals {available_element_string}',
+        '    -alkalinity'
         ]
     
     if equilibrium_phases:
@@ -270,7 +278,7 @@ def run_PHREEQC(lines: list[str]) -> pd.DataFrame:
 
     # Create a temporary directory that is deleted automatically when the 'with' block ends
     with tempfile.TemporaryDirectory() as temp_dir:
-        temp_path = Path(temp_dir)
+        temp_path = Path("tests") if debug_mode else Path(temp_dir)
         
         input_file = temp_path / "input"
         output_file = temp_path / "output.txt"
@@ -430,7 +438,7 @@ def equilbriate_phases(P: float, T: float, composition: dict[str, float], pH: Un
 
     return run_PHREEQC(input_lines)
 
-def kinetics(P: float, T: float, composition: dict[str, float], pH: Union[float, None], phase_amounts: dict[str, float], dt: float, bad_steps_max: int=100) -> pd.DataFrame:
+def kinetics(P: float, T: float, composition: dict[str, float], pH: Union[float, None], phase_amounts: dict[str, float], dt: float, specific_surface_area: float=0.01, bad_steps_max: int=100) -> pd.DataFrame:
     """
     Dissolves minearl phases with chemical kinetic calculations.
 
@@ -458,33 +466,9 @@ def kinetics(P: float, T: float, composition: dict[str, float], pH: Union[float,
     phases = list(phase_amounts.keys())
     amounts = list(phase_amounts.values())
     
-    # NOTE: default specific surface area is 0.01
-    input_lines = knobs_block() + solution_block(P, T, composition, pH) + kinetics_block(phases, amounts, dt, 0.01, bad_steps_max) + output_block(kinetic_reactants=phases, saturation_indexes=available_minerals)
+    input_lines = knobs_block() + solution_block(P, T, composition, pH) + kinetics_block(phases, amounts, dt, specific_surface_area, bad_steps_max) + output_block(kinetic_reactants=phases, saturation_indexes=available_minerals)
 
     return run_PHREEQC(input_lines)
 
-def find_partial_pressures(P: float, T: float, composition: dict[str, float], pH: Union[float, None], gas_phases: list[str]):
-    pass
-
 class PHREEQCError(Exception):
     pass
-
-if __name__ == '__main__':
-
-    sal = 1
-
-    comp: dict[str, float] = {
-        'Cl': 0.546 * sal,
-        'Na': 0.469 * sal,
-        'Mg': 0.0528 * sal,
-        'S': 0.0282 * sal,
-        'Ca': 0.0103 * sal,
-        'K': 0.0102 * sal,
-        'Si': 0.0000001 * sal,
-        'Al': 0.0000001 * sal,
-        'C': 0.002 * sal
-    }
-    
-    output = kinetics(10 * EARTH_ATM, 280, comp, None, {'Calcite' : 0.0}, 1e6)
-
-    print(output)

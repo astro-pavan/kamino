@@ -2,11 +2,10 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../src'))
 
-# from kamino.ocean_chemistry.build_phreeqc import build
-
-# build()
-
 from kamino.ocean_chemistry.aqueous_geochemistry import *
+from kamino.ocean_chemistry.precipitation import *
+
+debug_mode = True
 
 sal = 1
 
@@ -25,3 +24,6 @@ comp: dict[str, float] = {
 output = kinetics(10 * EARTH_ATM, 280, comp, None, {'Calcite' : 0.0}, 1e6)
 
 print(output)
+
+k = calcite_precipitation_rate(10 * EARTH_ATM, 280, 0.0021, 0.002, 0.02)
+print(k)
