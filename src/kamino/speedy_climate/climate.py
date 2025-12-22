@@ -173,7 +173,3 @@ def run_HELIOS(name: str, instellation: float, spectral_type: str, R_planet: flo
             shutil.rmtree(output_dir, ignore_errors=True)
 
     return result_dict
-
-if __name__ == '__main__':
-
-    print(run_HELIOS('test', 1.5 * SOLAR_CONSTANT, 'G2', R_EARTH, M_EARTH, EARTH_ATM, 0.9 * EARTH_ATM, 0.9 * EARTH_ATM, 0.0, 0.25, verbose=True))
