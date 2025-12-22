@@ -89,7 +89,7 @@ def run_batch_simulation(inputs, output_csv_name="helios_results.csv"):
 
     if results_list:
         df = pd.DataFrame(results_list)
-        df.to_csv(f'src/kamino/speedy_climate/data/climate_runs/{output_csv_name}', index=False)
+        df.to_csv(f'speedy_climate_data/climate_runs/{output_csv_name}', index=False)
         print(f"\nResults successfully saved to {output_csv_name}")
     else:
         print("No results were generated.")
