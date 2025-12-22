@@ -81,5 +81,15 @@ def build():
             print("Cleaning up temporary build files...")
             shutil.rmtree(BUILD_DIR)
 
+    # Copy basic_v2.dat to phreeqc_bin
+    source_dat = BASE_DIR / "phreeqc" / "basic_v2.dat"
+    dest_dat = INSTALL_DIR / "basic_v2.dat"
+    
+    if source_dat.exists():
+        shutil.copy(source_dat, dest_dat)
+        print(f"Copied basic_v2.dat to {dest_dat}")
+    else:
+        print(f"Warning: Could not find basic_v2.dat at {source_dat}")
+
 if __name__ == "__main__":
     build()

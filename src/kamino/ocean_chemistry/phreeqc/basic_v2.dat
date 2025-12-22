@@ -1,0 +1,2101 @@
+# Kinec_v3.dat - last edited July 23, 2024 by MA and EHO.
+#
+# This database contains the parameters for calculating mineral dissolution rates for primary and secondary silicate minerals using the equations and parameters reported by Hermanska et al. (2022, 2023),
+# and dissolution rates for other mineral systems using the equations and parameters reported by Oelkers and addassi (2024*).
+#
+# This database contains thermodynamic properties from the Carbfix.dat (Voigt et al., 2018) and the llnl.dat database. 
+# The thermodynamic data for Gaspite, Variscite were taken from https://thermoddem.brgm.fr/ and Monazite-Ce was extracte from (A.P. Gysi et al. / Geochimica et Cosmochimica Acta 242 (2018))
+#
+# Several solid solutions have been added to the kinetics database to properly address the release of metals from solid solutions.  The solubilities of these solid solutions are based on the ideal mechanical mixing of the endmembers. These solid solutions are indicated by the suffix: _ss
+#
+#-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# README for the RATES blocks in the Kinec.v2.dat file
+
+
+# Reference literature for derived kinetic fits can be found in Hermanska et al. (2022, 2003) and Oelkers and addassi (2024*), along with pH and temperature conditions. Note the minerals glauconite and  Struvite are not present in the current database due to lack of thermodynamic data. 
+# Also please note that extrapolation of the database to different conditions or mineral precipitation might lead to incorrect results.  
+
+
+# When loading this database in PHREEQC, simulations can make use of them through using KINETICS blocks. These rates could also be imported to different thermodynamics databases if desired.
+
+# Below is a minimal example for such a KINETICS block, explaining the different parameters specific to KINEC.v2.dat. Other parameters can be specified as explained in the PHREEQC documentation.
+
+#------------------------------------------------
+##Example data block for mineral end-members:
+
+#KINETICS
+#Albite                                 # Name of the mineral
+#    -m0        1e-3                    # Initial moles of mineral
+#    -parms     0 100 0 0               # Four parameters as explained below
+
+##Example data block for selected mineral solid solutions (selected solid solutions listed in Appendix in Hermanska et al. (2022)):
+
+#KINETICS
+#Augite_ss                                  # Name of the mineral
+#    -formula  Mg0.45Fe0.275Ca0.275SiO3  1  # Mineral formula ! must be added to run solid solutions.
+#    -m0       100                          # Initial moles of mineral
+#    -parms    0 0.0088183 0 2              # Four parameters as explained below
+
+#------------------------------------------------
+#Parameters:
+#Four parameters are necessary when using rates from Kenec.dat:
+# - The first parameter specifies if the specific surface area is entered as m2 per g of rock (0) or m2 per kg of water (1)
+# - The second parameter specifies the specific surface area of the mineral (in m2/g or m2/kgw depending on the choice of the first parameter)
+#  - The third parameters define how the surface area changes during dissolution and has three possible values. This option is only available when the first parameter is 0. If the first parameter is 1, the surface area is always constant.
+#   0: The surface area changes linearly with the moles of the mineral present
+#   1: The surface area changes according to the geometry of dissolving cubes or spheres
+#- The fourth  parameter specifies the dissolution and precipitation option
+#	0: allow dissolution and precipitation
+#	1: allow precipitation only
+#	2: allow dissolution only 
+#-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+#
+# References for KINEC_v3.dat database description: 
+#Hermanska M., Voigt M. J., Marieni C., Declercq J., and Oelkers E. H. (2022) A comprehensive and internally consistent mineral dissolution rate database: Part I: Primary silicate minerals and glasses. Chemical Geology. 597, 120807. https://doi.org/10.1016/j.chemgeo.2022.120807
+#
+#Hermanska M., Voigt M. J., Marieni C., Declercq J., and Oelkers E. H. (2023) A comprehensive and internally consistent mineral dissolution rate database: Part II: Secondary silicate minerals. Chemical Geology. 636, 121632 https://doi.org/10.1016/j.chemgeo.2023.121632
+#
+# and 
+#
+# Oelkers, E.H., Addassi, M. 2024. A comprehensive and internally consistent mineral dissolution rate database: Part III: Non-silicate minerals including carbonate, sulfide, phosphate, halide, and oxy-hydroxide minerals. (in preparation)
+# *********************************************************************
+#
+# Thermodynamics from carbfix.dat (Voigt et al., 2018).
+# Reference for carbfix.dat database description: Voigt M., Marieni C., Clark D. E., Gislason S. R., and Oelkers E. H. (2018) Evaluation and refinement of thermodynamic databases for mineral carbonation. Energy Procedia 146, 81-91. http://dx.doi.org/10.1016/j.egypro.2018.07.012
+# 
+# Reference for core10.dat database description: Neveu M., Desch S. J., Castillo-Rogez J. C. (2017) Aqueous geochemistry in icy world interiors: Equilibrium fluid, rock, and gas compositions, and fate of antifreezes and radionuclides. Geochimica et Cosmochimica Acta 212, 324-371. http://dx.doi.org/10.1016/j.gca.2017.06.023
+#
+#***********************************************************************
+#
+# Extrapolation algorithms:
+# 64cri/cob: ? (12 aq species, all also with supcrt92)
+# Cp integration = Integration of heat capacity vs. temperature measurements (162 solids, 2 gases)
+# Constant H approx = Constant enthalpy approximation (76 solids)
+# 69hel: http://dx.doi.org/10.2475/ajs.267.7.729 (5 aq species)
+# Marion+12 (NH4Cl, NH4HCO3)
+# supcrt92 = SUPCRT92 (329 aq, solids, gases)
+# N17 ([(6)(CB)(CB)S], NH4-feldspar, NH4-muscovite)
+#
+# References:
+# APP14: http://dx.doi.org/10.1016/j.gca.2013.10.003 (25 molar volumes, see phreeqc.dat)
+# AS01: http://dx.doi.org/10.1016/S0168-6445(00)00062-0 (NO(g))
+# BH86: Barta and Hepler, 1986, Can. J.C. 64, 353. (Al+3, AlOH+2 molar volumes)
+# Catalano13: http://dx.doi.org/10.1002/jgre.20161 (23 saponites + ripidolite)
+# CWM89: http://www.worldcat.org/oclc/18559968 (20 solids, incl. 14 elemental)
+# E68: Ellis, 1968, J. Chem. Soc. A, 1138. (Li+ molar volume)
+# HDN+78: http://www.worldcatlibraries.org/oclc/13594862 (117 solids)
+# Hel+98: http://dx.doi.org/10.1016/S0016-7037(97)00219-6 (Pyridine)
+# Hel+09: http://dx.doi.org/10.1016/j.gca.2008.03.004 (Kerogen C128, C292, C515)
+# HOK+98: http://dx.doi.org/10.1016/S0016-7037(97)00219-6 (C2H6(g), C3H8(g))
+# Hovis04: http://dx.doi.org/10.2138/am-2004-0111 (NH4-muscovite molar volume)
+# HSS95: http://dx.doi.org/10.1016/0016-7037(95)00314-P (55 solutes)
+# Joh90: Johnson, J.W., 1990, Personal calculation, Parameters given provide smooth metastable extrapolation of one-bar steam properties predicted by the Haar et al. (1984) equation of state to temperatures < the saturation temperature (99.632 C):  Earth Sci. Dept, LLNL, Livermore, CA. (H2O(g))
+# Kel60: http://www.worldcat.org/oclc/693388901 (8 gases)
+# M13: McColm I. J. (2013) Dictionary of Ceramic Science and Engineering, p.72. (CaUO4 molar volume)
+# Marion+03: http://dx.doi.org/10.1016/S0016-7037(03)00372-7 (FeOH+)
+# Marion+05: http://dx.doi.org/10.1016/j.gca.2004.06.024 (Arcanite, Gypsum, Niter, Thenardite molar volumes)
+# Marion+08: http://dx.doi.org/10.1016/j.gca.2007.10.012 (FeOH+, FeOH+2, Melanterite molar volume)
+# Marion+09: http://dx.doi.org/10.1016/j.gca.2009.03.013 (Alum-K molar volume)
+# Marion+12: http://dx.doi.org/10.1016/j.icarus.2012.06.016 (NH4Cl, NH4HCO3)
+# MLS+03: http://dx.doi.org/10.2138/am-2003-5-613 (Goethite)
+# MS97: http://dx.doi.org/10.1016/S0016-7037(97)00241-X (HCl, MgSO4)
+# N17: http://dx.doi.org/10.1016/j.gca.2017.06.023 ([(6)(CB)(CB)S], NH4-feldspar, NH4-muscovite)
+# R01: http://dx.doi.org/10.1016/S0016-7037(01)00761-X ([(6)(CB)(CB)S])
+# RHF79: http://pubs.er.usgs.gov/publication/b1452 (40 solids)
+# RH98: http://dx.doi.org/10.1016/S0016-7037(97)00345-1 ([(aro)-O-(aro)], Kerogen C128, C292, C515)
+# SH88: http://dx.doi.org/10.1016/0016-7037(88)90181-0 (42 solutes, 1 solid)
+# SH90: http://dx.doi.org/10.1016/0016-7037(90)90429-O (6 organic solutes)
+# Sho93: http://dx.doi.org/10.1016/0016-7037(93)90542-5 (C2H4(g), CO(g))
+# Sho95: http://dx.doi.org/10.2475/ajs.295.5.496 (4 organic solutes)
+# Sho09: http://dx.doi.org/10.2113/gsecongeo.104.8.1235 (Goethite)
+# SHS89: http://dx.doi.org/10.1016/0016-7037(89)90341-4 (11 solutes)
+# SK93: http://dx.doi.org/10.1016/0016-7037(93)90128-J (44 acetic acid/acetate complexes)
+# SS93: http://dx.doi.org/10.1016/0016-7037(93)90337-V (CH2O)
+# SM93: http://dx.doi.org/10.1006/icar.1993.1185 (CO, CO(NH2)2, HCN solutes)
+# SSB97: http://dx.doi.org/10.1016/S0016-7037(97)00240-8 (UO2OH+, Uraninite)
+# SSH97: http://dx.doi.org/10.1016/S0016-7037(97)00009-4 (30 solutes)
+# SSW+97: https://doi.org/10.1016/S0016-7037(96)00339-0
+# SSW01: http://dx.doi.org/10.1016/S0016-7037(01)00717-7 (CO2, H2S)
+# Ste01: http://dx.doi.org/10.1016/S0009-2541(00)00263-1 (Ti(OH)4)
+# Wat81: ‚ÄúAmmonium Aluminosilicates: The Examination of a Mechanism for the High Temperature Condensation of Ammonia in Circumplanetary Subnebulae‚Äù MS Thesis, MIT, 1981. (NH4-feldspar, NH4-muscovite)
+# WEP+82: http://dx.doi.org/10.1063/1.555845 (87 solutes, solids, and gases)
+# WebElements: http://www.webelements.com/periodicity/molar_volume (K, U molar volumes)
+# WebMineral: http://www.webmineral.com (38 solid molar volumes)
+# Wilson+06: http://dx.doi.org/10.1016/j.gca.2005.10.003 (Chamosite, Lizardite)
+#
+# 73bar/kna: Barin, I., and Knacke, O., 1973, Thermochemical properties of inorganic substances:  Springer-Verlag, New York. (Alum-K, MgOHCl, Na2SiO3, Nahcolite)
+# 77bar/kna: Barin, I., Knacke, O., and Kubaschewski, O., 1977, Thermochemical properties of inorganic substances. Supplement:  Springer-Verlag, New York. (Natrosilite, Pseudowollastonite, Rankinite)
+# 87bou/bar: http://dx.doi.org/10.2113/gsecongeo.82.7.1839 (ZnOH+)
+# 88db 3: Database development group iii/3, 1988, Errors in computation of estimated delH298 for montmor-x endmembers of smectite-di solid solution:  LLNL Internal Memo. (Montmor-Ca, K, Mg, Na)
+# 89db 7=89db 6, Database development group, 1989, Zeolite thermodynamic data:  LLNL Internal memo. (Clinoptilolite-K)
+# 76del/hal: http://dx.doi.org/10.1021/cr60301a001 (2 Cr solutes, 9 Cr solids)
+# 92gre/fug: Grenthe, I., Fuger, J., Konings, R.J.M., Lemire, R.J., Muller, A.B., Nguyen-Trung, C., and Wanner, H., 1992, Chemical Thermodynamics, Volume 1: Chemical Thermodynamics of Uranium:  North-Holland, Amsterdam, 1, 714p. (4 U solutes, 21 U solids)
+# 90how/joh: http://dx.doi.org/10.1016/S0144-2449(05)80307-0 (Stilbite)
+# 75kas/bor: Kashkay, C.H.M., Borovskaya,Y.U.B., and Babazade, M.A., 1975, Determination of delG0f298K of synthetic jarosite and its sulfate analogues:  Geochem. Intl., 12, 115-121. (Jarosite)
+# 87kee/rup: Kee, R.J., Rupley, F.M., and Miller, J.A., 1987, The Chemkin thermodynamic database:  SNL Rep. SAND-87-8215, 92p. (Ice)
+# 78lan: http://dx.doi.org/10.1016/0016-7037(78)90001-7 (Bassetite, Ningyoite, Saleeite)
+# 80lan/her: http://dx.doi.org/10.1016/0016-7037(80)90226-4 (ThCl4)
+# 82mar/smi: Martell, A.E., and Smith, R.M., 1982, Critical Stability Constants, Vol. 5: First Supplement:  Plenum, New York, 5, 604p. (MgSO4(aq))
+# 74nau/ryz: Naumov, G.B., Ryzhenko, B.N., and Khodakovsky, I.L., 1974, Handbook of Thermodynamic Data:  U.S.G.S. WRD-74-001, 328p. (CoCl+, CoFe2O4, CoS, CoSO4:H2O, Delafossite, Ni2SiO4)
+# 76mac: http://dx.doi.org/10.1016/0010-938X(76)90066-4 (Mn+3)
+# 95pok/hel: http://dx.doi.org/10.2475/ajs.295.10.1255 (4 solutes, 4 solids)
+# 85rar 2: http://dx.doi.org/10.1021/cr00070a003 (9 europium solids)
+# 87rar 2: Rard, J.A., 1987, Update of the europium data base, October, 1987:  LLNL Internal Memo. (3 europium solids)
+# 87rua/sew: http://dx.doi.org/10.1016/0016-7037(87)90013-5 (HCl)
+# 82sar/bar: Sarkar, A.K., Barnes, M.W., and Roy, D.M., 1982, Longevity of borehole and shaft sealing materials: thermodynamic properties of cements and related phases applied to repository sealing:  ONWI Tech. Rep. ONWI-201, 52p. (16 solids)
+# 84sve: http://dx.doi.org/10.1016/0016-7037(84)90203-5 (Sphaerocobaltite)
+# 78vau/cra: Vaughan, D.J., and Craig, J.R., 1978, Mineral chemistry of metal sulfides: Cambridge Univ. Press, Cambridge, MA. (5 solids)
+# 78wol: Wolery, T.J., 1978, Some chemical aspects of hydrothermal processes at mid-oceanic ridges -- A theoretical study. I. Basalt-sea water reaction and chemical cycling between the oceanic crust and the oceans. II. Calculation of chemical equilibrium between aqueous solutions and minerals:  Unpub. Ph.D. Diss., Northwestern Univ., Evaston, IL, 263p. (23 clays)
+# 87woo/gar: Woods, T.L., and Garrels, R.M., 1987, Thermodynamic values at low temperature for natural inorganic materials: An uncritical summary:  Oxford Univ. Press, Oxford. (Atacamite, Brochantite, Dioptase)
+#
+# Additional carbfix.dat references
+# D08: http://dx.doi.org/10.1186/1467-4866-9-10
+# DEW17: Deep Earth Water (DEW) spreadsheet http://www.dewcommunity.org
+# HP98: https://doi.org/10.1111/j.1525-1314.1998.00140.x
+# HP11: http://dx.doi.org/10.1111/j.1525-1314.2010.00923.x
+# Neu00: Neuhoff P.S., 2000, Thermodynamic Properties and Parageneses of Rock-Forming Zeolites. PhD Thesis. Stanford University.
+# SBS13: http://dx.doi.org/10.1016/j.gca.2013.04.023
+# SBS14: http://dx.doi.org/10.1016/j.gca.2014.04.008
+# MS97: http://dx.doi.org/10.1016/S0016-7037(97)00241-X
+# PB82: http://doi.org/10.1016/0016-7037(82)90056-4
+# P+96: http://dx.doi.org/10.1016/0016-7037(96)00123-8
+# SK95: http://doi.org/10.1016/0016-7037(95)00058-8
+# SS97: http://doi.org/10.1016/S0016-7037(97)00291-3
+# TS01: http://dx.doi.org/10.1016/S0016-7037(01)00705-0
+# Z+16: http://dx.doi.org/10.1016/j.cageo.2016.02.013
+#
+# Species have various valid temperature ranges, noted in the Range parameter. Currently, Phreeqc does not use this parameter, so it is up to the user to remain in the valid temperature range for all data used.
+
+# Example entry block:
+
+# Formation reaction from basis species 
+# 	-llnl_gamma	# ion size parameter in B-dot Debye-Huckel equation
+# 	log_k		# at 25C, 1 bar, used if no -delta_H or -analytic
+# 	-delta_H	# molar enthalpy of reaction, used if no -analytic
+# #	deltafH		# molar enthalpy of formation from reference compounds
+#	-analytic	b1 b2 b3 b4 b5 b6 # logK = b1 + b2*T + b3/T + b4*log(T) + b5/T2 + b6*T2
+# #	Range		Tmin-Tmax # of validity of -analytic
+#	-Vm		a1 a2 a3 a4 omega # See APP14, SH88 for equations
+# #	Extrapol	# extrapolation algorithm
+# #	Ref		# references
+#-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+# DATABASE STARTS BELOW
+#
+LLNL_AQUEOUS_MODEL_PARAMETERS
+-temperatures
+	 0.01	25   60  100
+	  150  200  250  300
+#debye huckel a (adh)
+-dh_a
+         0.4939    0.5114    0.5465    0.5995
+         0.6855    0.7994    0.9593    1.2180
+#debye huckel b (bdh)
+-dh_b
+         0.3253    0.3288    0.3346    0.3421
+         0.3525    0.3639    0.3766    0.3925
+-bdot
+         0.0374    0.0410    0.0438    0.0460
+         0.0470    0.0470    0.0340    0
+#cco2   (coefficients for the Drummond (1981) polynomial)
+-co2_coefs
+        -1.0312              0.0012806
+          255.9                 0.4445
+      -0.001606
+      
+SOLUTION_MASTER_SPECIES
+
+#element	species        alk     gfw_formula	element_gfw
+
+Al	Al+3	0	Al	26.9815
+Alkalinity	HCO3-	1	Ca0.5(CO3)0.5	50.05 
+C(-4)	CH4	0	CH4	-33.31051
+C(-3)	C2H6	0	C2H6	-30.54674
+C(-2)	C2H4	0	C2H4	-28.08539
+C	HCO3-	1	HCO3	12.011
+C(+2)	CO	0	C	-23.87691
+C(+4)	HCO3-	1	HCO3	-22.05727
+Ca	Ca+2	0	Ca	40.078
+Cl	Cl-	0	Cl	35.4527
+Cl(-1)	Cl-	0	Cl	-17.43358
+Cl(1)	ClO-	0	Cl	-16.11094
+Cl(3)	ClO2-	0	Cl	-14.87484
+Cl(5)	ClO3-	0	Cl	-13.71476
+Cl(7)	ClO4-	0	Cl			
+E	e-	0	0	0
+F	F-	0	F	18.9984
+Fe	Fe+2	0	Fe	55.847
+Fe(+2)	Fe+2	0	Fe	
+Fe(+3)	Fe+3	-2	Fe	
+H	H+	-1	H	1.0079
+H(0)	H2	0	H	
+H(+1)	H+	-1	0	
+K	K+	0	K	39.0983
+Mg	Mg+2	0	Mg	24.305
+N	NH3	1	N	14.0067
+N(-3)	NH3	1	N	
+N(0)	N2	0	N	
+N(+3)	NO2-	0	N	
+N(+5)	NO3-	0	N	
+Na	Na+	0	Na	22.9898
+O	H2O	0	O	15.994
+O(-2)	H2O	0	0	
+O(0)	O2	0	O	
+S	SO4-2	0	SO4	32.066
+S(-2)	HS-	1	S	
+S(+2)	S2O3-2	0	S	
+S(+3)	S2O4-2	0	S	
+S(+4)	SO3-2	0	S	
+S(+5)	S2O5-2	0	S	
+S(+6)	SO4-2	0	SO4	
+S(+7)	S2O8-2	0	S	
+S(+8)	HSO5-	0	S	
+Si	SiO2	0	SiO2	28.0855
+
+SOLUTION_SPECIES
+
+#------------------
+# 31 basis species
+#------------------
+
+Al+3 = Al+3 
+	-llnl_gamma	9	
+	log_k		0
+	-delta_H	0		kJ/mol
+#	deltafH		-128.681	kcal/mol
+	-Vm   		-2.28 -17.1 10.9 -2.07 2.87 9 0 0 5.5e-3 1 # APP14, BH86
+
+Ca+2 = Ca+2 
+	-llnl_gamma	6	
+	log_k		0
+	-delta_H	0		kJ/mol
+#	deltafH		-129.8		kcal/mol
+	-Vm  		-0.3456 -7.252 6.149 -2.479 1.239 5 1.60 -57.1 -6.12e-3 1 # APP14
+
+Cl- = Cl- 
+	-llnl_gamma	3	
+	log_k		0
+	-delta_H	0		kJ/mol
+#	deltafH		-39.933		kcal/mol
+	-Vm		4.465 4.801 4.325 -2.847 1.748 0 -0.331 20.16 0 1 # APP1
+
+e- = e-
+
+F- =  F- 
+	-llnl_gamma	3.5000
+	log_k		0
+	-delta_H	0		kJ/mol
+#	deltafH		-80.15 kcal/mol
+	-Vm		0.928 1.36 6.27 -2.84 1.84 0 0 -0.318 0 1 # APP14
+
+Fe+2 = Fe+2 
+	-llnl_gamma	6	
+	log_k		0
+	-delta_H	0		kJ/mol
+#	deltafH		-22.05		kcal/mol
+	-Vm		-0.3255 -9.687 1.536 -2.379 0.3033 6 -4.21e-2 39.7 0 1 # APP14
+
+H+ = H+ 
+	-llnl_gamma	9	
+	log_k		0
+	-delta_H	0		kJ/mol
+#	deltafH		-0		kJ/mol
+
+HCO3- = HCO3- 
+	-llnl_gamma	4	
+	log_k		0
+	-delta_H	0		kJ/mol
+#	deltafH		-164.898	kcal/mol
+	-Vm		7.5621 1.1505 1.2346 -2.8266 1.27330 0 0 0 0 0 # SH88
+
+K+ = K+ 
+	-llnl_gamma	3	
+	log_k		0
+	-delta_H	0		kJ/mol
+#	deltafH		-60.27		kcal/mol
+	-Vm		3.322 -1.473 6.534 -2.712 9.06e-2 3.5 0 29.7 0 1 # APP14
+
+Mg+2 = Mg+2 
+	-llnl_gamma	8	
+	log_k		0
+	-delta_H	0		kJ/mol
+#	deltafH		-111.367	kcal/mol
+	-Vm		-1.410 -8.6 11.13 -2.39 1.332 5.5 1.29 -32.9 -5.86e-3 1 # APP14
+
+NH3 = NH3 
+	-llnl_gamma	3	
+	log_k		0
+	-delta_H	0		kJ/mol
+#	deltafH		-19.44		kcal/mol
+	-Vm		5.0911 2.797 8.6248 -2.8946 -7.690e-2 0 0 0 0 0 # SHS89
+
+Na+ = Na+ 
+	-llnl_gamma	4	
+	log_k		0
+	-delta_H	0		kJ/mol
+#	deltafH		-57.433		kcal/mol
+	-Vm		2.28 -4.38 -4.1 -0.586 0.09 4 0.3 52 -3.33e-3 0.566 # APP14
+
+H2O = H2O 
+	-llnl_gamma	3	
+        log_k		0
+	-delta_H	0		kJ/mol
+#	deltafH		-68.317		kcal/mol
+
+SO4-2 = SO4-2 
+	-llnl_gamma	4	
+	log_k		0
+	-delta_H	0		kJ/mol
+#	deltafH		-217.4		kcal/mol
+	-Vm		8.0 2.3 -46.04 6.245 3.82 0 0 0 0 1 # APP14
+
+SiO2 = SiO2 
+	-llnl_gamma	3	
+	log_k		0
+	-delta_H	0		kJ/mol
+#	deltafH		-209.775	kcal/mol
+	-Vm		1.9 1.7 20 -2.7 0.12910 0 0 0 0 0 # SHS89
+
+
+#-------------------
+# 40 Redox couples
+#-------------------
+
+2H2O = O2 + 4H+ + 4e-  
+	-CO2_llnl_gamma
+	log_k		-85.9951
+	-delta_H	559.543		kJ/mol
+#	deltafH		-2.9		kcal/mol
+	-analytic	38.0229 7.99407e-3 -2.7655e4 -1.4506e1 199838.45
+#	Range		0-350
+	-Vm		5.7889 6.3536 3.2528 -3.0417 -0.3943
+#	Extrapol	supcrt92
+#	Ref		SHS89
+
+SO4-2 + H+ = HS- + 2 O2  
+	-llnl_gamma	3.5    
+	log_k		-138.3169
+	-delta_H	869.226		kJ/mol
+#	deltafH		-3.85		kcal/mol
+	-analytic 2.6251e1 3.9525e-2 -4.5443e4 -1.1107e1 3.1843e5
+#	Range		0-350
+	-Vm		5.0119 4.9799 3.4765 -2.9849 1.44100
+#	Extrapol	supcrt92
+#	Ref		SH88
+
+.5 O2 + 2 HS- = S2-2 + H2O
+	-llnl_gamma	4.0    
+	log_k		33.2673
+#	deltafH		-0		kcal/mol
+	-analytic	0.21730e2 -0.12307e-2 0.10098e5 -0.88813e1 0.15757e3
+	-mass_balance	S(-2)2
+#	Range		0-350
+	-Vm 5.5797 5.8426 3.4536 -3.0205 3.10830
+#	Extrapol	supcrt92
+#	Ref		SH88
+
+2 H+ + 2 SO3-2  = S2O3-2 + O2 + H2O
+	-llnl_gamma	4.0    
+	log_k		-40.2906
+#	deltafH		-0		kcal/mol
+	-analytic	0.77679e2 0.65761e-1 -0.15438e5 -0.34651e2 -0.24092e3
+#	Range		0-350
+	-Vm		6.6685 12.4951 -7.7281 -3.2955 2.96940
+#	Extrapol	supcrt92
+#	Ref		SH88
+
+H+ + HCO3- + H2O = CH4 + 2 O2
+	-llnl_gamma	3.0    
+	log_k		-144.1412
+	-delta_H	863.599		kJ/mol
+#	deltafH		-21.01		kcal/mol
+	-analytic	-0.41698e2 0.36584e-1 -0.40675e5 0.93479e1 -0.63468e3
+#	Range		0-350
+	-Vm		6.7617 8.7279 2.3212 -3.1397 -0.31790
+#	Extrapol	supcrt92
+#	Ref		SH90
+
+2 H+ + 2 HCO3- + H2O = C2H6 + 3.5 O2
+	-llnl_gamma	3.0    
+	log_k		-228.6072
+#	deltafH		-0		kcal/mol
+	#analytic	-0.10777e2 0.72105e-1 -0.67489e5 -0.13915e2 -0.10531e4
+	-analytic	-491.3 1.148 -10004 0 0 -8.06e-4 # !!! Using CHNOSZ, discrepant with above expression unless the first term is -0.10777e2 instead of 0.10777e2
+#	Range		0-350
+	-Vm		8.75 13.1051 1.6258 -3.3207 -0.06270
+#	Extrapol	supcrt92
+#	Ref		SH90
+
+2 H+ + 2 HCO3- = C2H4 + 3 O2
+	-llnl_gamma	3.0
+	log_k		-254.5034
+	-delta_H	1446.6		kJ/mol
+#	deltafH		24.65		kcal/mol
+	#analytic	-0.30329e2 0.71187e-1 -0.73140e5
+	-analytic	6e-2 3.60e-2 -7.17e4
+#	Range		0-350
+	-Vm		7.856 12.6391 -1.8737 -3.3014 -0.4
+#	Extrapol	supcrt92
+#	Ref		SH90
+
+HCO3- + H+ = CO + H2O + 0.5 O2 
+	-llnl_gamma	3.0    
+	log_k		-41.7002
+	-delta_H	277.069		kJ/mol
+#	deltafH		-28.91		kcal/mol
+	-analytic	1.0028e2 4.6877e-2 -1.8062e4 -4.0263e1 3.8031e5
+#	Range		0-350
+	-Vm		6.2373 7.4498 2.8184 -3.0869 -0.37150
+#	Extrapol	supcrt92
+#	Ref		SM93
+ 
+Cl- + 0.5 O2 = ClO-   
+	-llnl_gamma	4.0    
+	log_k		-15.1014
+	-delta_H	66.0361		kJ/mol
+#	deltafH		-25.6		kcal/mol
+	-analytic	6.1314e1 3.4812e-3 -6.0952e3 -2.3043e1 -9.5128e1
+#	Range		0-350
+	-Vm		2.3599 -2.0164 6.5356 -2.6955 1.47670
+#	Extrapol	supcrt92
+#	Ref		SSW+97, SH88
+
+O2 + Cl- = ClO2-   
+	-llnl_gamma	4.0    
+	log_k		-23.108
+	-delta_H	112.688		kJ/mol
+#	deltafH		-15.9		kcal/mol
+	-analytic	3.3638e0 -6.1675e-3 -4.9726e3 -2.0467e0 -2.5769e5
+#	Range		0-350
+	-Vm		5.2163 4.958 3.7949 -2.9839 1.2637
+#	Extrapol	supcrt92
+#	Ref		SSW+97, SH88
+
+1.5 O2 + Cl- = ClO3-   
+	-llnl_gamma	3.5    
+	log_k		-17.2608
+	-delta_H	81.3077		kJ/mol
+#	deltafH		-24.85		kcal/mol
+	-analytic	2.8852e1 -4.8281e-3 -4.6779e3 -1.0772e1 -2.0783e5
+#	Range		0-350
+	-Vm		7.1665 9.7172 1.9307 -3.1807 1.0418
+#	Extrapol	supcrt92
+#	Ref		SH88
+
+2 O2 + Cl- = ClO4-   
+	-llnl_gamma	3.5    
+	log_k		-15.7091
+	-delta_H	62.0194		kJ/mol
+#	deltafH		-30.91		kcal/mol
+	-analytic	7.0280e1 -6.8927e-5 -5.5690e3 -2.6446e1 -1.6596e5
+#	Range		0-350
+	-Vm 8.1411 15.5654 -7.8077 -3.4224 0.9699
+#	Extrapol	supcrt92
+#	Ref		SSW+97, SH88
+
+H+ + Fe+2 + 0.25 O2 = Fe+3 + 0.5 H2O 
+	-llnl_gamma	9.0    
+	log_k		8.4899
+	-delta_H	-97.209		kJ/mol
+#	deltafH		-11.85		kcal/mol
+	-analytic	-1.7808e1 -1.1753e-2 4.7609e3 5.5866 7.4295e1
+#	Range		0-350
+	-Vm		-2.4256 -13.6961 11.1141 -2.2127 2.58120
+#	Extrapol	supcrt92
+#	Ref		SSW+97, SH88
+ 
+H2O = H2 + 0.5 O2   
+	-CO2_llnl_gamma
+	log_k		-46.1066
+	-delta_H	275.588		kJ/mol
+#	deltafH		-1		kcal/mol
+	-analytic	6.6835e1 1.7172e-2 -1.8849e4 -2.4092e1 4.2501e5
+#	Range		0-350
+	-Vm		5.1427 4.7758 3.8729 -2.9764 -0.209
+#	Extrapol	supcrt92
+#	Ref		SHS89
+
+SO4-2 + H+ + 0.5 O2 = HSO5-  
+	-llnl_gamma	4.0    
+	log_k		-17.2865
+	-delta_H	140.038		kJ/mol
+#	deltafH		-185.38		kcal/mol
+	-analytic	5.9944e1 3.0904e-2 -7.7494e3 -2.4420e1 -1.2094e2
+#	Range		0-350
+	-Vm		8.9391 14.043 0.2349 -3.3594 0.86110
+#	Extrapol	supcrt92
+#	Ref		SSW+97, SH88
+
+2 NH3 + 1.5 O2 = N2 + 3 H2O  
+	-llnl_gamma	3.0    
+	log_k		116.4609
+	-delta_H	-687.08		kJ/mol
+#	deltafH		-2.495		kcal/mol
+	-analytic	-8.2621e1 -1.4671e-2 4.0068e4 2.9090e1 -2.5924e5
+#	Range		0-350
+	-Vm		6.2046 7.3685 2.8539 -3.0836 -0.34680
+#	Extrapol	supcrt92
+#	Ref		SHS89
+
+1.5 O2 + NH3 = NO2- + H+ + H2O 
+	-llnl_gamma	3.0    
+	log_k		+46.8653
+	-delta_H	-290.901	kJ/mol
+#	deltafH		-25		kcal/mol
+	-analytic	-1.7011e1 -3.3459e-2 1.3999e4 1.1078e1 -4.8255e4
+#	Range		0-350
+	-Vm		5.5864 5.859 3.4472 -3.0212 1.18470
+#	Extrapol	supcrt92
+#	Ref		SH88
+
+2 O2 + NH3 = NO3- + H+ + H2O 
+	-llnl_gamma	3.0    
+	log_k		62.1001
+	-delta_H	-387.045	kJ/mol
+#	deltafH		-49.429		kcal/mol
+	-analytic	-3.9468e1 -3.9697e-2 2.0614e4 1.8872e1 -2.1917e5
+#	Range		0-350
+	-Vm		7.3161 6.7824 -4.6838 -3.0594 1.09770
+#	Extrapol	supcrt92
+#	Ref		SH88
+
+2 H+ + 2 SO3-2 = S2O4-2 + .5 O2 + H2O
+	-llnl_gamma	5.0    
+	log_k		-25.2076
+#	deltafH		-0		kcal/mol
+	-analytic	-2.3172e2 2.0393e-3 -7.1011 8.3239e1 9.4155e-1
+#	Range		0-350
+	-Vm		6.6784 8.528 2.3917 -3.1314 2.87720
+#	Extrapol	supcrt92
+#	Ref		SSW+97
+
+2 SO3-2 + .5 O2 + 2 H+ = S2O6-2 + H2O
+	-llnl_gamma	4.0    
+	log_k		41.8289
+#	deltafH		-0		kcal/mol
+	-analytic	0.14458e3 0.61449e-1 0.71877e4 -0.58657e2 0.11211e3
+#	Range		0-350
+	-Vm		8.2257 12.3054 0.9087 -3.2876 2.75870
+#	Extrapol	supcrt92
+#	Ref		SSW+97
+
+2 SO3-2 + 1.5 O2 + 2 H+ = S2O8-2 + H2O
+	-llnl_gamma	4.0    
+	log_k		70.7489
+#	deltafH		-0		kcal/mol
+	-analytic	0.18394e3 0.60414e-1 0.13864e5 -0.71804e2 0.21628e3
+#	Range		0-350
+	-Vm		13.3622 24.8454 -4.0153 -3.8061 2.32810
+#	Extrapol	supcrt92
+#	Ref		SH88
+
+O2 + H+ + 3 HS- = S3-2 + 2 H2O
+	-llnl_gamma	4.0    
+	log_k		79.3915
+#	deltafH		-0		kcal/mol
+	-analytic	-0.51626e2 0.70208e-2 0.31797e5 0.11927e2 -0.64249e6
+	-mass_balance	S(-2)3
+#	Range		0-350
+	-Vm		6.7661 8.7396 2.315 -3.1403 2.97490
+#	Extrapol	supcrt92
+#	Ref		SH88
+
+3 SO3-2 + 4 H+ = S3O6-2 + .5 O2 + 2 H2O
+	-llnl_gamma	4.0    
+	log_k		-6.2316
+#	deltafH		-0		kcal/mol
+	-analytic	0.23664e3 0.12702 -0.10110e5 -0.99715e2 -0.15783e3
+#	Range		0-350
+	-Vm		8.4155 12.7691 0.7268 -3.3068 2.71310
+#	Extrapol	supcrt92
+#	Ref		SSW+97
+
+1.5 O2 + 2 H+ + 4 HS- = S4-2 + 3 H2O
+	-llnl_gamma	4.0    
+	log_k		125.2958
+#	deltafH		-0		kcal/mol
+	-analytic	0.20875e3 0.58133e-1 0.33278e5 -0.85833e2 0.51921e3
+	-mass_balance	S(-2)4
+#	Range		0-350
+	-Vm 7.9381 11.6012 1.1902 -3.2586 2.83900
+#	Extrapol	supcrt92
+#	Ref		SH88
+
+4 SO3-2 + 6 H+  = S4O6-2 + 1.5 O2 + 3 H2O
+	-llnl_gamma	4.0    
+	log_k		-38.3859
+#	deltafH		-0		kcal/mol
+	-analytic	0.32239e3 0.19555 -0.23617e5 -0.13729e3 -0.36862e3
+#	Range		0-350
+	-Vm		10.2672 17.2902 -1.0502 -3.4937 2.28050
+#	Extrapol	supcrt92
+#	Ref		SSW+97
+
+2 O2 + 3 H+ + 5 HS- = S5-2 + 4 H2O
+	-llnl_gamma	4.0    
+	log_k		170.9802
+#	deltafH		-0		kcal/mol
+	-analytic	0.30329e3 0.88033e-1 0.44739e5 -0.12471e3 0.69803e3
+	-mass_balance	S(-2)5
+#	Range		0-350
+	-Vm		9.1107 14.4645 0.0649 -3.3770 2.70510
+#	Extrapol	supcrt92
+#	Ref		SH88
+
+5 SO3-2 + 8 H+ = S5O6-2 + 2.5 O2 + 4 H2O
+	-llnl_gamma	4.0    
+	log_k		-99.4206
+#	deltafH		-0		kcal/mol
+	-analytic	0.42074e3 0.25833 -0.43878e5 -0.18178e3 -0.68480e3
+#	Range		0-350
+	-Vm		8.8725 13.8806 0.2986 -3.3527 2.60760
+#	Extrapol	supcrt92
+#	Ref		SSW+97
+
+H+ + HCO3- + HS- + NH3 = SCN- + 3 H2O
+	-llnl_gamma	3.5    
+	log_k		3.0070
+#	deltafH		-0		kcal/mol
+	-analytic	0.16539e3 0.49623e-1 -0.44624e4 -0.65544e2 -0.69680e2
+#	Range		0-350
+	-Vm		7.0244 9.3687 2.0708 -3.1662 1.10730
+#	Extrapol	supcrt92, 64cri/cob
+#	Ref		SSW+97, 92gre/fug match
+
+SO4-2 = SO3-2 + 0.5 O2   
+	-llnl_gamma	4.5    
+	log_k		-46.6244
+	-delta_H	267.985		kJ/mol
+#	deltafH		-151.9		kcal/mol
+	-analytic	-1.3771e1 6.5102e-4 -1.3330e4 4.7164 -2.0800e2
+#	Range		0-350
+	-Vm		2.4632 -1.7691 6.4494 -2.7058 3.321
+#	Extrapol	supcrt92
+#	Ref		SSW+97, SH88
+
+#---------------------------
+# 156 other aqueous species
+#---------------------------
+
+2 CH3COOH + Al+3 = Al(CH3COO)2+ + 2 H+
+	-llnl_gamma	4.0    
+	log_k		-5.595
+	-delta_H	-46.8566	kJ/mol
+#	deltafH		-372.08		kcal/mol
+	-analytic	-4.2528e1 2.1431e-3 3.1658e2 1.1585e1 5.8604e5
+#	Range		0-350
+	-Vm		8.9971 14.1844 0.1805 -3.3653 1.39180
+#	Extrapol	supcrt92
+#	Ref		SK93, differ by 2.2 log K at 0C, 1 log K at 300C
+ 
+4 H2O + Al+3 = Al(OH)4- + 4 H+
+	-llnl_gamma	4.0    
+	log_k		-22.8833
+	-delta_H	180.899		kJ/mol
+#	deltafH		-222.079	kcal/mol
+	-analytic	1.0803e1 -3.4379e-3 -9.7391e3 0e0 0e0
+#	Range		0-350
+	-Vm		3.7221 3.9954 -1.5879 -2.9441 1.74180
+#	Extrapol	supcrt92
+#	Ref		SSW+97, 95pok/hel match
+
+H2O + Al+3 = Al(OH)+2 + H+
+	-llnl_gamma	4.5    
+	log_k		-4.9571
+	-delta_H	49.798		kJ/mol
+#	deltafH		-185.096	kcal/mol
+	-analytic	-2.6224e-1 8.8816e-3 -1.8686e3 -4.3195e-1 -2.9158e1
+#	Range		0-350
+	-Vm		-1.46 -11.4 10.2 -2.31 1.67 5.4 0 0 0 1 # APP14, BH86
+#	Extrapol	supcrt92
+#	Ref		SSW+97, 95pok/hel match
+ 
+HCO3- + H+ = CO2 + H2O
+	-CO2_llnl_gamma
+	log_k		6.3447
+	-delta_H	-9.7027		kJ/mol
+#	deltafH		-98.9		kcal/mol
+	-analytic	-1.0534e1 2.1746e-2 2.5216e3 7.9125e-1 3.9351e1
+#	Range		0-350
+	-Vm		6.2466 7.4711 2.8136 -3.0879 -0.1934
+#	Extrapol	supcrt92
+#	Ref		SSW01, SHS89
+
+HCO3- = CO3-2 + H+
+	-llnl_gamma	4.5    
+	log_k		-10.3288
+	-delta_H	14.6984		kJ/mol
+#	deltafH		-161.385	kcal/mol
+	-analytic	-6.9958e1 -3.3526e-2 -7.0846e1 2.8224e1 -1.0849
+#	Range		0-350
+	-Vm		2.8524 -3.9844 6.4142 -2.6143 3.39140
+#	Extrapol	supcrt92
+#	Ref		SH88
+
+NH3 + HCO3- = CN- + 2 H2O + 0.5 O2 
+	-llnl_gamma	3.0    
+	log_k		-56.0505
+	-delta_H	344.151		kJ/mol
+#	deltafH		36		kcal/mol
+	-analytic	-1.1174e1 3.8167e-3 -1.7063e4 4.5349e0 -2.6625e2
+#	Range		0-350
+	-Vm		5.4714 5.5813 3.5497 -3.0096 1.29000
+#	Extrapol	supcrt92
+#	Ref		SSW+97, SH88
+
+HCO3- + H+ = HCOOH + 0.5 O2
+	-llnl_gamma	3.0		# EQ3/6 data0.sup
+	log_k		-39.0524
+	-analytic	-16.6 0.041 -10000 0 0 -1.205e-5
+#	Range		0-350
+	-Vm		6.3957 7.7713 2.8318 -3.1002 -0.33
+#	Extrapol	supcrt92
+#	Ref		Sho95
+
+HCOOH = HCOO- + H+
+	-llnl_gamma	3.5		# EQ3/6 data0.sup
+	log_k		-3.752994
+	-analytic	-6.456 0.01694 0 0 0 -2.71e-5
+#	Range		0-350
+	-Vm		5.7842 4.7242 7.363 -2.9742 1.3003
+#	Extrapol	supcrt92
+#	Ref		Sho95
+
+2 HCO3- + 2 H+ = CH3COOH + 2 O2
+	-llnl_gamma	3.0		# EQ3/6 data0.sup
+	log_k		-141.99219
+	-analytic	-6.037 0.0104 -42362 0 0 3.604e-5
+#	Range		0-350
+	-Vm		11.6198 5.218 2.5088 -2.9946 -0.15
+#	Extrapol	supcrt92
+#	Ref		Sho95
+
+CH3COOH = CH3COO- + H+ 
+	-llnl_gamma	4.5         
+	log_k		-4.7572
+#	deltafH		-0		kcal/mol
+	-analytic	-0.96597e2 -0.34535e-1 0.19753e4 0.38593e2 0.30850e2
+#	Range		0-350
+	-Vm		7.7525 8.6996 7.5825 -3.1385 1.31820
+#	Extrapol	supcrt92
+#	Ref		Sho95
+
+2 NH3 + HCO3- + H+ = CO(NH2)2 + 2 H2O
+	-llnl_gamma	3.0		# EQ3/6 data0.sup
+	log_k		6.631821
+	-analytic	15.98 -4.41e-2 0 0 0 4.25e-5
+#	Range		0-350
+	-Vm		7.7158 7.3031 10.9353 -3.0808 -0.3006
+#	Extrapol	supcrt92
+#	Ref		SM93
+
+3 H+ + 3 HCO3- + H2O = C3H8 + 5 O2
+	-llnl_gamma	3.0		# thermo.com.V8.R6+.tdat
+	log_k		-363.088
+	-analytic	-8.04e2 1.877 0 0 0 -1.33e-3
+#	Range		0-350
+	-Vm		10.768 17.6785 -0.5878 -3.5097 -0.165
+#	Extrapol	supcrt92
+#	Ref		SH90
+
+H+ + HCO3- + H2O = CH3OH + 1.5 O2
+	-llnl_gamma	3.0		# EQ3/6 data0.sup
+	log_k		-117.9046
+	-analytic	-262.5446137 6.159125942e-1 0 0 0 -4.375362728e-4
+#	Range		0-350
+	-Vm		6.9383 5.5146 11.4018 -3.0069 -0.14760
+#	Extrapol	supcrt92
+#	Ref		SH90
+
+H2O + 2 HCO3- + 2 H+ = CH3CH2OH + 3 O2
+	-llnl_gamma	3.0		# EQ3/6 data0.sup
+	log_k		-224.1415
+	-analytic	-423.8 0.989 -10003 0 0 -6.93e-4
+#	Range		0-350
+	-Vm		9.2333 9.9581 12.1445 -3.1906 -0.2037
+#	Extrapol	supcrt92
+#	Ref		SH90
+
+HCO3- + H+ = CH2O + O2
+	-llnl_gamma	3.0		# EQ3/6 data0.sup
+	log_k		-86.57248
+	-analytic	-17.3 0.0404 -24072 0 0 -6.57e-6
+#	Range		0-350
+	-Vm		5.3113 5.3139 3.3901 -2.9986 -0.3984
+#	Extrapol	supcrt92
+#	Ref		SS93
+
+2 CH3COOH + Ca+2 = Ca(CH3COO)2 + 2 H+
+	-llnl_gamma	3.0    
+	log_k		-7.3814
+	-delta_H	-2.7196		kJ/mol
+#	deltafH		-362.65		kcal/mol
+	-analytic	-1.0320e1 4.0012e-3 -3.6281e3 2.4421 7.0175e5
+#	Range		0-350
+	-Vm		12.9911 23.9379 -3.6556 -3.7685 -0.03
+#	Extrapol	supcrt92
+#	Ref		SK93
+ 
+Ca+2 + CH3COOH = CaCH3COO+ + H+
+	-llnl_gamma	4.0    
+	log_k		-3.8263
+	-delta_H	1.17152		kJ/mol
+#	deltafH		-245.62		kcal/mol
+	-analytic	-8.8826 3.1672e-3 -1.0764e3 2.0526 2.3599e5
+#	Range		0-350
+	-Vm		5.9002 6.6232 3.1505 -3.0527 0.36360
+#	Extrapol	supcrt92
+#	Ref		SK93
+
+HCO3- + Ca+2 = CaCO3 + H+
+	-llnl_gamma	3.0    
+	log_k		-7.0017
+	-delta_H	30.5767		kJ/mol
+#	deltafH		-287.39		kcal/mol
+	-analytic	2.3045e2 5.5350e-2 -8.5056e3 -9.1096e1 -1.3279e2
+#	Range		0-350
+	-Vm		-0.3907 -8.7325 9.1753 -2.4179 -0.038
+#	Extrapol	supcrt92
+#	Ref		SSH97
+
+Cl- + Ca+2 = CaCl+
+	-llnl_gamma	4.0    
+	log_k		-0.6956
+	-delta_H	2.02087		kJ/mol
+#	deltafH		-169.25		kcal/mol
+	-analytic	8.1498e1 3.8387e-2 -1.3763e3 -3.5968e1 -2.1501e1
+#	Range		0-350
+	-Vm		2.7148 -1.1497 6.1949 -2.7314 0.48620
+#	Extrapol	supcrt92
+#	Ref		SSH97 differ by 0.3 log K at 0C, 1.2 log K at 300C
+
+2 Cl- + Ca+2 = CaCl2
+	-llnl_gamma	3.0    
+	log_k		-0.6436
+	-delta_H	-5.8325		kJ/mol
+#	deltafH		-211.06		kcal/mol
+	-analytic	1.8178e2 7.6910e-2 -3.1088e3 -7.8760e1 -4.8563e1
+#	Range		0-350
+	-Vm		6.2187 7.4058 2.8322 -3.0851 -0.038
+#	Extrapol	supcrt92
+#	Ref		SSH97
+ 
+SO4-2 + Ca+2 = CaSO4
+	-llnl_gamma	3.0    
+	log_k		2.1111
+	-delta_H	5.4392		kJ/mol
+#	deltafH		-345.9		kcal/mol
+	-analytic	2.8618e2 8.4084e-2 -7.6880e3 -1.1449e2 -1.2005e2
+#	Range		0-350
+	-Vm		2.7910 -.9666 6.1300 -2.7390 -.0010 # phreeqc.dat, SSH97
+#	Extrapol	supcrt92
+#	Ref		SSH97
+
+2 CH3COOH + Fe+2 = Fe(CH3COO)2 + 2 H+
+	-llnl_gamma	3.0    
+	log_k		-7.0295
+	-delta_H	-20.2924	kJ/mol
+#	deltafH		-259.1		kcal/mol
+	-analytic	-2.9862e1 1.3901e-3 -1.6908e3 8.6283 6.0125e5
+#	Range		0-350
+	-Vm		12.1698 21.937 -2.8791 -3.6858 -0.038
+#	Extrapol	supcrt92
+#	Ref		SSH97, SK93
+ 
+Fe+2 + CH3COOH = FeCH3COO+ + H+
+	-llnl_gamma	4.0    
+	log_k		-3.4671
+	-delta_H	-3.80744	kJ/mol
+#	deltafH		-139.06		kcal/mol
+	-analytic	-1.3781e1 9.6253e-4 -7.5310e2 4.0135 2.3416e5
+#	Range		0-350
+	-Vm		5.2246 4.9785 3.7863 -2.9848 0.57560
+#	Extrapol	supcrt92
+#	Ref		SSH97, SK93
+
+Fe+2 + Cl- = FeCl+
+	-llnl_gamma	4.0    
+	log_k		-0.1605
+	-delta_H	3.02503		kJ/mol
+#	deltafH		-61.26		kcal/mol
+	-analytic	8.2435e1 3.7755e-2 -1.4765e3 -3.5918e1 -2.3064e1
+#	Range		0-350
+	-Vm		2.1468 -2.5367 6.7401 -2.6741 0.7003
+#	Extrapol	supcrt92
+#	Ref		SSH97
+
+Fe+3 + Cl- = FeCl+2
+	-llnl_gamma	4.5    
+	log_k		-0.8108
+	-delta_H	36.6421		kJ/mol
+#	deltafH		-180.018	kJ/mol
+	-analytic	1.6186e2 5.9436e-2 -5.1913e3 -6.5852e1 -8.1053e1
+#	Range		0-350
+	-Vm		-0.7164 -9.5277 9.4878 -2.3851 0.17013 # SSH97
+#	Extrapol	supcrt92, 64cri/cob
+#	Ref		SSH97, WEP+82 differ by 2.7 log K at 0C, 1.2 log K at 300C
+
+2 Cl- + Fe+2 = FeCl2
+	-llnl_gamma	3.0    
+	log_k		-2.4541
+	-delta_H	6.46846		kJ/mol
+#	deltafH		-100.37		kcal/mol
+	-analytic	1.9171e2 7.8070e-2 -4.1048e3 -8.2292e1 -6.4108e1
+#	Range		0-350
+	-Vm		5.5057 5.665 3.5164 -3.0131 -0.038
+#	Extrapol	supcrt92
+#	Ref		SSH97 differ by 7.2 log K at 0C, 3.2 log K at 300C !! flag
+ 
+H2O + Fe+2 = FeOH+ + H+
+	-llnl_gamma	4.0    
+	log_k		-9.5
+	-analytic	1.706e-1 0 -2.883e3
+#	Range		0-350
+	-Vm		-0.2561 -8.4039 9.0457 -2.4315 0.7003
+#	Extrapol	supcrt92
+#	Ref		SSW+97, Marion+03,08 match
+ 
+H2O + Fe+3 = FeOH+2 + H+
+	-llnl_gamma	4.5    
+	log_k		-2.19
+#	deltafH		-0		kcal/mol
+	-analytic	5.300 0 -2.272e3
+#	Range		0-350
+	-Vm		-1.1562 -10.6009 9.9077 -2.3407 1.43820
+#	Extrapol	supcrt92
+#	Ref		SSW+97, Marion+08 match
+ 
+3 H2O + Al+3 = Al(OH)3 + 3 H+
+	-llnl_gamma	3.0    
+	log_k		-16.4329
+	-delta_H	144.704		kJ/mol
+#	deltafH		-230.73		kcal/mol
+	-analytic	4.2012e1 1.9980e-2 -7.7847e3 -1.5470e1 -1.2149e2
+#	Range		0-350
+	-Vm		3.5338 0.8485 5.4132 -2.8140 -0.03
+#	Extrapol	supcrt92
+#	Ref		SSW+97, 95pok/hel
+ 
+H+ + CN- = HCN
+	-llnl_gamma	3.0    
+	log_k		9.2359
+	-delta_H	-43.5136	kJ/mol
+#	deltafH		25.6		kcal/mol
+	-analytic	1.0536e1 2.3105e-2 3.3038e3 -7.7786 5.1550e1
+#	Range		0-350
+	-Vm		8.0083 11.7705 1.1286 -3.2655 -0.1113
+#	Extrapol	supcrt92
+#	Ref		SM93
+
+H+ + Cl- = HCl
+	-llnl_gamma	3.0    
+	log_k		-0.67
+#	deltafH		-0		kcal/mol
+	-analytic	4.1893e2 1.1103e-1 -1.1784e4 -1.6697e2 -1.8400e2
+#	Range		0-350
+	-Vm		1.2547 -4.7177 7.6043 -2.5840 -0.7
+#	Extrapol	supcrt92, ?
+#	Ref		MS97, 87rua/sew match
+
+NO2- + H+ = HNO2
+	-llnl_gamma	3.0    
+	log_k		3.2206
+	-delta_H	-14.782		kJ/mol
+#	deltafH		-119.382	kJ/mol
+	-analytic	1.9653 -1.1603e-4 0 0 1.1569e5
+#	Range		0-350
+	-Vm		5.9151 6.659 3.1378 -3.0542 -0.1507
+#	Extrapol	supcrt92, 69hel
+#	Ref		SSW+97, WEP+82 match
+
+NO3- + H+ = HNO3
+	-llnl_gamma	3.0    
+	log_k		-1.3025
+	-delta_H	16.8155		kJ/mol
+#	deltafH		-45.41		kcal/mol
+	-analytic	9.9744e1 3.4866e-2 -3.0975e3 -4.0830e1 -4.8363e1
+#	Range		0-350
+	-Vm		7.1623 9.7063 1.9367 -3.1802 -0.3066
+#	Extrapol	supcrt92
+#	Ref		SSW+97, SHS89
+ 
+SO3-2 + H+ = HSO3-
+	-llnl_gamma	4.0    
+	log_k		7.2054
+	-delta_H	9.33032		kJ/mol
+#	deltafH		-149.67		kcal/mol
+	-analytic	5.5899e1 3.3623e-2 -5.0120e2 -2.3040e1 -7.8373
+#	Range		0-350
+	-Vm		6.7014 8.5816 2.3771 -0.31338 1.1233
+#	Extrapol	supcrt92
+#	Ref		SH88
+
+SO4-2 + H+ = HSO4-
+	-llnl_gamma	4.0    
+	log_k		1.9791
+	-delta_H	20.5016		kJ/mol
+#	deltafH		-212.5		kcal/mol
+	-analytic	4.9619e1 3.0368e-2 -1.1558e3 -2.1335e1 -1.8051e1
+#	Range		0-350
+	-Vm		8.2 9.2590  2.1108  -3.1618 1.1748  0 -0.3 15 0 1 # APP14
+#	Extrapol	supcrt92
+#	Ref		SH88
+
+SiO2 + H2O = HSiO3- + H+
+	-llnl_gamma	4.0    
+	log_k		-9.9525
+	-delta_H	25.991		kJ/mol
+#	deltafH		-271.88		kcal/mol
+	-analytic	6.4211e1 -2.4872e-2 -1.2707e4 -1.4681e1 1.0853e6
+#	Range		0-350
+	-Vm		2.9735 -0.5158 5.9467 -2.7575 1.5511
+#	Extrapol	supcrt92
+#	Ref		SSH97
+ 
+2 CH3COOH + K+ = K(CH3COO)2- + 2 H+
+	-llnl_gamma	4.0    
+	log_k		-10.2914
+	-delta_H	-1.79912	kJ/mol
+#	deltafH		-292.9		kcal/mol
+	-analytic	-2.3036e2 -4.6369e-2 7.0305e3 8.4997e1 1.0977e2
+#	Range		0-350
+	-Vm		17.8481 35.7984 -8.3193 -4.2588 0.7097
+#	Extrapol	supcrt92
+#	Ref		SK93
+
+K+ + CH3COOH = KCH3COO + H+
+	-llnl_gamma	3.0    
+	log_k		-5.0211
+	-delta_H	4.8116		kJ/mol
+#	deltafH		-175.22		kcal/mol
+	-analytic	-2.6676e-1 -3.2675e-3 -1.7143e3 -7.1907e-3 1.7726e5
+#	Range		0-350
+	-Vm		17.8481 35.7984 -8.3193 -4.2588 0.7097
+#	Extrapol	supcrt92
+#	Ref		SK93
+
+K+ + Cl- = KCl
+	-llnl_gamma	3.0    
+	log_k		-1.4946
+	-delta_H	14.1963		kJ/mol
+#	deltafH		-96.81		kcal/mol
+	-analytic	1.3650e2 3.8405e-2 -4.4014e3 -5.4421e1 -6.8721e1
+#	Range		0-350
+	-Vm		6.9932 9.297 2.0889 -3.1633 -0.038
+#	Extrapol	supcrt92
+#	Ref		SSH97 
+ 
+SO4-2 + K+ + H+ = KHSO4
+	-llnl_gamma	3.0    
+	log_k		0.8136
+	-delta_H	29.8319		kJ/mol
+#	deltafH		-270.54		kcal/mol
+	-analytic	1.2620e2 5.7349e-2 -3.3670e3 -5.3003e1 -5.2576e1
+#	Range		0-350
+	-Vm		9.1226 14.4964 0.0453 -3.3782 -0.001
+#	Extrapol	supcrt92
+#	Ref		SSH97
+
+SO4-2 + K+ = KSO4-
+	-llnl_gamma	4.0    
+	log_k		0.8796
+	-delta_H	2.88696		kJ/mol
+#	deltafH		-276.98		kcal/mol
+	-analytic	9.9073e1 3.7817e-2 -2.1628e3 -4.1297e1 -3.3779e1
+#	Range		0-350
+	-Vm		6.8 7.06 3.0 -2.07 1.1 0 0 0 0 1 # APP14
+#	Extrapol	supcrt92
+#	Ref		SSH97
+
+2 CH3COOH + Mg+2 = Mg(CH3COO)2 + 2 H+
+	-llnl_gamma	3.0    
+	log_k		-7.473
+	-delta_H	-23.8195	kJ/mol
+#	deltafH		-349.26		kcal/mol
+	-analytic	-4.3954e1 -3.1842e-4 -1.2033e3 1.3556e1 6.3058e5
+#	Range		0-350
+	-Vm		12.3982 22.4898 -3.0853 -3.7086 -0.03
+#	Extrapol	supcrt92
+#	Ref		SK93
+ 
+Mg+2 + CH3COOH = MgCH3COO+ + H+
+	-llnl_gamma	4.0    
+	log_k		-3.4781
+	-delta_H	-8.42239	kJ/mol
+#	deltafH		-229.48		kcal/mol
+	-analytic	-2.3548e1 -1.6071e-3 -4.2228e2 7.7009 2.5981e5
+#	Range		0-350
+	-Vm		5.4981 5.6424 3.5341 -3.0122 0.7483
+#	Extrapol	supcrt92
+#	Ref		SK93
+
+Mg+2 + Cl- = MgCl+
+	-llnl_gamma	4.0    
+	log_k		-0.1349
+	-delta_H	-0.58576	kJ/mol
+#	deltafH		-151.44		kcal/mol
+	-analytic	4.3363e1 3.2858e-2 1.1878e2 -2.1688e1 1.8403
+#	Range		0-350
+	-Vm		2.223 -2.3505 6.6669 -2.6818 0.84490
+#	Extrapol	supcrt92
+#	Ref		SSH97
+
+SO4-2 + Mg+2 = MgSO4
+	-llnl_gamma	3.0    
+	log_k		2.4117
+	-delta_H	19.6051		kJ/mol
+#	deltafH		-1355.96	kJ/mol
+	-analytic	1.7994e2 6.4715e-2 -4.7314e3 -7.3123e1 -8.0408e1
+#	Range		0-350
+	-Vm		2.4 -0.97 6.1 -2.74 # APP14
+#	Extrapol	supcrt92, 69hel
+#	Ref		MS97, 82mar/smi match
+
+2 CH3COOH + NH3 = NH4(CH3COO)2- + H+
+	-llnl_gamma	4.0    
+	log_k		-0.1928
+	-delta_H	-56.735		kJ/mol
+#	deltafH		-265.2		kcal/mol
+	-analytic	3.7137e1 -1.2242e-2 -8.4764e3 -8.4308 1.3883e6
+#	Range		0-350
+	-Vm		19.3685 39.509 -9.7736 -4.4122 0.6495
+#	Extrapol	supcrt92
+#	Ref		SK93
+
+NH3 + H+ = NH4+
+	-llnl_gamma	2.5    
+	log_k		9.2410
+	-delta_H	-51.9234	kJ/mol
+#	deltafH		-31.85		kcal/mol
+	-analytic	-1.4527e1 -5.0518e-3 3.0447e3 6.0865 4.7515e1
+#	Range		0-350
+	-Vm		3.8763 2.3448 8.5605 -2.8759 0.1502
+#	Extrapol	supcrt92
+#	Ref		SH88
+
+NH3 + CH3COOH = NH4CH3COO
+	-llnl_gamma	3.0    
+	log_k		4.6964
+	-delta_H	-48.911		kJ/mol
+#	deltafH		-147.23		kcal/mol
+	-analytic	1.4104e1 -4.3664e-3 -1.0746e3 -3.6999 4.1428e5
+#	Range		0-350
+	-Vm		11.2849 19.7719 -2.0187 -3.5963 -0.03
+#	Extrapol	supcrt92
+#	Ref		SK93
+ 
+2 CH3COOH + Na+ = Na(CH3COO)2- + 2 H+
+	-llnl_gamma	4.0    
+	log_k		-9.9989
+	-delta_H	-11.5771	kJ/mol
+#	deltafH		-292.4		kcal/mol
+	-analytic	-2.9232e2 -5.5708e-2 9.6601e3 1.0772e2 1.5082e2
+#	Range		0-350
+	-Vm		16.2062 31.7884 -6.7416 -4.0930 0.9633
+#	Extrapol	supcrt92
+#	Ref		SK93
+
+Na+ + CH3COOH = NaCH3COO + H+
+	-llnl_gamma	3.0    
+	log_k		-4.8606
+	-delta_H	-0.029288	kJ/mol
+#	deltafH		-173.54		kcal/mol
+	-analytic	6.4833 -1.8739e-3 -2.0902e3 -2.6121 2.3990e5
+#	Range		0-350
+	-Vm		8.3514 12.6125 0.7884 -3.3003 -0.03
+#	Extrapol	supcrt92
+#	Ref		SK93
+
+Na+ + Cl- = NaCl
+	-llnl_gamma	3.0    
+	log_k		-0.777
+	-delta_H	5.21326		kJ/mol
+#	deltafH		-96.12		kcal/mol
+	-analytic	1.1398e2 3.6386e-2 -3.0847e3 -4.6571e1 -4.8167e1
+#	Range		0-350
+	-Vm		5.0364 4.5189 3.9669 -2.9658 -0.038
+#	Extrapol	supcrt92
+#	Ref		SSH97
+
+SiO2 + Na+ + H2O = NaHSiO3 + H+
+	-llnl_gamma	3.0    
+	log_k		-8.304
+	-delta_H	11.6524		kJ/mol
+#	deltafH		-332.74		kcal/mol
+	-analytic	3.6045e1 -9.0411e-3 -6.6605e3 -1.0447e1 5.8415e5
+#	Range		0-350
+	-Vm		3.4928 0.75 5.4483 -2.8100 -0.038
+#	Extrapol	supcrt92
+#	Ref		SSH97
+
+Na+ + H2O = NaOH + H+
+	-llnl_gamma	3.0    
+	log_k		-14.7948
+	-delta_H	53.6514		kJ/mol
+#	deltafH		-112.927	kcal/mol
+	-analytic	8.7326e1 2.3555e-2 -5.4770e3 -3.6678e1 -8.5489e1
+#	Range		0-350
+	-Vm		2.2338 -2.3287 6.6683 -2.6826 -0.03
+#	Extrapol	supcrt92
+#	Ref		SSW+97, 95pok/hel match
+
+H2O = OH- + H+
+	-llnl_gamma	3.5    
+	log_k		-13.9951
+	-delta_H	55.8146		kJ/mol
+#	deltafH		-54.977		kcal/mol
+	-analytic	-6.7506e1 -3.0619e-2 -1.9901e3 2.8004e1 -3.1033e1
+#	Range		0-350
+	-Vm		-9.66 28.5 80.0 -22.9 1.89 0 1.09 0 0 1 # APP14
+#	Extrapol	supcrt92
+#	Ref		SH88
+ 
+2 H+ + 2 SO3-2 = S2O5-2 + H2O
+	-llnl_gamma	4.0    
+	log_k		9.5934
+#	deltafH		-0		kcal/mol
+	-analytic	0.12262e3 0.62883e-1 -0.18005e4 -0.50798e2 -0.28132e2
+#	Range		0-350
+	-Vm		7.3618 10.1945 1.7414 -3.2003 2.8343 # SSW+97
+#	Extrapol	supcrt92
+#	Ref		SSW+97, SH88
+
+2 H+ + SO3-2 = SO2 + H2O
+	-llnl_gamma	3.0    
+	log_k		9.0656
+	-delta_H	26.7316		kJ/mol
+#	deltafH		-77.194		kcal/mol
+	-analytic	9.4048e1 6.2127e-2 -1.1072e3 -4.0310e1 -1.7305e1
+#	Range		0-350
+	-Vm		6.9502 9.189 2.1383 -3.1589 -0.0559
+#	Extrapol	supcrt92
+#	Ref		SHS89
+
+#---------------------------
+# carbfix.dat additions and changes
+#---------------------------
+
+HS- + H+ = H2S
+	-llnl_gamma	3.0
+	log_k		6.97791 # SS97
+	-analytic	-782.43945 -0.361261 20565.7315 328.67496 0 1.6722e-4 # SS97
+	-Vm		7.81 2.96 -0.46 # phreeqc.dat
+
+2 H2O + Al+3 = Al(OH)2+ + 2 H+
+	-llnl_gamma	4.0
+	log_k		-10.5945 # llnl.dat
+	-analytic	4.4036e+001 2.0168e-002 -5.5455e+003 -1.6987e+001 -8.6545e+001 # llnl.dat
+	-Vm			2.1705 -2.4811 6.7241 -2.6763 0.95700 0 0 0 0 0 # SSW+97 + CHNOSZ/OBIGT/SUPCRTBL - D08,Z+16
+
+Al+3 + SiO2 + 2 H2O = AlH3SiO4+2 + H+
+	-llnl_gamma	4.5
+	log_k		-2.38 # P+96
+	-analytic	5.241793953846094 0.005624769230769303 -2772.442855034987 0 0 0 # P+96
+	-Vm			0.16 -7.23 8.61 -2.4800 0.88000 # TS01 + CHNOSZ/OBIGT/SUPCRTBL - D08,Z+16
+
+SO4-2 + Al+3 = AlSO4+
+	-llnl_gamma	4.0
+	log_k		3.17527 # TS01 + CHNOSZ/OBIGT/SUPCRTBL - D08,Z+16
+	-analytic	-6034.286233487146 -2.009118445366823 225586.09598339273 2388.3098402377414 -8.473342720127227e6 0.000736431615071334 # TS01 + CHNOSZ/OBIGT/SUPCRTBL - D08,Z+16
+	-Vm			1.833 -3.3057 7.0494 -2.6423 2.4143 # TS01 + CHNOSZ/OBIGT/SUPCRTBL - D08,Z+16
+
+4 H2O + Na+ + Al+3 = NaAl(OH)4 + 4 H+
+	-llnl_gamma	3.0
+	log_k		-22.9 # TS01 + CHNOSZ/OBIGT/SUPCRTBL - D08,Z+16
+	-analytic	-319.6003434647659 -0.1452549158200939 2048.487394301387 134.79387929123214 -579779.0987586592 0.00006885771169878286 # TS01 + CHNOSZ/OBIGT/SUPCRTBL - D08,Z+16
+	-Vm			9.1267 14.3411 0.1121 -3.3719 0 # TS01 + CHNOSZ/OBIGT/SUPCRTBL - D08,Z+16
+
+Mg+2 + CO3-2 = MgCO3
+	-llnl_gamma	3.0
+	log_k		3.01 # SBS14
+	-analytic	5.5093 -0.00017143 -734.208 0 0 0 # SBS14
+	-Vm			-0.7355 -9.5745 9.5062 -2.3831 -0.038 # SSH97 + CHNOSZ/OBIGT/SUPCRTBL - D08,Z+16
+
+Mg+2 + HCO3- = MgHCO3+
+	-llnl_gamma	4.0
+	log_k		1.10 # SBS14
+	-analytic	-8.8935 0.01694 1474.786 0 0 0 # SBS14
+	-Vm			3.271 0.206 5.669 -2.7880 0.59900 # SK95 + CHNOSZ/OBIGT/SUPCRTBL - D08,Z+16
+
+Na+ + CO3-2 = NaCO3-
+	-llnl_gamma	4.0
+	log_k		1.01 # SBS13
+	-analytic	4.1659 0 -941.150 0 0 0 # SBS13
+	-Vm			7.642732 2.993503 2.328077 -2.902751 1.507948 # DEW17 + CHNOSZ/OBIGT/SUPCRTBL - D08,Z+16
+
+Na+ + HCO3- = NaHCO3
+	-llnl_gamma	3.0
+	log_k		-0.18 # SBS13
+	-analytic	1.8528 0 -606.240 0 0 0 # SBS13
+	-Vm			0.431 # APP14
+
+HCO3- + Ca+2 = CaHCO3+
+	-llnl_gamma	4.0
+	log_k		1.0467 # llnl.dat
+	-analytic	5.5985e+001 3.4639e-002 -3.6972e+002 -2.5864e+001 -5.7859e+000 # llnl.dat
+	-Vm			3.706 1.267 5.252 -2.8310 0.30800 # SK95 + CHNOSZ/OBIGT/SUPCRTBL - D08,Z+16
+
+Na+ + SO4-2 = NaSO4-
+	-llnl_gamma	4.0
+	log_k		0.702779 # MS97 + CHNOSZ/OBIGT/SUPCRTBL - D08
+	-analytic	-1515.4130255698833 -0.5496881710640973 53009.74446438346 607.5403646933713 -1.7958467164664706e6 0.00021478523226344507 # MS97 + CHNOSZ/OBIGT/SUPCRTBL - D08,Z+16
+	-Vm			1e-5 16.4 -0.0678 -1.05 4.14 0 6.86 0 0.0242 0.53 # APP14
+
+Fe+3 + 2 H2O = Fe(OH)2+ + 2 H+
+	-llnl_gamma	4.0
+	log_k		-5.6502 # SSW+97 + CHNOSZ/OBIGT/SUPCRTBL - D08,Z+16
+	-analytic	-311.3248470052558 -0.1252808696431922 9665.364708433648 127.49811415837463 -849396.8730633351 0.00005263379396466626 # SSW+97 + CHNOSZ/OBIGT/SUPCRTBL - D08,Z+16
+	-Vm			-3.7118 -16.8408 12.3595 -2.0827 0.7191 # SSW+97 + CHNOSZ/OBIGT/SUPCRTBL - D08,Z+16
+
+Fe+3 + 3 H2O = Fe(OH)3 + 3 H+
+	-llnl_gamma	3.0
+	log_k		-12.0185 # SSW+97 + CHNOSZ/OBIGT/SUPCRTBL - D08,Z+16
+	-analytic	-741.3725966104283 -0.26505708328056 26205.378230673232 296.5340355414264 -1.972081032472368e6 0.00010032479998977653 # SSW+97 + CHNOSZ/OBIGT/SUPCRTBL - D08,Z+16
+	-Vm			2.7401 -1.0905 6.1776 -2.7338 -0.03 # SSW+97 + CHNOSZ/OBIGT/SUPCRTBL - D08,Z+16
+
+Fe+3 + 4 H2O = Fe(OH)4- + 4 H+
+	-llnl_gamma	4.0
+	log_k		-21.6225 # SSW+97 + CHNOSZ/OBIGT/SUPCRTBL - D08,Z+16
+	-analytic	1533.5014901840032 0.45075510400897445 -69859.23735739749 -593.4694075764281 2.3641904800567343e6 -0.00014964010950998835 # SSW+97 + CHNOSZ/OBIGT/SUPCRTBL - D08,Z+16
+	-Vm			2.3837 -1.9602 6.5182 -2.6979 1.4662 # SSW+97 + CHNOSZ/OBIGT/SUPCRTBL - D08,Z+16
+
+2 H2O + Fe+2 = Fe(OH)2 + 2 H+
+	-llnl_gamma	3.0
+	log_k		-20.4049 # SSW+97 + CHNOSZ/OBIGT/SUPCRTBL - D08,Z+16
+	-analytic	-325.1339790725869 -0.1345716716871417 5315.653600095374 132.16984714439332 -459607.68923879805 0.000057906348553908315 # SSW+97 + CHNOSZ/OBIGT/SUPCRTBL - D08,Z+16
+	-Vm			-0.5029 -9.0053 9.2791 -2.4066 -0.03 # SSW+97 + CHNOSZ/OBIGT/SUPCRTBL - D08,Z+16
+
+3 H2O + Fe+2 = Fe(OH)3- + 3 H+
+	-llnl_gamma	4.0
+	log_k		-29.208 # SSW+97 + CHNOSZ/OBIGT/SUPCRTBL - D08,Z+16
+	-analytic	1906.044327275795 0.5662477247894362 -88119.68431429783 -741.1535184277503 3.7592690582787376e6 -0.0001898657106678743 # SSW+97 + CHNOSZ/OBIGT/SUPCRTBL - D08,Z+16
+	-Vm			0.6272 -6.244 8.1905 -2.5208 1.8564 # SSW+97 + CHNOSZ/OBIGT/SUPCRTBL - D08,Z+16
+
+H+ + ClO- = HClO
+	-llnl_gamma	3.0
+	log_k		7.55236 # SSW+97 + CHNOSZ/OBIGT/SUPCRTBL - D08,Z+16
+	-analytic	-2041.6086043936152 -0.6683042462929405 80422.12116400951 805.7772200117705 -3.2667035060825506e6 0.00024280864184851264 # SSW+97 + CHNOSZ/OBIGT/SUPCRTBL - D08,Z+16
+	-Vm			5.5927 5.8751 3.4387 -3.0218 -0.1734 # SSW+97 + CHNOSZ/OBIGT/SUPCRTBL - D08,Z+16
+
+H+ + ClO2- = HClO2
+	-llnl_gamma	3.0
+	log_k		1.98189 # SSW+97 + CHNOSZ/OBIGT/SUPCRTBL - D08,Z+16
+	-analytic	-2249.8186120868168 -0.7355468012526403 86690.01133768198 887.6588357902062 -3.5397309172713878e6 0.00026672471518723433 # SSW+97 + CHNOSZ/OBIGT/SUPCRTBL - D08,Z+16
+	-Vm			7.6706 10.9455 1.4527 -3.2314 -0.3415 # SSW+97 + CHNOSZ/OBIGT/SUPCRTBL - D08,Z+16
+
+H+ + S2O3-- = HS2O3-
+	-llnl_gamma	4.0
+	log_k		1.68836 # SSW+97 + CHNOSZ/OBIGT/SUPCRTBL - D08,Z+16
+	-analytic	-1611.0948316547294 -0.5495686401519247 59194.43018784251 640.1240524484979 -2.166923306383505e6 0.00020844502892650532 # SSW+97 + CHNOSZ/OBIGT/SUPCRTBL - D08,Z+16
+	-Vm			6.1964 7.351 2.8549 -3.0828 1.1676 # SSW+97 + CHNOSZ/OBIGT/SUPCRTBL - D08,Z+16
+
+K+ + H2O = KOH + H+
+	-llnl_gamma	3.0
+	log_k		-14.4386 # SSW+97 + CHNOSZ/OBIGT/SUPCRTBL - D08,Z+16
+	-analytic	-477.55011247018905 -0.1442523288404146 18222.588641689916 183.69951482387626 -1.2139398662316576e6 0.0000461802984447927 # SSW+97 + CHNOSZ/OBIGT/SUPCRTBL - D08,Z+16
+	-Vm			3.7938 1.4839 5.1619 -2.8402 -0.03 # SSW+97 + CHNOSZ/OBIGT/SUPCRTBL - D08,Z+16
+	
+PHASES
+
+# Feldspar
+
+Albite
+	NaAlSi3O8 + 4 H+ = Al+3 + Na+ + 2 H2O + 3 SiO2
+	log_k		2.7645
+	-delta_H	-51.8523	kJ/mol
+#	deltafH		-939.68		kcal/mol
+	-analytic	-1.1694e1 1.4429e-2 1.3784e4 -7.2866 -1.6136e6
+#	Range		0-350
+	-Vm		100.25
+#	Extrapol	supcrt92
+#	Ref		HDN+78
+
+Anorthite
+	CaAl2(SiO4)2 + 8 H+ = Ca+2 + 2 Al+3 + 2 SiO2 + 4 H2O
+	log_k		26.5780
+	-delta_H	-303.039	kJ/mol
+#	deltafH		-1007.55	kcal/mol
+	-analytic	3.9717e-1 -1.8751e-2 1.4897e4 -6.3078 -2.3885e5
+#	Range		0-350
+	-Vm		100.79
+#	Extrapol	supcrt92
+#	Ref		HDN+78
+
+K-Feldspar
+	KAlSi3O8 + 4 H+ = Al+3 + K+ + 2 H2O + 3 SiO2
+	log_k		-0.2753
+	-delta_H	-23.9408	kJ/mol
+#	deltafH		-949.188	kcal/mol
+	-analytic	-1.0684 1.3111e-2 1.1671e4 -9.9129 -1.5855e6
+#	Range		0-350
+	-Vm		108.87
+#	Extrapol	supcrt92
+#	Ref		HDN+78
+
+# Pyroxene
+
+Diopside
+	CaMgSi2O6 + 4 H+ = Ca+2 + Mg+2 + 2 H2O + 2 SiO2
+	log_k		20.9643
+	-delta_H	-133.775	kJ/mol
+#	deltafH		-765.378	kcal/mol
+	-analytic	7.1240e1 1.5514e-2 8.1437e3 -3.0672e1 -5.6880e5
+#	Range		0-350
+	-Vm		66.09
+#	Extrapol	supcrt92
+#	Ref		HDN+78
+
+Enstatite
+	MgSiO3 + 2 H+ = H2O + Mg+2 + SiO2
+	log_k		11.3269
+	-delta_H	-82.7302	kJ/mol
+#	deltafH		-369.686	kcal/mol
+	-analytic	-4.9278e1 -3.2832e-3 9.5205e3 1.4437e1 -5.4324e5
+#	Range		0-350
+	-Vm		31.276
+#	Extrapol	supcrt92
+#	Ref		HDN+78
+
+# Olivine
+
+Forsterite
+	Mg2SiO4 + 4 H+ =  SiO2 + 2 H2O + 2 Mg+2
+	log_k		27.8626
+	-delta_H	-205.614	kJ/mol
+#	deltafH		-520		kcal/mol
+	-analytic	-7.6195e1 -1.4013e-2 1.4763e4 2.5090e1 -3.0379e5
+#	Range		0-350
+	-Vm		43.79
+#	Extrapol	supcrt92
+#	Ref		HDN+78
+
+Fayalite
+	Fe2SiO4 + 4 H+ = SiO2 + 2 Fe+2 + 2 H2O
+	log_k		19.1113
+	-delta_H	-152.256	kJ/mol
+#	deltafH		-354.119	kcal/mol
+	-analytic	1.3853e1 -3.5501e-3 7.1496e3 -6.8710e0 -6.3310e4
+#	Range		0-350
+	-Vm		46.39
+#	Extrapol	supcrt92
+#	Ref		HDN+78
+
+# Iron
+
+Magnetite
+	Fe3O4 + 8 H+ = Fe+2 + 2 Fe+3 + 4 H2O
+	log_k		10.4724
+	-delta_H	-216.597	kJ/mol
+#	deltafH		-267.25		kcal/mol
+	-analytic	-3.0510e2 -7.9919e-2 1.8709e4 1.1178e2 2.9203e2
+#	Range		0-350
+	-Vm		44.524
+#	Extrapol	supcrt92
+#	Ref		HDN+78
+
+# Weathered Minerals
+
+Kaolinite
+	Al2Si2O5(OH)4 + 6 H+ = 2 Al+3 + 2 SiO2 + 5 H2O
+	log_k		6.8101
+	-delta_H	-151.779	kJ/mol
+#	deltafH		-982.221	kcal/mol
+	-analytic	1.6835e1 -7.8939e-3 7.7636e3 -1.2190e1 -3.2354e5
+#	Range		0-350
+	-Vm		99.52
+#	Extrapol	supcrt92
+#	Ref		HDN+78 differ by 1.6 log K at 0C, 0.4 log K at 350C
+
+Goethite
+	FeOOH + 3 H+ = Fe+3 + 2 H2O
+	log_k		0.5345
+	-delta_H	-61.9291	kJ/mol
+#	deltafH		-559.328	kJ/mol
+	-analytic	-6.0331e1 -1.0847e-2 4.7759e3 1.9429e1 8.1122e1
+#	Range		0-200
+	-Vm		20.82
+#	Extrapol	supcrt92, Constant H approx
+#	Ref		Sho09, MLS+03, RHF79 match
+
+# Carbonates
+
+Calcite
+	CaCO3 + H+ = Ca+2 + HCO3-
+	log_k		1.8487
+	-delta_H	-25.7149	kJ/mol
+#	deltafH		-288.552	kcal/mol
+	-analytic	-1.4978e2 -4.8370e-2 4.8974e3 6.0458e1 7.6464e1
+#	Range		0-350
+	-Vm		36.934
+#	Extrapol	supcrt92
+#	Ref		HDN+78
+
+Aragonite
+	CaCO3 + H+ = Ca+2 + HCO3-
+	log_k		1.9931
+	-delta_H	-25.8027	kJ/mol
+#	deltafH		-288.531	kcal/mol
+	-analytic	-1.4934e2 -4.8043e-2 4.9089e3 6.0284e1 7.6644e1
+#	Range		0-325
+	-Vm		34.15 # thermo.com.V8.R6+.tdat
+#	Extrapol	supcrt92
+#	Ref		HDN+78
+
+# Other
+
+Quartz
+	SiO2 = SiO2
+	log_k		-3.9993
+	-delta_H	32.949		kJ/mol
+#	deltafH		-217.65		kcal/mol
+	-analytic	7.7698e-2 1.0612e-2 3.4651e3 -4.3551 -7.2138e5
+#	Range		0-350
+	-Vm		22.68
+#	Extrapol	supcrt92
+#	Ref		HDN+78
+
+# Gases
+
+C2H4(g)
+	C2H4 = C2H4
+	log_k		-2.323631
+	-delta_H	-3.930		kcal/mol
+	-analytic	-14.5616 0.0176 2192.2 0 0 -3.8657e-6
+#	Range		0-350
+	-T_c		283 # K
+	-P_c		50.53
+	-Omega		0.085 # http://webserver.dmt.upm.es/~isidoro/dat1/eGAS.pdf
+#	Extrapol	supcrt92
+#	Ref		Sho93
+
+C2H6(g)
+	C2H6 = C2H6
+	log_k		-2.93276
+	-delta_H	-4.509		kcal/mol
+	-analytic	-23.1154 0.0354 3289.1 0 0 -1.5637e-5
+#	Range		0-350
+	-T_c		305 # K
+	-P_c		48.16
+	-Omega		0.100 # http://webserver.dmt.upm.es/~isidoro/dat1/eGAS.pdf
+#	Extrapol	supcrt92
+#	Ref		HOK+98	
+
+C3H8(g)
+	C3H8 = C3H8
+	log_k		-2.876
+	-analytic	1.885	-2.55e-2 0 0 0 3.20e-5 # Not the best
+#	Range		0-350
+	-T_c		369.522 # K
+	-P_c		42.4924
+	-Omega		0.152 # http://webserver.dmt.upm.es/~isidoro/dat1/eGAS.pdf
+#	Extrapol	supcrt92
+#	Ref		HOK+98
+
+CH4(g)
+	CH4 = CH4 
+	log_k		-2.8502
+	-delta_H	-13.0959	kJ/mol
+#	deltafH		-17.88		kcal/mol
+	-analytic	-24.027 4.7146e-3 372.27 6.4264 2.3362e5
+#	Range		0-350
+	-T_c		190.6 # K
+	-P_c		45.40
+	-Omega		0.008 # phreeqc.dat
+#	Extrapol	supcrt92
+#	Ref		WEP+82, Kel60
+
+CO(g)
+	CO = CO
+	log_k		-3.0068
+	-delta_H	-10.4349	kJ/mol
+#	deltafH		-26.416		kcal/mol
+	-analytic	-8.0849 9.2114e-3 0 0 2.0813e5
+#	Range		0-350
+	-T_c		133 # K
+	-P_c		34.54
+	-Omega		0.049 # http://webserver.dmt.upm.es/~isidoro/dat1/eGAS.pdf
+#	Extrapol	supcrt92
+#	Ref		Sho93
+
+CO2(g)
+	CO2 + H2O = H+ + HCO3-   
+	log_k		-7.8136
+	-delta_H	-10.5855	kJ/mol
+#	deltafH		-94.051		kcal/mol
+	-analytic	-8.5938e1 -3.0431e-2 2.0702e3 3.2427e1 3.2328e1
+#	Range		0-350
+	-T_c		304.25 # K
+	-P_c		72.83 # atm, 7.38 MPa, http://webbook.nist.gov/cgi/cbook.cgi?ID=C124389&Units=SI&Mask=4#Thermo-Phase
+	-Omega		0.225 # http://webserver.dmt.upm.es/~isidoro/dat1/eGAS.pdf
+#	Extrapol	supcrt92
+#	Ref		WEP+82, Kel60
+
+H2(g)
+	H2 = H2
+	log_k		-3.1050
+	-delta_H	-4.184		kJ/mol
+#	deltafH		0		kcal/mol
+	-analytic	-9.3114 4.6473e-3 -49.335 1.4341 1.2815e5
+#	Range		0-350
+	-T_c		33.2 # K
+	-P_c		12.80
+	-Omega		0.225 # phreeqc.dat
+#	Extrapol	supcrt92
+#	Ref		WEP+82, Kel60
+
+H2O(g) # HP98
+	H2O = 1.000 H2O
+	-log_k 1.5108
+	-analytic -1.4782e1 1.0752e-3 2.7519e3 2.7548 4.2945e1
+	-T_c  647.3
+	-P_c  220.9
+	-Omega  0.344
+
+H2S(g)
+	H2S = H+ + HS-     
+	log_k		-7.9759
+	-delta_H	4.5229		kJ/mol
+#	deltafH		-4.931		kcal/mol
+	-analytic	-97.354 -3.1576e-2 1.8285e3 37.44 28.56
+#	Range		0-350
+	-T_c		373.2 # K
+	-P_c		88.20
+	-Omega		0.1
+#	Extrapol	supcrt92
+#	Ref		WEP+82, Kel60
+
+N2(g)
+	N2 = N2
+	log_k		-3.1864 
+	-delta_H	-10.4391	kJ/mol
+#	deltafH		0		kcal/mol
+	-analytic	-58.453 1.818e-3 3199 17.909 -27460 # phreeqc.dat
+#	Range		0-350
+	-T_c		126.2 # K
+	-P_c		33.50
+	-Omega		0.039
+#	Extrapol	supcrt92
+#	Ref		WEP+82, Kel60
+
+NH3(g)
+	NH3 = NH3       
+	log_k		1.7966
+	-delta_H	-35.2251	kJ/mol
+#	deltafH		-11.021		kcal/mol
+	-analytic	-18.758 3.3670e-4 2.5113e3 4.8619 39.192
+#	Range		0-350
+	-T_c		405.6 # K
+	-P_c		111.3
+	-Omega		0.25
+#	Extrapol	supcrt92
+#	Ref		WEP+82, Kel60
+
+NO(g)
+	NO + 0.5 H2O + 0.25 O2 = H+ + NO2- 
+	log_k		0.7554
+	-delta_H	-48.8884	kJ/mol
+#	deltafH		90.241		kJ/mol
+	-analytic	8.2147 -1.2708e-1 -6.0593e3 2.0504e1 -9.4551e1
+#	Range		0-300
+	-T_c		180 # K
+	-P_c		64.64
+	-Omega		0.607 # http://webserver.dmt.upm.es/~isidoro/dat1/eGAS.pdf
+#	Extrapol	supcrt92, Cp integration
+#	Ref		AS01, WEP+82 differ by 0.2 log K at 0C, 17 log K at 350C !! flag
+
+NO2(g)
+	NO2 + 0.5 H2O + 0.25 O2 = H+ + NO3- 
+	log_k		8.3673
+	-delta_H	-94.0124	kJ/mol
+#	deltafH		33.154		kJ/mol
+	-analytic	9.4389e1 -2.7511e-1 -1.6783e4 2.1127e1 -2.6191e2
+#	Range		0-300
+	-T_c		431 # K
+	-P_c		99.67
+	-Omega		0 # Not found
+#	Extrapol	Cp integration
+#	Ref		WEP+82
+
+O2(g)
+	O2 = O2       
+	log_k		-2.8983
+	-delta_H	-12.1336	kJ/mol
+#	deltafH		0		kcal/mol
+	-analytic	-7.5001 7.8981e-3 0.0 0.0 2.0027e5
+#	Range		0-300
+	-T_c		154.6 # K phreeqc.dat
+	-P_c		49.80 # phreeqc.dat
+	-Omega		0.021 # phreeqc.dat
+#	Extrapol	supcrt92
+#	Ref		WEP+82, Kel60
+
+SO2(g)
+	SO2 = SO2
+	log_k		0.1700
+	-delta_H	0
+#	deltafH		0		kcal/mol
+	-analytic	-2.0205e1 2.8861e-3 1.4862e3 5.2958 1.2721e5
+#	Range		0-300
+	-T_c		430 # K
+	-P_c		77.67
+	-Omega		0.251 # http://webserver.dmt.upm.es/~isidoro/dat1/eGAS.pdf
+#	Extrapol	supcrt92
+#	Ref		WEP+82, Kel60
+
+RATES
+
+Albite #NaAlSi3O8; M 262.219 g/mol
+-start
+1 name$ = "Albite"
+2 if (PARM(1) = 0) then  goto 3 else goto 5
+3 if PARM(3) = 0 then S = PARM(2) * m * GFW(PHASE_FORMULA(name$)) else S = m0 * ((m/m0)^(2/3)) * GFW(PHASE_FORMULA(name$)) * PARM(2)
+4 GOTO 100
+5 S = PARM(2)*TOT("water")
+##-----------------Dissolution and precipitation options---------------------##
+100  if (PARM(4) = 0) then  goto 1000 else goto 110
+110 if (PARM(4) = 1) Then GoTo 150 else goto 200 #
+150 If (SR (name$) < 1) Then GoTo 5000 else GoTO 1000 # warning no dissolution reaction
+200 If (SR (name$) > 1) Then GoTo 5000 else GoTO 1000 # warning no precipitation reaction
+##------------------Kinetic calculation---------------------##
+        #Parameters
+1000 Aa = 0.7	#mol.m-2.s-1
+1001 An = 2.05e-1 #mol.m-2.s-1 
+1002 Ab = 1.5e-5 #mol.m-2.s-1
+1003 Ea = 58000  #J.mol-1
+1004 En = 60000	#J.mol-1
+1005 Eb = 50000	#J.mol-1
+1006 R =  8.314 #J.deg-1.mol-1
+1008 na = 0.3
+1010 nb = -0.3
+1011 Sig = 3
+		#rate equations
+2000 rplusa = Aa* (exp(-Ea/ (R * Tk)))*(act("H+")^na )* S
+2001 rplusn = An* (exp(-En/ (R * Tk))) * S
+2002 rplusb = Ab* (exp(-Eb/ (R * Tk)))* (act("H+")^nb) * S 
+2009 rplus = rplusa + rplusn + rplusb
+3000 rate = rplus * (1 - (SR ("Albite")^(1/Sig)))
+4000 moles = rate * time
+5000 save moles
+-end
+
+Anorthite	#CaAl2Si2O8; M 278.204 g/mol
+-start
+1 name$ = "Anorthite"
+2 if (PARM(1) = 0) then  goto 3 else goto 5
+3 if PARM(3) = 0 then S = PARM(2) * m * GFW(PHASE_FORMULA(name$)) else S = m0 * ((m/m0)^(2/3))* GFW(PHASE_FORMULA(name$)) * PARM(2)
+4 GOTO 100
+5 S = PARM(2)*TOT("water")
+##-----------------Dissolution and precipitation options---------------------##
+100  if (PARM(4) = 0) then  goto 1000 else goto 110 
+110 if (PARM(4) = 1) Then GoTo 150 else goto 200 # 
+150 If (SR (name$) < 1) Then GoTo 5000 else GoTO 1000 # warning no dissolution reaction
+200 If (SR (name$) > 1) Then GoTo 5000 else GoTO 1000 # warning no precipitation reaction
+##------------------Kinetic calculation---------------------##
+        #Parameters
+1000 Aa = 9.82e4	#mol.m-2.s-1
+1001 An = 1.5E-1	#mol.m-2.s-1 
+1002 Ab = 1.5E-5 #mol.m-2.s-1
+1003 Ea = 58000  #J.mol-1
+1004 En = 60000	#J.mol-1
+1005 Eb = 50000	#J.mol-1
+1006 R =  8.314 #J.deg-1.mol-1
+1008 na = 1.22
+1010 nb = -0.35
+1011 Sig = 2
+		#rate equations
+2000 rplusa = Aa* (exp(-Ea/ (R * Tk)))*(act("H+")^na )* S
+2001 rplusn = An* (exp(-En/ (R * Tk))) * S
+2002 rplusb = Ab* (exp(-Eb/ (R * Tk)))* (act("H+")^nb) * S 
+2009 rplus = rplusa + rplusn + rplusb
+3000 rate = rplus * (1 - (SR("Anorthite")^(1/Sig)))
+4000 moles = rate * time
+5000 save moles
+-end
+
+K-Feldspar #KAlSi3O8; M 278.33 g/mol
+-start
+1 name$ = "K-Feldspar"
+2 if (PARM(1) = 0) then  goto 3 else goto 5
+3 if PARM(3) = 0 then S = PARM(2) * m * GFW(PHASE_FORMULA(name$)) else S = m0 * ((m/m0)^(2/3)) * GFW(PHASE_FORMULA(name$)) * PARM(2)
+4 GOTO 100
+5 S = PARM(2)*TOT("water")
+##-----------------Dissolution and precipitation options---------------------##
+100  if (PARM(4) = 0) then  goto 1000 else goto 110 
+110 if (PARM(4) = 1) Then GoTo 150 else goto 200 # 
+150 If (SR (name$) < 1) Then GoTo 5000 else GoTO 1000 # warning no dissolution reaction
+200 If (SR (name$) > 1) Then GoTo 5000 else GoTO 1000 # warning no precipitation reaction#
+##------------------Kinetic calculation---------------------##
+		#Parameters
+1000 Aa = 0.05	# mol.m-2.s-1 
+1001 An = 1.08e-2	# mol.m-2.s-1
+1002 Ab = 1.2e-10	# mol.m-2.s-1
+1003 Ea = 51700   # J/mol
+1004 En = 60000   # J/mol
+1005 Eb = 62195   # J/mol 
+1006 R = 8.314 #J.deg-1.mol-1
+1007 ACTI = act("H+") #
+1008 Sig = 3
+1009 nA = 0.45
+1010 nb = -0.75
+		#Rate Equation
+3000 rplusa = Aa * ACTI^nA * exp (-Ea/ (R * Tk)) * S
+3001 rplusn = An * exp (-En/ (R * Tk)) * S
+3002 rplusb = Ab* (exp(-Eb/ (R * Tk)))* ACTI^(nC) * S
+3003 rplus = rplusa + rplusn + rplusb
+4000 rate = rplus * (1 - SR("K-Feldspar")^(1/Sig))
+5000 moles = rate * time
+6000 save moles
+-end
+
+Enstatite#MgSiO3;M 100.387 g/mol
+-start
+1 name$ = "Enstatite"
+2 if (PARM(1) = 0) then  goto 3 else goto 5
+3 if PARM(3) = 0 then S = PARM(2) * m * GFW(PHASE_FORMULA(name$)) else S = m0 * ((m/m0)^(2/3)) * GFW(PHASE_FORMULA(name$)) * PARM(2)
+4 GOTO 100
+5 S = PARM(2)*TOT("water")
+##-----------------Dissolution and precipitation options---------------------##
+100  if (PARM(4) = 0) then  goto 1000 else goto 110 
+110 if (PARM(4) = 1) Then GoTo 150 else goto 200 # 
+150 If (SR (name$) < 1) Then GoTo 5000 else GoTO 1000 # warning no dissolution reaction
+200 If (SR (name$) > 1) Then GoTo 5000 else GoTO 1000 # warning no precipitation reaction#
+##------------------Kinetic calculation---------------------##
+		# parameters
+1000 Aa = 0.574 #mol.m-2.s-1
+1001 An = 6252 #mol.m-2.s-1
+1003 Ea = 46080 #J.mol-1
+1004 En = 89538 #J.mol-1 
+1006 R =  8.314 #J.deg-1.mol-1
+1007 ACTI = act("H+")
+1008 na = 0.5
+1010 Sig = 1
+		#rate equations 
+2000 rplusa = Aa* (exp(-Ea/ (R * Tk)))*(ACTI^na )* S
+2002 rplusn = An* (exp(-En/ (R * Tk)))* S
+2009 rplus = rplusa + rplusn
+3000 rate = rplus * (1 - (SR ("Enstatite")^(1/Sig)))
+4000 moles = rate * time
+5000 save moles
+-end
+
+Diopside #CaMgSi2O6; M 216.55 g/mol
+-start
+1 name$ = "Diopside"
+2 if (PARM(1) = 0) then  goto 3 else goto 5
+3 if PARM(3) = 0 then S = PARM(2) * m * GFW(PHASE_FORMULA(name$)) else S = m0 * ((m/m0)^(2/3)) * GFW(PHASE_FORMULA(name$)) * PARM(2)
+4 GOTO 100
+5 S = PARM(2)*TOT("water")
+##-----------------Dissolution and precipitation options---------------------##
+100  if (PARM(4) = 0) then  goto 1000 else goto 110 
+110 if (PARM(4) = 1) Then GoTo 150 else goto 200 # 
+150 If (SR (name$) < 1) Then GoTo 5000 else GoTO 1000 # warning no dissolution reaction
+200 If (SR (name$) > 1) Then GoTo 5000 else GoTO 1000 # warning no precipitation reaction#
+##------------------Kinetic calculation---------------------##
+		# parameters
+1000 Aa = 8.55e-5 #mol.m-2.s-1
+1001 An = 4.30e-4 #mol.m-2.s-1
+1003 Ea = 32654 #J.mol-1
+1004 En = 43866 #J.mol-1
+1006 R =  8.314 #J.deg-1.mol-1
+1007 ACTI = act("H+")
+1008 na = 0.25
+1009 Sig = 2
+		#rate equations
+2000 rplusa = Aa* (exp(-Ea/ (R * Tk)))*(ACTI^na )* S
+2002 rplusn = An* (exp(-En/ (R * Tk)))* S
+2009 rplus = rplusa + rplusn
+3000 rate = rplus * (1 - (SR ("Diopside")^(1/Sig)))
+4000 moles = rate * time
+5000 save moles
+-end
+
+Forsterite   #Mg2SiO4, M 140.692 g/mol   
+-start
+1 name$ = "Forsterite"
+2 if (PARM(1) = 0) then  goto 3 else goto 5
+3 if PARM(3) = 0 then S = PARM(2) * m * GFW(PHASE_FORMULA(name$)) else S = m0 * ((m/m0)^(2/3)) * GFW(PHASE_FORMULA(name$)) * PARM(2)
+4 GOTO 100
+5 S = PARM(2)*TOT("water")
+##-----------------Dissolution and precipitation options---------------------##
+100  if (PARM(4) = 0) then  goto 1000 else goto 110 
+110 if (PARM(4) = 1) Then GoTo 150 else goto 200 # 
+150 If (SR (name$) < 1) Then GoTo 5000 else GoTO 1000 # warning no dissolution reaction
+200 If (SR (name$) > 1) Then GoTo 5000 else GoTO 1000 # warning no precipitation reaction#
+##------------------Kinetic calculation---------------------##
+		#Parameters
+1000 Aa =14.8e4# mol.m-2.s-1
+1001 Ab =220# mol.m-2.s-1
+1002 Ea =70400# J/mol
+1003 Eb =60900# J/mol
+1004 R = 8.314 #J.deg-1.mol-1
+1006 Sig = 1   
+1007 na = 0.44
+1008 nb = 0.22
+		#Rate Equation
+2000 rplusa = Aa* (exp(-Ea/ (R * Tk)))*(act("H+")^na)* S
+2002 rplusb = Ab* (exp(-Eb/ (R * Tk)))* (act("H+")^nb) * S
+2009 rplus = rplusa + rplusb
+4000 rate = rplus * (1 - SR("Forsterite")^(1/Sig))
+5000 moles = rate * time
+6000 save moles
+-end
+
+Fayalite   #Fe2SiO4;M 203.771 g/mol
+-start
+1 name$ = "Fayalite"
+2 if (PARM(1) = 0) then  goto 3 else goto 5
+3 if PARM(3) = 0 then S = PARM(2) * m * GFW(PHASE_FORMULA(name$)) else S = m0 * ((m/m0)^(2/3)) * GFW(PHASE_FORMULA(name$)) * PARM(2)
+4 GOTO 100
+5 S = PARM(2)*TOT("water")
+##-----------------Dissolution and precipitation options---------------------##
+100  if (PARM(4) = 0) then  goto 1000 else goto 110 
+110 if (PARM(4) = 1) Then GoTo 150 else goto 200 # 
+150 If (SR (name$) < 1) Then GoTo 5000 else GoTO 1000 # warning no dissolution reaction
+200 If (SR (name$) > 1) Then GoTo 5000 else GoTO 1000 # warning no precipitation reaction#
+##------------------Kinetic calculation---------------------##
+		#Parameters
+1000 Aa =1.20e6# mol.m-2.s-1
+1001 Ab =1.91e3# mol.m-2.s-1
+1002 Ea =70400# J/mol
+1003 Eb =60900# J/mol
+1004 R = 8.314 #J.deg-1.mol-1
+1006 Sig = 1  
+1007 na =0.44
+1008 nb =0.22	
+2000 rplusa = Aa* (exp(-Ea/ (R * Tk)))*(act("H+")^na)* S
+2001 rplusb = Ab* (exp(-Eb/ (R * Tk)))*(act("H+")^nb)* S
+2002 rplus = rplusa + rplusb
+4000 rate = rplus * (1 - SR("Fayalite")^(1/Sig))
+5000 moles = rate * time
+6000 save moles
+-end
+
+Calcite   #CaCO3; M 100.0869 g/mol
+-start
+1 name$ = "Calcite"
+2 if (PARM(1) = 0) then  goto 3 else goto 5
+3 if PARM(3) = 0 then S = PARM(2) * m * GFW(PHASE_FORMULA(name$)) else S = m0 * ((m/m0)^(2/3)) * GFW(PHASE_FORMULA(name$)) * PARM(2)
+4 GOTO 100
+5 S = PARM(2)*TOT("water")
+##-----------------Dissolution and precipitation options---------------------##
+100  if (PARM(4) = 0) then  goto 1000 else goto 110 
+110 if (PARM(4) = 1) Then GoTo 150 else goto 200 # 
+150 If (SR (name$) < 1) Then GoTo 5000 else GoTO 1000 # warning no dissolution reaction
+200 If (SR (name$) > 1) Then GoTo 5000 else GoTO 1000 # warning no precipitation reaction#
+##------------------Kinetic calculation---------------------##
+		#Parameters
+1000 Aa =5.625# mol.m-2.s-1
+1001 Ac = 62.5 # mol.m-2.s-1
+1002 Ea =16000# J/mol
+1003 Eac =48000# J/mol
+1004 R = 8.314 #J.deg-1.mol-1
+1006 Sig = 1  
+1007 na =1
+1008 kc =160	
+1009 act_c = act("HCO3-")+act("CO3-2")
+1010 carb_term = 1-(kc*act_c)/(1+kc*act_c)
+2000 rplusa = Aa* (exp(-Ea/ (R * Tk)))*(act("H+")^na)* S
+2001 rplusc = Ac* (exp(-Eac/ (R * Tk)))*carb_term
+2002 rplus = rplusa + rplusc
+4000 rate = rplus * (1 - SR("Calcite")^(1/Sig)) 
+5000 moles = rate * time
+6000 save moles
+-end
+
+Aragonite   #CaCO3; M 100.0869 g/mol
+-start
+1 name$ = "Aragonite"
+2 if (PARM(1) = 0) then  goto 3 else goto 5
+3 if PARM(3) = 0 then S = PARM(2) * m * GFW(PHASE_FORMULA(name$)) else S = m0 * ((m/m0)^(2/3)) * GFW(PHASE_FORMULA(name$)) * PARM(2)
+4 GOTO 100
+5 S = PARM(2)*TOT("water")
+##-----------------Dissolution and precipitation options---------------------##
+100  if (PARM(4) = 0) then  goto 1000 else goto 110 
+110 if (PARM(4) = 1) Then GoTo 150 else goto 200 # 
+150 If (SR (name$) < 1) Then GoTo 5000 else GoTO 1000 # warning no dissolution reaction
+200 If (SR (name$) > 1) Then GoTo 5000 else GoTO 1000 # warning no precipitation reaction#
+##------------------Kinetic calculation---------------------##
+		#Parameters
+1000 Aa =11.025# mol.m-2.s-1
+1001 Ac = 122.5 # mol.m-2.s-1
+1002 Ea =16000# J/mol
+1003 Eac =48000# J/mol
+1004 R = 8.314 #J.deg-1.mol-1
+1006 Sig = 1  
+1007 na =1
+1008 kc =160	
+1009 act_c = act("HCO3-")+act("CO3-2")
+1010 carb_term = 1-(kc*act_c)/(1+kc*act_c)
+2000 rplusa = Aa* (exp(-Ea/ (R * Tk)))*(act("H+")^na)* S
+2001 rplusc = Ac* (exp(-Eac/ (R * Tk)))*carb_term
+2002 rplus = rplusa + rplusc
+4000 rate = rplus * (1 - SR("Aragonite")^(1/Sig)) 
+5000 moles = rate * time
+6000 save moles
+-end
+
+Kaolinite	# Al2Si2O5(OH)4; M 258.16 g/mol
+-start
+1 name$ = "Kaolinite"
+2 if (PARM(1) = 0) then  goto 3 else goto 5
+3 if PARM(3) = 0 then S = PARM(2) * m * GFW(PHASE_FORMULA(name$)) else S = m0 * ((m/m0)^(2/3)) * GFW(PHASE_FORMULA(name$)) * PARM(2)
+4 GOTO 100
+5 S = PARM(2)*TOT("water")
+##-----------------Dissolution and precipitation options---------------------##
+100  if (PARM(4) = 0) then  goto 1000 else goto 110 
+110 if (PARM(4) = 1) Then GoTo 150 else goto 200 # 
+150 If (SR (name$) < 1) Then GoTo 5000 else GoTO 1000 # warning no dissolution reaction
+200 If (SR (name$) > 1) Then GoTo 5000 else GoTO 1000 # warning no precipitation reaction#
+##------------------Kinetic calculation---------------------##
+        #Parameters
+1000 Aa = 2.85	#mol.m-2.s-1
+1001 An = 4.15e-3	#mol.m-2.s-1 
+1002 Ab = 2.40e-11 #mol.m-2.s-1
+1003 Ea = 73000  #J.mol-1
+1004 En = 67000	#J.mol-1
+1005 Eb = 61000	#J.mol-1
+1006 R =  8.314 #J.deg-1.mol-1
+1008 na = 0.45
+1010 nb = -0.76
+1011 Sig = 2
+		#rate equations
+2000 rplusa = Aa* (exp(-Ea/ (R * Tk)))*(act("H+")^na )* S
+2001 rplusn = An* (exp(-En/ (R * Tk))) * S
+2002 rplusb = Ab* (exp(-Eb/ (R * Tk)))* (act("H+")^nb) * S 
+2009 rplus = rplusa + rplusn + rplusb
+3000 rate = rplus * (1 -SR("Kaolinite")^(1/Sig))
+4000 moles = rate * time
+5000 save moles
+-end
+
+Quartz#SiO2; M 60.08 g/mol
+-start
+1 name$ = "Quartz"
+2 if (PARM(1) = 0) then  goto 3 else goto 5
+3 if PARM(3) = 0 then S = PARM(2) * m * GFW(PHASE_FORMULA(name$)) else S = m0 * ((m/m0)^(2/3)) * GFW(PHASE_FORMULA(name$)) * PARM(2)
+4 GOTO 100
+5 S = PARM(2)*TOT("water")
+##----------------- Dissolution only or precipitation only option---------------------##
+100  if (PARM(4) = 0) then  goto 1000 else goto 110 
+110 if (PARM(4) = 1) Then GoTo 150 else goto 200 # 
+150 if (SR (name$) < 1) Then GoTo 5000 else goto 1000# warning no dissolution reaction
+200 if (SR (name$) > 1) Then GoTo 5000 else goto 1000 # warning no precipitation reaction
+##------------------Kinetic calculation---------------------##
+		#Parameters
+1000 Aa = 4.03e-4#mol/m2/s
+1001 Ab = 0.105#mol/m2/s 
+1002 na = 0.309
+1003 nb = -0.41 
+1004 Ea = 45600 
+1005 Eb = 80000  
+1006 R =  8.314 #J.deg-1.mol-1
+1007 ACTI = act("H+")
+1009 Sig = 1
+		#rate equations
+2002 rplusa = Aa* (exp(-Ea/ (R * Tk)))*(ACTI^na)* S
+2003 rplusb = Ab* (exp(-Eb/ (R * Tk)))*(ACTI^nb)* S
+2009 rplus = rplusa + rplusb
+3000 rate = rplus * (1 - (SR("Quartz")^(1/Sig)))
+4000 moles = rate * time
+5000 save moles
+-end
