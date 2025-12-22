@@ -25,5 +25,6 @@ output = kinetics(10 * EARTH_ATM, 280, comp, None, {'Calcite' : 0.0}, 1e6)
 
 print(output)
 
-k = calcite_precipitation_rate(10 * EARTH_ATM, 280, 0.0021, 0.002, 0.02)
+k, SI = calcite_precipitation_rate(20 * EARTH_ATM, 274, 0.001, 0.0002, 0.0002)
 print(k)
+print(SI)
