@@ -4,6 +4,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../src'))
 
 from kamino.ocean_chemistry.aqueous_geochemistry import *
 from kamino.ocean_chemistry.precipitation import *
+from kamino.ocean_chemistry.co2 import *
 
 debug_mode = True
 
@@ -28,3 +29,6 @@ print(output)
 k, SI = calcite_precipitation_rate(20 * EARTH_ATM, 274, 0.001, 0.0002, 0.0002)
 print(k)
 print(SI)
+
+p_CO2 = P_CO2(1e5, 280, 0.002, 0.002, 0)
+print(f'{(p_CO2 / 1e5) * 1e6} ppm')

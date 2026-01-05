@@ -250,7 +250,7 @@ def knobs_block() -> list[str]:
     
     return lines
 
-def run_PHREEQC(lines: list[str]) -> pd.DataFrame:
+def run_PHREEQC(lines: list[str], single_output: bool=False) -> pd.DataFrame:
     """
     Runs PHREEQC with given input blocks.
 
@@ -258,6 +258,8 @@ def run_PHREEQC(lines: list[str]) -> pd.DataFrame:
     ----------
     lines : list[str]
         List of text lines conatining the input blocks.
+    single_output : bool
+        If the calculation is only going to solve the solution and not run any further calculations, default False. 
 
     Returns
     -------
@@ -307,7 +309,7 @@ def run_PHREEQC(lines: list[str]) -> pd.DataFrame:
         except pd.errors.EmptyDataError:
              raise PHREEQCError("PHREEQC output file was empty.")
 
-        if len(output) <= 1:
+        if len(output) <= 1 and not single_output:
             raise PHREEQCError("PHREEQC failed calulation.")
 
     return output
@@ -347,7 +349,7 @@ def get_output_composition(output_df: pd.DataFrame) -> dict[str, float]:
         new_comp[element] = float(output_df.at[1, element]) # type: ignore
     return new_comp
 
-def get_output_saturation_indexes(output_df: pd.DataFrame) -> dict[str, float]:
+def get_output_saturation_indexes(output_df: pd.DataFrame, get_initial: bool=False) -> dict[str, float]:
     """
     Returns phase saturation indices in selected output file.
 
@@ -355,6 +357,8 @@ def get_output_saturation_indexes(output_df: pd.DataFrame) -> dict[str, float]:
     ----------
     output_df : pd.DataFrame
         DataFrame from selected output file.
+    get_initial : bool
+        Whether to the the initial value from the dataframe, default False
 
     Returns
     -------
@@ -364,7 +368,8 @@ def get_output_saturation_indexes(output_df: pd.DataFrame) -> dict[str, float]:
     saturation_indexes: dict[str, float] = {}
     phases = [key for key in output_df.columns if key.startswith('si_')]
     for phase in phases:
-        saturation_indexes[phase[3:]] = float(output_df.at[1, phase]) # type: ignore
+        i = 0 if get_initial else 1
+        saturation_indexes[phase[3:]] = float(output_df.at[i, phase]) # type: ignore
     return saturation_indexes
 
 def get_output_equilbrium_phases(output_df: pd.DataFrame) -> dict[str, float]:
@@ -410,7 +415,7 @@ def get_output_kinetics_phases(output_df: pd.DataFrame) -> dict[str, float]:
 
 def equilbriate_phases(P: float, T: float, composition: dict[str, float], pH: Union[float, None], phase_amounts: dict[str, float]) -> pd.DataFrame:
     """
-    Dissolves moles of mineralor gas phases in a solution.
+    Dissolves moles of mineral or gas phases in a solution.
 
     Parameters
     ----------
