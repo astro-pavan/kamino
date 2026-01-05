@@ -53,6 +53,39 @@ def ensure_opacity_data(data_path: Path):
 
 
 def run_HELIOS(name: str, instellation: float, spectral_type: str, R_planet: float, M_planet: float, P_surface: float, x_CO2: float, x_H2O: float, albedo: float, recirculation_factor: float, verbose: bool=False) -> dict[str, object]:
+    """_summary_
+
+    Parameters
+    ----------
+    name : str
+        Name of HELIOS run.
+    instellation : float
+        Instellation flux in W/m^2.
+    spectral_type : str
+        Spectral type of host star (can be any from SPECTRAL_TYPE_DATA dict).
+    R_planet : float
+        Planet radius in m.
+    M_planet : float
+        Planet mass in kg.
+    P_surface : float
+        Surface pressure in Pa.
+    x_CO2 : float
+        CO2 volume mixing ratio.
+    x_H2O : float
+        H2O volume mixing ration.
+    albedo : float
+        Albedo.
+    recirculation_factor : float
+        Recirculation factor (0.25 if rapidly rotating, 0.666 if tidally locked).
+    verbose : bool, optional
+        Whether to print HELIOS output to terminal, by default False
+
+    Returns
+    -------
+    dict[str, object]
+        Dictionary of climate run inputs and output surface temperature.  
+    """
+
 
     helios_path, data_path = get_climate_resources()
     ensure_opacity_data(data_path)
