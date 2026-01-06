@@ -1,6 +1,6 @@
 from kamino.ocean_chemistry.aqueous_geochemistry import *
 
-def P_CO2(P: float, T: float, alkalinity: float, DIC: float, Ca: float=0, Mg: float=0, Fe: float=0) -> float:
+def get_P_CO2(P: float, T: float, alkalinity: float, DIC: float, Ca: float=0, Mg: float=0, Fe: float=0) -> float:
     """_summary_
 
     Parameters

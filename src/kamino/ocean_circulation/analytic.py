@@ -1,4 +1,4 @@
-def get_T(T_surface: float, depth: float, a: float=0.033, b: float=0) -> float:
+def get_T_ocean(T_surface: float, depth: float, a: float=0.0033, b: float=0) -> float:
     """
     Calculates temperature as a function of ocean depth from a linear function.
 

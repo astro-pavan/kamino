@@ -1,6 +1,6 @@
 from kamino.ocean_chemistry.aqueous_geochemistry import *
 
-def calcite_precipitation_rate(P: float, T: float, alkalinity: float, DIC: float, Ca: float, Mg: float=0, Fe: float=0) -> tuple[float, float]:
+def get_calcite_precipitation_rate(P: float, T: float, alkalinity: float, DIC: float, Ca: float, Mg: float=0, Fe: float=0) -> tuple[float, float]:
     """
     Calculates calcite preciptation rate and calcite stauration index.
 

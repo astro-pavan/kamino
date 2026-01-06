@@ -4,7 +4,7 @@ import kamino.seafloor_weathering.chili.equilibrium as eq
 import kamino.seafloor_weathering.chili.kinetics as ki
 import kamino.seafloor_weathering.chili.parameters as pr
 
-from kamino.constants import YR
+from kamino.constants import YR, POROSITY
 
 KeqFuncs   = eq.import_thermo_data(eq.DATABASE_DIR / 'species.csv')
 DICeqFuncs = eq.get_DICeq(pr.xCO2, pr.T, pr.Pfull, KeqFuncs)
@@ -14,7 +14,7 @@ kFuncs     = ki.get_keff(pr.T, pr.pHfull, logkDict)
 
 basalt_composition = ['woll','enst','ferr','anoh','albh']
 
-def weathering_rate(P: float, T: float, x_CO2: float, runoff: float, flow_path_length: float, rock_age: float) -> float:
+def get_weathering_rate(P: float, T: float, x_CO2: float, runoff: float, flow_path_length: float, rock_age: float) -> float:
     """
     Calculates the basalt seafloor weathering rate, giving an alkalinity production rate.
 
@@ -27,16 +27,16 @@ def weathering_rate(P: float, T: float, x_CO2: float, runoff: float, flow_path_l
     x_CO2 : float
         Atmospheric CO2 fraction.
     runoff : float
-        Fluid flow rate in seafloor pore space in m/s.
+        Fluid flow rate in seafloor pore space in m/yr.
     flow_path_length : float
         Length of flow path through seafloor pore space.
     rock_age : float
-        Age of rocks in the pore space in s.
+        Age of rocks in the pore space in yr.
 
     Returns
     -------
     float
-        Alkalinity production rate in mol / m^2 / s
+        Alkalinity production rate in mol / m^2 / yr
     """
 
     P = P / 1e5 # convert to bar
@@ -49,13 +49,11 @@ def weathering_rate(P: float, T: float, x_CO2: float, runoff: float, flow_path_l
     for mineral in basalt_composition:
         k_eff = np.minimum(kFuncs[mineral](T, pH), k_eff)
 
-    k_eff = k_eff / YR # convert to per s rather than per year
-
     mean_molar_mass = 0.216 # kg / mol
     specific_surface_area = 100 # m^2 / kg
     rock_density = 2700 # kg / m^3
     fresh_mineral_fraction = 1
-    porosity = 0.1
+    porosity = POROSITY
     
     psi = flow_path_length * (1 - porosity) * rock_density * specific_surface_area * fresh_mineral_fraction
     
