@@ -6,6 +6,7 @@ tests/input
 tests/input.out
 tests/output.txt
 tests/phreeqc.log
+tests/*.csv
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
