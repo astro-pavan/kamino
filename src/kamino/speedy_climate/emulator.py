@@ -42,13 +42,43 @@ def get_data_paths():
     return runs_dir, emulators_dir
 
 def august_roche_magnus_formula(T: float) -> float:
+    """
+    Implementation of August-Roche-Magnus formula to calculate H2O partial pressure.
+
+    Parameters
+    ----------
+    T : float
+        Temperature in K.
+
+    Returns
+    -------
+    float
+        H2O partial pressure in Pa
+    """
 
     T_celsius = T + ABSOLUTE_ZERO
     return 610.94 * np.exp((17.625 * T_celsius)/(T_celsius + 243.04))
 
 class climate_emulator:
 
-    def __init__(self, emulator_name, climate_data_file=None, make_accuracy_plot=False):
+    def __init__(self, emulator_name: str, climate_data_file: str="", make_accuracy_plot: bool=False):
+        """
+        Climate emulator class. 
+
+        Parameters
+        ----------
+        emulator_name : str
+            Name of emulator. If the emulator doesn't exist, it will train one from the climate data file provided.
+        climate_data_file : str, optional
+            Name of climate data file for the model to be trained on, by default "".
+        make_accuracy_plot : bool, optional
+            Whether to make an accuracy plot, by default False.
+
+        Raises
+        ------
+        FileNotFoundError
+            Training data or emulator data file not found.
+        """
 
         # Get the standard directories
         runs_dir, emulators_dir = get_data_paths()
@@ -58,7 +88,7 @@ class climate_emulator:
         x_scaler_path = emulators_dir / f'{emulator_name}_inputs_scaler.pkl'
         y_scaler_path = emulators_dir / f'{emulator_name}_output_scaler.pkl'
         
-        if climate_data_file is not None and not (gp_path.exists() and x_scaler_path.exists() and y_scaler_path.exists()): # type: ignore
+        if climate_data_file != "" and not (gp_path.exists() and x_scaler_path.exists() and y_scaler_path.exists()): # type: ignore
 
             print(f"Training new emulator from: {climate_data_file}")
             
@@ -160,6 +190,27 @@ class climate_emulator:
             print("Emulator loaded.")
 
     def get_temperature_from_emulator(self, instellation: float, P_surface: float, x_CO2: float, x_H2O: float, albedo: float) -> tuple[float, float]:
+        """
+        Calculates the surface temperature from the emulator with the direct input parameters. 
+
+        Parameters
+        ----------
+        instellation : float
+            Instellation flux in W/m^2.
+        P_surface : float
+            Surface pressure in Pa.
+        x_CO2 : float
+            CO2 volume mixing ratio.
+        x_H2O : float
+            H2O volume mixing ratio.
+        albedo : float
+            Albedo.
+
+        Returns
+        -------
+        tuple[float, float]
+            Surface temperature in K, Uncertainty
+        """
 
         log_p = float(np.log10(P_surface))
         log_x_co2 = float(np.log10(x_CO2))
@@ -177,6 +228,27 @@ class climate_emulator:
         return float(temp_kelvin[0][0]), float(uncertainty_kelvin)
     
     def get_temperature(self, instellation: float, P_background: float, P_CO2: float, P_H2O: float, albedo: float):
+        """
+        Calculates the surface temperature from the emulator with partial pressures as input parameters.
+
+        Parameters
+        ----------
+        instellation : float
+            Instellation flux in W/m^2.
+        P_background : float
+            Partial pressure of background gas with no opacity (typically N2) in Pa.
+        P_CO2 : float
+            Partial pressure of CO2 in Pa.
+        P_H2O : float
+            Partial pressure of H2O in Pa.
+        albedo : float
+            Albedo.
+
+        Returns
+        -------
+        _type_
+            Surface temperature in K.
+        """
 
         P_surface = P_background + P_CO2 + P_H2O
         x_CO2 = P_CO2 / P_surface
@@ -185,6 +257,23 @@ class climate_emulator:
         return self.get_temperature_from_emulator(instellation, P_surface, x_CO2, x_H2O, albedo)[0]
     
     def make_temperature_pco2_interpolator(self, instellation: float, P_background: float, albedo: float):
+        """
+        Makes an interpolator for the surface temperature as function of P_CO2 only, calculating P_H2O with August-Roche-Magnus formula and all other parameters kept constant.
+
+        Parameters
+        ----------
+        instellation : float
+            Instellation flux in W/m^2.
+        P_background : float
+            Partial pressure of background gas with no opacity (typically N2) in Pa.
+        albedo : float
+            Albedo.
+
+        Raises
+        ------
+        ValueError
+            One of the data points for the intepolator didn't converge.
+        """
 
         log_P_CO2_range = np.linspace(-6, 0)
         T_results = np.zeros_like(log_P_CO2_range)
@@ -211,4 +300,17 @@ class climate_emulator:
         self.T_pco2_interpolator = CubicSpline(log_P_CO2_range, T_results)
     
     def get_temperature_from_pco2(self, P_CO2: float) -> float:
+        """
+        Calculates the surface temperature from the interpolator as a function of P_CO2 only. 
+
+        Parameters
+        ----------
+        P_CO2 : float
+            Partial pressure of CO2 in Pa.
+
+        Returns
+        -------
+        float
+            Surface temperature in K.
+        """
         return self.T_pco2_interpolator(np.log10(P_CO2)) # type: ignore
