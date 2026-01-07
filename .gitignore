@@ -1,5 +1,6 @@
 src/kamino/ocean_chemistry/phreeqc_bin
 src/kamino/speedy_climate/data/emulators
+src/kamino/speedy_climate/data/opacity/*.h5
 *.pkl
 *.jpeg.xml
 tests/input
