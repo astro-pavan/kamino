@@ -7,11 +7,11 @@ from kamino.constants import *
 
 cem = climate_emulator("earth_rapid_rotator", "helios_1000_runs_earth_rapid_rotator.csv")
 
-print(cem.get_temperature_from_emulator(1300, 1e5, 0.003, 0.01, 0.3))
+print(cem.get_temperature_from_emulator(1300, 1e5, 0.0001, 0.1, 0.3))
 
 cem.make_temperature_pco2_interpolator(SOLAR_CONSTANT, 1e5, 0.3)
 
-T = cem.get_temperature_from_pco2(0.003 * 1e5)
+T = cem.get_temperature_from_pco2(700000)
 P_H2O = august_roche_magnus_formula(T)
 
 print(f'T from interpolator : {T:.4f}')
