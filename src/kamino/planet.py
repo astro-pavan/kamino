@@ -3,6 +3,9 @@ np.set_printoptions(precision=3)
 from scipy.optimize import brentq, root, least_squares
 from scipy.integrate import solve_ivp
 import pandas as pd
+from functools import lru_cache
+
+import time
 
 from kamino.constants import *
 from kamino.speedy_climate.emulator import climate_emulator
@@ -56,7 +59,7 @@ class planet:
     def solve_climate(self, Alk, C, Ca):
 
         def T_s_residual(T_val):
-            pco2 = np.maximum(get_P_CO2(self.P_surface, T_val, Alk, C, Ca), 1e-6)
+            pco2 = get_P_CO2(self.P_surface, T_val, Alk, C, Ca)
             T_calc = self.climate_emulator.get_temperature_from_pco2(pco2)
             return T_val - T_calc
         
@@ -67,6 +70,8 @@ class planet:
 
     def dY_dt(self, t, Y):
 
+        calc_time = time.time()
+
         Y = np.maximum(Y, 1e-9)
         Co, Cp, Ao, Ap, Cao, Cap = Y
 
@@ -75,18 +80,32 @@ class planet:
         Mo = self.ocean_mass
         Mp = self.pore_space_mass
 
+        climate_calc_time = time.time()
         T_s, pco2 = self.solve_climate(Ao, Co, Cao)
+        climate_calc_time = time.time() - climate_calc_time
 
         T_pore = get_T_ocean(T_s, self.ocean_depth) + 9
 
-        x_CO2 = np.maximum(pco2 / self.P_surface, 1e-8)
+        x_CO2 = pco2 / self.P_surface
         P_pore = self.P_surface + 1000 * self.gravity * self.ocean_depth
 
+        weathering_calc_time = time.time()
         F_diss = get_weathering_rate(P_pore, T_pore, x_CO2, 0.05, PORE_DEPTH, 50e6) * 4 * np.pi * self.radius ** 2 # mol / s
+        weathering_calc_time = time.time() - weathering_calc_time
+
+        precipitation_calc_time = time.time()
         F_prec_o = get_calcite_precipitation_rate(P_pore, T_pore, Ao, Co, Cao)[0] * Mo * YR
         F_prec_p = get_calcite_precipitation_rate(P_pore, T_pore, Ap, Cp, Cap)[0] * Mp * YR
+        precipitation_calc_time = time.time() - precipitation_calc_time
 
-        print(f'F_prec_o = {F_prec_o / Mo:.3e} mol/kgw/yr  F_prec_p = {F_prec_p / Mp:.3e} mol/kgw/yr')
+        tau = 1e-3
+        F_prec_o_max = Co / tau
+        F_prec_p_max = Cp / tau
+
+        F_prec_o = np.minimum(F_prec_o, F_prec_o_max)
+        F_prec_p = np.minimum(F_prec_p, F_prec_p_max)
+
+        # print(f'F_prec_o = {F_prec_o / Mo:.3e} mol/kgw/yr  F_prec_p = {F_prec_p / Mp:.3e} mol/kgw/yr')
 
         delta_C = Co - Cp
         delta_A = Ao - Ap
@@ -98,8 +117,11 @@ class planet:
         dAp_dt = (+ J * delta_A - 2 * F_prec_p + 2 * F_diss) / Mp
         dCao_dt = (- J * delta_Ca - F_prec_o) / Mo
         dCap_dt = (+ J * delta_Ca - F_prec_p + 0.5 * F_diss) / Mp
+        # print(f't = {t:.3e} yr  Y = {Y} mol/kgw  T_s = {T_s:.0f} K  P_CO2 = {pco2:.3e} Pa (x_CO2 = {x_CO2:.4%})')
 
-        print(f't = {t:.3e} yr  Y = {Y} mol / kgw  T_s = {T_s:.0f} K  P_CO2 = {pco2:.3e} Pa (x_CO2 = {x_CO2:.2e})')
+        calc_time = time.time() - calc_time
+
+        print(f'Calculation time: {calc_time:.1e} s (Climate: {climate_calc_time:.1e} s  Weathering: {weathering_calc_time:.1e} s  Precipitation: {precipitation_calc_time:.1e} s)')
 
         return [float(dCo_dt), float(dCp_dt), float(dAo_dt), float(dAp_dt), float(dCao_dt), float(dCap_dt)]
     
@@ -111,13 +133,14 @@ class planet:
             self.dY_dt,
             (0, t_end),
             Y0,
-            method='Radau',
+            method='LSODA',
             atol=1e-7,
             rtol=1e-4,
             max_step=10.0
         )
 
-        results = pd.DataFrame(sol.y.T, columns=['C_ocean', 'C_pore', 'Alk_ocean', 'Alk_pore', 'Ca_ocean', 'Ca_pore'])
+        res = np.maximum(sol.y.T, 1e-9)
+        results = pd.DataFrame(res, columns=['C_ocean', 'C_pore', 'Alk_ocean', 'Alk_pore', 'Ca_ocean', 'Ca_pore'])
         results['time'] = sol.t
 
         T_s = []
@@ -135,7 +158,7 @@ class planet:
     
     def find_steady_state(self):
 
-        initial_results = self.run_simulation(1000 * YR)
+        initial_results = self.run_simulation(1000)
         initial_Y_guess = initial_results.iloc[-1][['C_ocean', 'C_pore', 'Alk_ocean', 'Alk_pore', 'Ca_ocean', 'Ca_pore']].values
 
         target_function = lambda Y: self.dY_dt(0, Y)
