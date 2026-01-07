@@ -11,7 +11,7 @@ from kamino.constants import *
 from kamino.speedy_climate.emulator import climate_emulator
 from kamino.ocean_chemistry.co2 import get_P_CO2
 from kamino.ocean_circulation.analytic import get_T_ocean
-from kamino.seafloor_weathering.weathering import get_weathering_rate
+from kamino.seafloor_weathering.weathering import get_weathering_rate, get_weathering_rate_old
 from kamino.ocean_chemistry.precipitation import get_calcite_precipitation_rate
 
 class planet:
@@ -56,6 +56,8 @@ class planet:
         self.climate_emulator = climate_emulator("earth_rapid_rotator", "helios_1000_runs_earth_rapid_rotator.csv")
         self.climate_emulator.make_temperature_pco2_interpolator(self.instellation, self.P_surface, self.albedo)
 
+        self.use_KT18_weathering = False
+
     def solve_climate(self, Alk, C, Ca):
 
         def T_s_residual(T_val):
@@ -89,8 +91,11 @@ class planet:
         x_CO2 = pco2 / self.P_surface
         P_pore = self.P_surface + 1000 * self.gravity * self.ocean_depth
 
-        weathering_calc_time = time.time()
-        F_diss = get_weathering_rate(P_pore, T_pore, x_CO2, 0.05, PORE_DEPTH, 50e6) * 4 * np.pi * self.radius ** 2 # mol / s
+        weathering_calc_time = time.time() 
+        if self.use_KT18_weathering:
+            F_diss = get_weathering_rate_old(P_pore, T_pore, x_CO2) * (self.radius / R_EARTH) ** 2 # mol / s
+        else:
+            F_diss = get_weathering_rate(P_pore, T_pore, x_CO2, 0.05, PORE_DEPTH, 50e6) * 4 * np.pi * self.radius ** 2 # mol / s
         weathering_calc_time = time.time() - weathering_calc_time
 
         precipitation_calc_time = time.time()

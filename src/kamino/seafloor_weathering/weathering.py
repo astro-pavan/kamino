@@ -3,6 +3,7 @@ import numpy as np
 import kamino.seafloor_weathering.chili.equilibrium as eq
 import kamino.seafloor_weathering.chili.kinetics as ki
 import kamino.seafloor_weathering.chili.parameters as pr
+import kamino.seafloor_weathering.chili.climate as cl
 
 from kamino.constants import YR, POROSITY
 
@@ -40,6 +41,7 @@ def get_weathering_rate(P: float, T: float, x_CO2: float, runoff: float, flow_pa
     """
 
     P = P / 1e5 # convert to bar
+    x_CO2 = np.maximum(x_CO2, 1e-8) # makes sure x_CO2 is not bleow the minimum value for the interpolator
 
     arg = np.array((x_CO2, T, P))
     pH = DICeqFuncs['bash']['pH'](arg)
@@ -64,3 +66,26 @@ def get_weathering_rate(P: float, T: float, x_CO2: float, runoff: float, flow_pa
     w = runoff * C
 
     return w
+
+def get_weathering_rate_old(P: float, T: float, x_CO2: float) -> float:
+    """
+    Calculates the basalt seafloor weathering rate, giving an alkalinity production rate with the older KT18 method.
+
+    Parameters
+    ----------
+    P : float
+        Pressure in Pa.
+    T : float
+        Temperature in K.
+    x_CO2 : float
+        Atmospheric CO2 fraction.
+
+    Returns
+    -------
+    float
+        Alkalinity production rate in mol / yr (NOT mol / m^2 / yr).
+    """
+
+    P_CO2 = (P / 1e5) * x_CO2 # P_CO2 in bar
+
+    return cl.seaf_brad1997(T, P_CO2) * 1e12
