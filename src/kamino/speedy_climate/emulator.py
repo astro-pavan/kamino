@@ -313,4 +313,5 @@ class climate_emulator:
         float
             Surface temperature in K.
         """
+        P_CO2 = np.maximum(P_CO2, 1e-6) # makes sure P_CO2 doesn't go below the minimum value of the interpolator
         return self.T_pco2_interpolator(np.log10(P_CO2)) # type: ignore

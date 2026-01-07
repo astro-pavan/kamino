@@ -23,7 +23,7 @@ def get_climate_resources():
     except (ImportError, AttributeError):
         pkg_path = Path(__file__).parent
 
-    helios_path = pkg_path / "helios"
+    helios_path = pkg_path / "HELIOS"
     data_path = pkg_path / "data"
     
     return helios_path, data_path
@@ -34,11 +34,14 @@ def ensure_opacity_data(data_path: Path):
     Checks if opacity data is unpacked. If not, unpacks opacity_data.tar.xz.
     """
     opacity_dir = data_path / "opacity"
-    tarball = data_path / "opacity_data.tar.xz"
+    tarball = opacity_dir / "opacity_data.tar.xz"
 
     # Check if directory exists and is not empty
-    if opacity_dir.exists() and any(opacity_dir.iterdir()):
-        return
+    if opacity_dir.exists():
+        files = list(opacity_dir.iterdir())
+        # Check if there are files other than .tar.xz archives
+        if any(f.suffix != ".xz" or not f.name.endswith(".tar.xz") for f in files):
+            return
 
     print(f"First-time setup: Unpacking {tarball.name}...")
     
@@ -47,7 +50,7 @@ def ensure_opacity_data(data_path: Path):
 
     # Unpack
     with tarfile.open(tarball, "r:xz") as tar:
-        tar.extractall(path=data_path)
+        tar.extractall(path=opacity_dir)
         
     print("Unpacking complete.")
 
@@ -118,7 +121,7 @@ def run_HELIOS(name: str, instellation: float, spectral_type: str, R_planet: flo
 
         parameters = [
             '-name', name,
-            '-boa_pressure', f'{P_surface / 10}',
+            '-boa_pressure', f'{P_surface * 10}',
             '-f_factor', f'{recirculation_factor}',
             '-surface_albedo', f'{albedo}',
             '-surface_gravity', f'{g_surface * 100}',
@@ -130,7 +133,7 @@ def run_HELIOS(name: str, instellation: float, spectral_type: str, R_planet: flo
             '-directory_with_opacity_files', (data_path / "opacity").as_posix() + "/",
             '-opacity_mixing', 'on-the-fly',
             '-stellar_spectral_model', 'blackbody',
-            '-realtime_plotting', 'no',
+            '-realtime_plotting', 'yes',
             '-planet', 'manual',
             '-planet_type', 'rocky',
             '-number_of_layers', '25',
@@ -138,9 +141,9 @@ def run_HELIOS(name: str, instellation: float, spectral_type: str, R_planet: flo
         ]
 
         env = os.environ.copy()
-        #env["PATH"] = '/data/pt426/cuda/cuda12/bin' + ":" + env["PATH"]
-        #env["LD_LIBRARY_PATH"] = '/data/pt426/cuda/cuda12/lib64' + ":" + env.get("LD_LIBRARY_PATH", "")
-        #env["DYLD_LIBRARY_PATH"] = '/data/pt426/cuda/cuda12/lib' + ":" + env.get("LD_LIBRARY_PATH", "")
+        # env["PATH"] = '/data/pt426/cuda/cuda12/bin' + ":" + env["PATH"]
+        # env["LD_LIBRARY_PATH"] = '/data/pt426/cuda/cuda12/lib64' + ":" + env.get("LD_LIBRARY_PATH", "")
+        # env["DYLD_LIBRARY_PATH"] = '/data/pt426/cuda/cuda12/lib' + ":" + env.get("LD_LIBRARY_PATH", "")
 
         subprocess.run(
                 command + parameters, 
@@ -152,11 +155,13 @@ def run_HELIOS(name: str, instellation: float, spectral_type: str, R_planet: flo
         ) # type: ignore
 
         try:
-            atm_df = pd.read_table(f'{HELIOS_PATH}/output/{name}/{name}_tp.dat', sep='\s+', skiprows=1)
+            atm_df = pd.read_table(f'{helios_path}/output/{name}/{name}_tp.dat', sep='\s+', skiprows=1)
 
             # P = np.array(atm_df['press.[10^-6bar]']) * 10
             T = np.array(atm_df['temp.[K]'])
-            # z = np.array(atm_df['altitude[cm]']) / 100
+            print(T)
+            z = np.array(atm_df['altitude[cm]']) / 100
+            print(z)
 
             T_surface = float(T[0])
 
@@ -197,12 +202,13 @@ def run_HELIOS(name: str, instellation: float, spectral_type: str, R_planet: flo
 
         # This block runs whether the code succeeds OR fails
         # removing the species file
-        if 'species_file' in locals() and species_file.exists():
-            os.remove(species_file)
+        # if 'species_file' in locals() and species_file.exists():
+        #     os.remove(species_file)
             
         # removing the output directory
         output_dir = helios_path / "output" / name
-        if output_dir.exists():
-            shutil.rmtree(output_dir, ignore_errors=True)
+        # if output_dir.exists():
+        #     shutil.rmtree(output_dir, ignore_errors=True)
+        print(output_dir)
 
     return result_dict
