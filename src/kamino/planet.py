@@ -103,7 +103,7 @@ class planet:
         F_prec_p = get_calcite_precipitation_rate(P_pore, T_pore, Ap, Cp, Cap)[0] * Mp * YR
         precipitation_calc_time = time.time() - precipitation_calc_time
 
-        tau = 1e-3
+        tau = 1e-3 # in yrs
         F_prec_o_max = Co / tau
         F_prec_p_max = Cp / tau
 
