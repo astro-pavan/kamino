@@ -55,7 +55,7 @@ def ensure_opacity_data(data_path: Path):
     print("Unpacking complete.")
 
 
-def run_HELIOS(name: str, instellation: float, spectral_type: str, R_planet: float, M_planet: float, P_surface: float, x_CO2: float, x_H2O: float, albedo: float, recirculation_factor: float, verbose: bool=False) -> dict[str, object]:
+def run_HELIOS(name: str, instellation: float, spectral_type: str, R_planet: float, M_planet: float, P_surface: float, x_CO2: float, x_H2O: float, albedo: float, recirculation_factor: float, clouds: bool=False, verbose: bool=False) -> dict[str, object]:
     """_summary_
 
     Parameters
@@ -80,8 +80,10 @@ def run_HELIOS(name: str, instellation: float, spectral_type: str, R_planet: flo
         Albedo.
     recirculation_factor : float
         Recirculation factor (0.25 if rapidly rotating, 0.666 if tidally locked).
+    clouds : bool
+        Whether to include water clouds, by default False.
     verbose : bool, optional
-        Whether to print HELIOS output to terminal, by default False
+        Whether to print HELIOS output to terminal, by default False.
 
     Returns
     -------
@@ -119,6 +121,8 @@ def run_HELIOS(name: str, instellation: float, spectral_type: str, R_planet: flo
 
         command = [sys.executable, 'helios.py']
 
+        # print((data_path / "opacity").as_posix() + "/water.mie")
+
         parameters = [
             '-name', name,
             '-boa_pressure', f'{P_surface * 10}',
@@ -137,13 +141,23 @@ def run_HELIOS(name: str, instellation: float, spectral_type: str, R_planet: flo
             '-planet', 'manual',
             '-planet_type', 'rocky',
             '-number_of_layers', '25',
-            '-k_coefficients_mixing_method', 'correlated-k'
+            '-k_coefficients_mixing_method', 'correlated-k',
+            '-number_of_cloud_decks', '1' if clouds else '0',
+            '-path_to_mie_files', (data_path / "opacity").as_posix() + "/water.mie",
+            '-aerosol_radius_mode', '11.0',
+            # '-aerosol_radius_geometric_std_dev ', '2.0',
+            '-cloud_mixing_ratio', 'file',
+            '-path_to_file_with_cloud_data', (data_path / "opacity").as_posix() + "/earth_clouds.dat",
+            '-aerosol_name', 'water',
+            '-radiative_equilibrium_criterion', '1e-4',
+            # '-adaptive_interval', '1',
+            #'-tp_profile_smoothing', 'yes',
+            #'-cloud_bottom_pressure', '8.5e5',
+            #'-cloud_bottom_mixing_ratio', '2.1e-5',
+            #'-cloud_to_gas_scale_height_ratio', '0.2'
         ]
 
         env = os.environ.copy()
-        # env["PATH"] = '/data/pt426/cuda/cuda12/bin' + ":" + env["PATH"]
-        # env["LD_LIBRARY_PATH"] = '/data/pt426/cuda/cuda12/lib64' + ":" + env.get("LD_LIBRARY_PATH", "")
-        # env["DYLD_LIBRARY_PATH"] = '/data/pt426/cuda/cuda12/lib' + ":" + env.get("LD_LIBRARY_PATH", "")
 
         subprocess.run(
                 command + parameters, 
