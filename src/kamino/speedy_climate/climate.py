@@ -40,7 +40,7 @@ def ensure_opacity_data(data_path: Path):
     if opacity_dir.exists():
         files = list(opacity_dir.iterdir())
         # Check if there are files other than .tar.xz archives
-        if any(f.suffix != ".xz" or not f.name.endswith(".tar.xz") for f in files):
+        if any(f.suffix == ".h5" for f in files):
             return
 
     print(f"First-time setup: Unpacking {tarball.name}...")
@@ -55,8 +55,27 @@ def ensure_opacity_data(data_path: Path):
     print("Unpacking complete.")
 
 
-def run_HELIOS(name: str, instellation: float, spectral_type: str, R_planet: float, M_planet: float, P_surface: float, x_CO2: float, x_H2O: float, albedo: float, recirculation_factor: float, clouds: bool=False, verbose: bool=False) -> dict[str, object]:
-    """_summary_
+def run_HELIOS(
+        name: str, 
+        instellation: float, 
+        spectral_type: str, 
+        R_planet: float, 
+        M_planet: float, 
+        P_surface: float, 
+        x_CO2: float, 
+        x_H2O: float, 
+        albedo: float, 
+        recirculation_factor: float,
+        rainout: bool=True,
+        august_roche_magnus: bool=False,
+        clouds: float=0,
+        relative_humidity: float=0.77,
+        moist_convection: bool=True,
+        cloud_destruction: bool=True,
+        verbose: bool=False
+        ) -> dict[str, object]:
+    """
+    Runs the HELIOS radiative convective climate code.
 
     Parameters
     ----------
@@ -80,8 +99,18 @@ def run_HELIOS(name: str, instellation: float, spectral_type: str, R_planet: flo
         Albedo.
     recirculation_factor : float
         Recirculation factor (0.25 if rapidly rotating, 0.666 if tidally locked).
-    clouds : bool
-        Whether to include water clouds, by default False.
+    rainout : bool
+        Whether to apply H2O rainout, by default True.
+    august_roche_magnus : bool
+        Whether to set surface x_H2O with the August-Roches-Magnus formula (overwrites provided x_H2O), by default False. 
+    clouds : float
+        Fraction of planet covered in cloud, by default 0.
+    relative_humidity : float
+        Value of relative humidity used in rainout claculations, by default 0.77.
+    moist_convection : bool
+        Whether to apply moist convection, by default True.
+    cloud_destruction : bool
+        Whether to apply temperature dependant cloud destruction, by default True.
     verbose : bool, optional
         Whether to print HELIOS output to terminal, by default False.
 
@@ -104,11 +133,31 @@ def run_HELIOS(name: str, instellation: float, spectral_type: str, R_planet: flo
 
     result_dict: dict[str, object] = {}
 
-    try:
+    result_dict = {
+        "Run_ID": name,
+        "Instellation (W/m^2)": instellation,
+        "Spectral_Type": spectral_type,
+        "R_Planet (m)": R_planet,
+        "M_Planet (kg)": M_planet,
+        "P_Surface (Pa)": P_surface,
+        "x_CO2": x_CO2,
+        "x_H2O": x_H2O,
+        "Albedo": albedo,
+        "Recirculation_Factor": recirculation_factor,
+        "Rainout": rainout,
+        "Relative Humidity": relative_humidity,
+        "August Roche Magnus": august_roche_magnus,
+        "Cloud Cover": clouds,
+        "Cloud Destruction": cloud_destruction,
+        "Moist Convection": moist_convection
+    }
 
+    try:
+        
         input_dir = helios_path / "input"
         input_dir.mkdir(exist_ok=True)
         species_file = input_dir / f'species_{name}.dat'
+        cloud_flie = input_dir / f'clouds_{name}.dat'
 
         species_data = {
             'species' : ['H2O', 'CO2'],
@@ -118,6 +167,32 @@ def run_HELIOS(name: str, instellation: float, spectral_type: str, R_planet: flo
         }
 
         pd.DataFrame(species_data).to_csv(species_file, sep='\t', index=False)
+
+        P_surf_bar = P_surface / 1e5
+        
+        # Cloud Limits (0.7 to 0.85 P_surf)
+        cloud_base_P = 0.85 * P_surf_bar
+        cloud_top_P  = 0.70 * P_surf_bar
+        
+        # Cloud Density (Mixing Ratio in g/g)
+        max_mixing_ratio = 5.0e-5 
+        
+        pressure_grid = np.linspace(P_surf_bar, 1e-6, 20)
+        cloud_profile = np.zeros_like(pressure_grid)
+        
+        # Fill in the cloud deck (Block / Slab profile)
+        # select indices where Pressure is between Top and Base
+        in_cloud = (pressure_grid <= cloud_base_P) & (pressure_grid >= cloud_top_P)
+        cloud_profile[in_cloud] = max_mixing_ratio
+        
+        with open(cloud_flie.as_posix(), 'w') as f:
+            # Header (Required for names=True in HELIOS)
+            # Column 1: Pressure, Column 2: Cloud_Deck_1
+            f.write("pressure\tlow_cloud\n")
+
+            for p, mix in zip(pressure_grid, cloud_profile):
+                # Format: Scientific notation, tab separated
+                f.write(f"{p:.4f}\t{mix:.6e}\n")
 
         command = [sys.executable, 'helios.py']
 
@@ -137,24 +212,26 @@ def run_HELIOS(name: str, instellation: float, spectral_type: str, R_planet: flo
             '-directory_with_opacity_files', (data_path / "opacity").as_posix() + "/",
             '-opacity_mixing', 'on-the-fly',
             '-stellar_spectral_model', 'blackbody',
-            '-realtime_plotting', 'yes',
+            '-realtime_plotting', 'no',
             '-planet', 'manual',
             '-planet_type', 'rocky',
             '-number_of_layers', '25',
             '-k_coefficients_mixing_method', 'correlated-k',
-            '-number_of_cloud_decks', '1' if clouds else '0',
+            '-number_of_cloud_decks', '1' if clouds > 0 else '0',
             '-path_to_mie_files', (data_path / "opacity").as_posix() + "/water.mie",
             '-aerosol_radius_mode', '11.0',
-            # '-aerosol_radius_geometric_std_dev ', '2.0',
+            # '-aerosol_radius_geometric_std_dev ', '2.0', # this is set in the parameter file
             '-cloud_mixing_ratio', 'file',
-            '-path_to_file_with_cloud_data', (data_path / "opacity").as_posix() + "/earth_clouds.dat",
+            '-path_to_file_with_cloud_data', cloud_flie.as_posix(),
             '-aerosol_name', 'water',
             '-radiative_equilibrium_criterion', '1e-4',
-            # '-adaptive_interval', '1',
-            #'-tp_profile_smoothing', 'yes',
-            #'-cloud_bottom_pressure', '8.5e5',
-            #'-cloud_bottom_mixing_ratio', '2.1e-5',
-            #'-cloud_to_gas_scale_height_ratio', '0.2'
+            '-cloud_cover', f'{np.minimum(1.0, clouds)}',
+            '-relative_humidity', f'{np.minimum(1.0, relative_humidity)}',
+            '-rainout', 'yes' if rainout else 'no',
+            '-moist_convection', 'yes' if moist_convection else 'no',
+            '-convective_damping_parameter', '20',
+            '-set_h2o_with_august_roche_magnus', 'yes' if august_roche_magnus else 'no',
+            '-cloud_destruction', 'yes' if cloud_destruction else 'no'
         ]
 
         env = os.environ.copy()
@@ -173,56 +250,36 @@ def run_HELIOS(name: str, instellation: float, spectral_type: str, R_planet: flo
 
             # P = np.array(atm_df['press.[10^-6bar]']) * 10
             T = np.array(atm_df['temp.[K]'])
-            print(T)
             z = np.array(atm_df['altitude[cm]']) / 100
-            print(z)
+
+            if verbose:
+                print(T)
+                print(z)
 
             T_surface = float(T[0])
 
-            result_dict = {
-                "Run_ID": name,
-                "Instellation (W/m^2)": instellation,
-                "Spectral_Type": spectral_type,
-                "R_Planet (m)": R_planet,
-                "M_Planet (kg)": M_planet,
-                "P_Surface (Pa)": P_surface,
-                "x_CO2": x_CO2,
-                "x_H2O": x_H2O,
-                "Albedo": albedo,
-                "Recirculation_Factor": recirculation_factor,
-                "Surface_Temp (K)": T_surface,
-                "Status": "Success"
-            }
+            result_dict['Surface_Temp (K)'] = T_surface
+            result_dict['Status'] = "Success"
 
         except Exception as e :
 
-            result_dict = {
-                "Run_ID": name,
-                # "Zenith_Angle": zenith_angle,
-                "Instellation (W/m^2)": instellation,
-                "Spectral_Type": spectral_type,
-                "R_Planet (m)": R_planet,
-                "M_Planet (kg)": M_planet,
-                "P_Surface (Pa)": P_surface,
-                "x_CO2": x_CO2,
-                "x_H2O": x_H2O,
-                "Albedo": albedo,
-                "Recirculation_Factor": recirculation_factor,
-                "Surface_Temp (K)": -1,
-                "Status": str(e)
-            }
+            result_dict['Surface_Temp (K)'] = -1
+            result_dict['Status'] = str(e)
 
     finally:
 
         # This block runs whether the code succeeds OR fails
         # removing the species file
-        # if 'species_file' in locals() and species_file.exists():
-        #     os.remove(species_file)
+        if 'species_file' in locals() and species_file.exists():
+            os.remove(species_file)
+
+        if 'cloud_file' in locals() and cloud_flie.exists():
+            os.remove(cloud_flie)
             
         # removing the output directory
         output_dir = helios_path / "output" / name
-        # if output_dir.exists():
-        #     shutil.rmtree(output_dir, ignore_errors=True)
+        if output_dir.exists():
+            shutil.rmtree(output_dir, ignore_errors=True)
         print(output_dir)
 
     return result_dict

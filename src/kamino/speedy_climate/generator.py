@@ -18,7 +18,7 @@ OUTPUT_DIR = BASE_DIR / 'data' / 'climate_runs'
 def generate_input_parameters(n_samples, spectral_type, recirculation_factor):
 
     param_bounds = {
-        'instellation': (0.1 * SOLAR_CONSTANT, 2.0 * SOLAR_CONSTANT),
+        'instellation': (0.1 * SOLAR_CONSTANT, 1.5 * SOLAR_CONSTANT),
         'log_pressure': (4, 6),
         'log_x_h2o': (-6, 0),
         'log_x_co2': (-6, 0),
