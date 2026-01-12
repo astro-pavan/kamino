@@ -98,7 +98,7 @@ class climate_emulator:
                 raise FileNotFoundError(f"Could not find training data at: {csv_path}")
             data = pd.read_csv(csv_path)
 
-            input_features = ['Instellation (W/m^2)', 'P_Surface (Pa)', 'x_CO2', 'x_H2O', 'Albedo']
+            input_features = ['Instellation (W/m^2)', 'P_Surface (Pa)', 'x_CO2', 'x_H2O']
             output_targets = ['Surface_Temp (K)']
 
             X = data[input_features].values
@@ -129,7 +129,7 @@ class climate_emulator:
             y_test_scaled  = y_scaler.transform(y_test)
 
             kernel = (
-                ConstantKernel(1.0, (1e-3, 1e5)) * RBF(length_scale=[1.0, 1.0, 1.0, 1.0, 1.0], length_scale_bounds=(1e-2, 1e2)) 
+                ConstantKernel(1.0, (1e-3, 1e5)) * RBF(length_scale=[1.0, 1.0, 1.0, 1.0], length_scale_bounds=(1e-2, 1e2)) 
                 + WhiteKernel(noise_level=1e-5, noise_level_bounds=(1e-10, 1e-1))
             )
 
@@ -189,7 +189,7 @@ class climate_emulator:
 
             print("Emulator loaded.")
 
-    def get_temperature_from_emulator(self, instellation: float, P_surface: float, x_CO2: float, x_H2O: float, albedo: float) -> tuple[float, float]:
+    def get_temperature_from_emulator(self, instellation: float, P_surface: float, x_CO2: float, x_H2O: float) -> tuple[float, float]:
         """
         Calculates the surface temperature from the emulator with the direct input parameters. 
 
@@ -216,7 +216,7 @@ class climate_emulator:
         log_x_co2 = float(np.log10(x_CO2))
         log_x_h2o = float(np.log10(x_H2O))
 
-        features_raw = np.array([[instellation, log_p, log_x_co2, log_x_h2o, albedo]])
+        features_raw = np.array([[instellation, log_p, log_x_co2, log_x_h2o]])
         features_scaled = self.x_scaler.transform(features_raw)
 
         temp_scaled, std_scaled = self.gaussian_process.predict(features_scaled, return_std=True)
@@ -227,7 +227,7 @@ class climate_emulator:
 
         return float(temp_kelvin[0][0]), float(uncertainty_kelvin)
     
-    def get_temperature(self, instellation: float, P_background: float, P_CO2: float, P_H2O: float, albedo: float):
+    def get_temperature(self, instellation: float, P_background: float, P_CO2: float, P_H2O: float) -> float:
         """
         Calculates the surface temperature from the emulator with partial pressures as input parameters.
 
@@ -246,7 +246,7 @@ class climate_emulator:
 
         Returns
         -------
-        _type_
+        float
             Surface temperature in K.
         """
 
@@ -254,9 +254,9 @@ class climate_emulator:
         x_CO2 = P_CO2 / P_surface
         x_H2O = P_H2O / P_surface
 
-        return self.get_temperature_from_emulator(instellation, P_surface, x_CO2, x_H2O, albedo)[0]
+        return self.get_temperature_from_emulator(instellation, P_surface, x_CO2, x_H2O)[0]
     
-    def make_temperature_pco2_interpolator(self, instellation: float, P_background: float, albedo: float):
+    def make_temperature_pco2_interpolator(self, instellation: float, P_background: float):
         """
         Makes an interpolator for the surface temperature as function of P_CO2 only, calculating P_H2O with August-Roche-Magnus formula and all other parameters kept constant.
 
@@ -282,7 +282,7 @@ class climate_emulator:
 
             P_H2O = august_roche_magnus_formula(T)
             P_CO2 = 10 ** log_P_CO2
-            T_from_climate = self.get_temperature(instellation, P_background, P_CO2, P_H2O, albedo)
+            T_from_climate = self.get_temperature(instellation, P_background, P_CO2, P_H2O)
 
             return T_from_climate - T
         

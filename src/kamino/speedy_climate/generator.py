@@ -9,20 +9,19 @@ import concurrent.futures
 from pathlib import Path
 import os
 
-from climate import run_HELIOS
+from kamino.speedy_climate.climate import run_HELIOS
 from kamino.constants import *
 
 BASE_DIR = Path(__file__).parent
 OUTPUT_DIR = BASE_DIR / 'data' / 'climate_runs'
 
-def generate_input_parameters(n_samples, spectral_type, recirculation_factor):
+def generate_input_parameters(n_samples, spectral_type, recirculation_factor, albedo):
 
     param_bounds = {
         'instellation': (0.1 * SOLAR_CONSTANT, 1.5 * SOLAR_CONSTANT),
         'log_pressure': (4, 6),
         'log_x_h2o': (-6, 0),
-        'log_x_co2': (-6, 0),
-        'albedo': (0, 0.5),
+        'log_x_co2': (-6, 0)
     }
 
     n_dimensions = len(param_bounds)
@@ -43,7 +42,6 @@ def generate_input_parameters(n_samples, spectral_type, recirculation_factor):
         p = 10 ** float(sample[1])
         x_h2o = 10 ** float(sample[2])
         x_co2 = 10 ** float(sample[3])
-        alb = float(sample[4])
 
         sample_tuple = (f'run_{i}',
                         float(sample[0]),
@@ -53,8 +51,9 @@ def generate_input_parameters(n_samples, spectral_type, recirculation_factor):
                         p,
                         x_co2, 
                         x_h2o,
-                        alb,
-                        recirculation_factor)
+                        albedo,
+                        recirculation_factor,
+                        0.55)
         
         inputs.append(sample_tuple)
 
@@ -104,11 +103,4 @@ def run_batch_simulation(inputs, output_csv_name="helios_results.csv"):
         print(f"\nResults successfully saved to: {save_path}")
     else:
         print("No results were generated.")
-        
-if __name__ == '__main__':
 
-    inputs = generate_input_parameters(1000, 'G2', 0.25)
-    run_batch_simulation(inputs, 'helios_1000_runs_earth_rapid_rotator.csv')
-
-    inputs = generate_input_parameters(1000, 'M5', 0.6666)
-    run_batch_simulation(inputs, 'helios_1000_runs_earth_tidally_locked.csv')

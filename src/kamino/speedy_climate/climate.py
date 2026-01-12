@@ -66,9 +66,9 @@ def run_HELIOS(
         x_H2O: float, 
         albedo: float, 
         recirculation_factor: float,
+        clouds: float=0,
         rainout: bool=True,
         august_roche_magnus: bool=False,
-        clouds: float=0,
         relative_humidity: float=0.77,
         moist_convection: bool=True,
         cloud_destruction: bool=True,
@@ -84,7 +84,7 @@ def run_HELIOS(
     instellation : float
         Instellation flux in W/m^2.
     spectral_type : str
-        Spectral type of host star (can be any from SPECTRAL_TYPE_DATA dict).
+        Spectral type of host star (can be any from SPECTRAL_TYPE_DATA dict in constants.py).
     R_planet : float
         Planet radius in m.
     M_planet : float
@@ -99,12 +99,12 @@ def run_HELIOS(
         Albedo.
     recirculation_factor : float
         Recirculation factor (0.25 if rapidly rotating, 0.666 if tidally locked).
+    clouds : float
+        Fraction of planet covered in cloud, by default 0.
     rainout : bool
         Whether to apply H2O rainout, by default True.
     august_roche_magnus : bool
         Whether to set surface x_H2O with the August-Roches-Magnus formula (overwrites provided x_H2O), by default False. 
-    clouds : float
-        Fraction of planet covered in cloud, by default 0.
     relative_humidity : float
         Value of relative humidity used in rainout claculations, by default 0.77.
     moist_convection : bool
@@ -280,6 +280,5 @@ def run_HELIOS(
         output_dir = helios_path / "output" / name
         if output_dir.exists():
             shutil.rmtree(output_dir, ignore_errors=True)
-        print(output_dir)
 
     return result_dict
