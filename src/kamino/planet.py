@@ -3,7 +3,6 @@ np.set_printoptions(precision=3)
 from scipy.optimize import brentq, root, least_squares
 from scipy.integrate import solve_ivp
 import pandas as pd
-from functools import lru_cache
 
 import time
 
@@ -54,7 +53,7 @@ class planet:
         # CLIMATE EMULATOR
 
         self.climate_emulator = climate_emulator("earth_rapid_rotator", "helios_1000_runs_earth_rapid_rotator.csv")
-        self.climate_emulator.make_temperature_pco2_interpolator(self.instellation, self.P_surface, self.albedo)
+        self.climate_emulator.make_temperature_pco2_interpolator(self.instellation, self.P_surface)
 
         self.use_KT18_weathering = False
 
@@ -86,7 +85,8 @@ class planet:
         T_s, pco2 = self.solve_climate(Ao, Co, Cao)
         climate_calc_time = time.time() - climate_calc_time
 
-        T_pore = get_T_ocean(T_s, self.ocean_depth) + 9
+        T_seafloor = get_T_ocean(T_s, self.ocean_depth)
+        T_pore = T_seafloor + 9
 
         x_CO2 = pco2 / self.P_surface
         P_pore = self.P_surface + 1000 * self.gravity * self.ocean_depth
@@ -99,13 +99,13 @@ class planet:
         weathering_calc_time = time.time() - weathering_calc_time
 
         precipitation_calc_time = time.time()
-        F_prec_o = get_calcite_precipitation_rate(P_pore, T_pore, Ao, Co, Cao)[0] * Mo * YR
+        F_prec_o = get_calcite_precipitation_rate(P_pore, T_seafloor, Ao, Co, Cao)[0] * Mo * YR
         F_prec_p = get_calcite_precipitation_rate(P_pore, T_pore, Ap, Cp, Cap)[0] * Mp * YR
         precipitation_calc_time = time.time() - precipitation_calc_time
 
         tau = 1e-3 # in yrs
-        F_prec_o_max = Co / tau
-        F_prec_p_max = Cp / tau
+        F_prec_o_max = (Co * Mo) / tau
+        F_prec_p_max = (Cp * Mp) / tau
 
         F_prec_o = np.minimum(F_prec_o, F_prec_o_max)
         F_prec_p = np.minimum(F_prec_p, F_prec_p_max)
