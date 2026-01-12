@@ -461,6 +461,10 @@ def kinetics(P: float, T: float, composition: dict[str, float], pH: Union[float,
         The amount of each phase in mol.
     dt : float
         Kinetics calculatiion time step in s.
+    specific_surface_area : float
+        Specific surface area of dissolving/precipitating phase in m^2/kg, by default 0.01.
+    bad_steps_max : int
+        Maximum number of bad steps before the PHREEQC solver stops, by deafult 100.
 
     Returns
     -------
