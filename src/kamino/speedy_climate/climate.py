@@ -225,6 +225,7 @@ def run_HELIOS(
             '-path_to_file_with_cloud_data', cloud_flie.as_posix(),
             '-aerosol_name', 'water',
             '-radiative_equilibrium_criterion', '1e-4',
+            # parameters for added physics
             '-cloud_cover', f'{np.minimum(1.0, clouds)}',
             '-relative_humidity', f'{np.minimum(1.0, relative_humidity)}',
             '-rainout', 'yes' if rainout else 'no',
