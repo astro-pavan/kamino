@@ -34,6 +34,9 @@ def get_P_CO2(P: float, T: float, alkalinity: float, DIC: float, Ca: float=0, Mg
         'Alkalinity' : alkalinity
     }
 
+    if T < -ABSOLUTE_ZERO + 0.1:
+        return 0 # if the temperature is 0 C, the planet has frozen and no CO2 is in the atmosphere? 
+
     input_lines = solution_block(P, T, composition, None) + output_block(saturation_indexes=['CO2(g)'])
     output = run_PHREEQC(input_lines, single_output=True)
 
