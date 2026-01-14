@@ -3,7 +3,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.gaussian_process.kernels import RBF, WhiteKernel, ConstantKernel
+from sklearn.gaussian_process.kernels import RBF, WhiteKernel, ConstantKernel, Matern
 
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
@@ -61,7 +61,7 @@ def august_roche_magnus_formula(T: float) -> float:
 
 class climate_emulator:
 
-    def __init__(self, emulator_name: str, climate_data_file: str="", make_accuracy_plot: bool=False):
+    def __init__(self, emulator_name: str, climate_data_file: str="", make_accuracy_plot: bool=False, force_retraining: bool=False):
         """
         Climate emulator class. 
 
@@ -73,6 +73,8 @@ class climate_emulator:
             Name of climate data file for the model to be trained on, by default "".
         make_accuracy_plot : bool, optional
             Whether to make an accuracy plot, by default False.
+        force_retraining : bool, optional
+            Whether to force retraining the emulator
 
         Raises
         ------
@@ -87,8 +89,11 @@ class climate_emulator:
         gp_path = emulators_dir / f'{emulator_name}_gp_climate_emulator.pkl'
         x_scaler_path = emulators_dir / f'{emulator_name}_inputs_scaler.pkl'
         y_scaler_path = emulators_dir / f'{emulator_name}_output_scaler.pkl'
-        
-        if climate_data_file != "" and not (gp_path.exists() and x_scaler_path.exists() and y_scaler_path.exists()): # type: ignore
+
+        emulator_files_exist: bool = (gp_path.exists() and x_scaler_path.exists() and y_scaler_path.exists()) # type: ignore
+        climate_data_provided: bool = climate_data_file != ""
+
+        if (not emulator_files_exist or force_retraining) and climate_data_provided: # type: ignore
 
             print(f"Training new emulator from: {climate_data_file}")
             
@@ -101,8 +106,12 @@ class climate_emulator:
             input_features = ['Instellation (W/m^2)', 'P_Surface (Pa)', 'x_CO2', 'x_H2O']
             output_targets = ['Surface_Temp (K)']
 
+            data = data[data['Surface_Temp (K)'] != -1]
+
             X = data[input_features].values
             y = data[output_targets].values
+
+            y = np.log10(y) # log scale y
 
             # log scale P_surface, x_CO2 and x_H2O
             X[:, 1] = np.log10(X[:, 1])
@@ -128,12 +137,18 @@ class climate_emulator:
             y_val_scaled   = y_scaler.transform(y_val)
             y_test_scaled  = y_scaler.transform(y_test)
 
+            # kernel = (
+            #     ConstantKernel(1.0, (1e-3, 1e5)) * RBF(length_scale=[1.0, 1.0, 1.0, 1.0], length_scale_bounds=(1e-2, 1e2)) 
+            #     + WhiteKernel(noise_level=1e-5, noise_level_bounds=(1e-10, 1e-1))
+            # )
+
             kernel = (
-                ConstantKernel(1.0, (1e-3, 1e5)) * RBF(length_scale=[1.0, 1.0, 1.0, 1.0], length_scale_bounds=(1e-2, 1e2)) 
-                + WhiteKernel(noise_level=1e-5, noise_level_bounds=(1e-10, 1e-1))
+                ConstantKernel(1.0, (1e-3, 1e5)) 
+                * Matern(length_scale=[1.0, 1.0, 1.0, 1.0], length_scale_bounds=(1e-2, 1e2), nu=2.5) 
+                # + WhiteKernel(noise_level=1e-5, noise_level_bounds=(1e-10, 1e-1))
             )
 
-            gaussian_process = GaussianProcessRegressor(kernel=kernel, n_restarts_optimizer=20, alpha=1e-10)
+            gaussian_process = GaussianProcessRegressor(kernel=kernel, n_restarts_optimizer=2, alpha=1e-10)
 
             print('Fitting Gaussian process...')
             gaussian_process.fit(X_train_scaled, y_train_scaled)
@@ -150,19 +165,43 @@ class climate_emulator:
 
             if make_accuracy_plot:
 
-                # Predict on validation data
-                y_val_pred, y_val_std = gaussian_process.predict(X_val_scaled, return_std=True) # type: ignore
+                # 1. Get Predictions on Validation Data
+                y_val_pred_scaled, y_val_std_scaled = gaussian_process.predict(X_val_scaled, return_std=True)
+                
+                # 2. Inverse Transform to get Kelvin
+                y_val_pred_k = y_scaler.inverse_transform(y_val_pred_scaled.reshape(-1, 1))
+                y_val_k = y_val # y_val is already unscaled in the split
+                
+                # 3. Calculate Residuals (Error)
+                residuals = y_val_pred_k - y_val_k
+                
+                # 4. Set up the plotting grid (2x2 for 4 features)
+                fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+                feature_names = ['Instellation (W/m^2)', 'Log P_Surface', 'Log x_CO2', 'Log x_H2O']
+                
+                # X_val contains: [Instellation, log_P, log_CO2, log_H2O] 
+                # (logs applied in lines 80-82 of emulator.py)
+                
+                axes = axes.flatten()
+                
+                for i, ax in enumerate(axes):
+                    # Scatter plot: Input Feature vs Residual
+                    ax.scatter(X_val[:, i], residuals, alpha=0.6, c='blue', edgecolors='k', s=20)
+                    
+                    # Reference lines
+                    ax.axhline(0, color='black', lw=1, linestyle='-') # Perfect prediction
+                    ax.axhline(1, color='red', lw=1, linestyle='--')  # +1 K limit
+                    ax.axhline(-1, color='red', lw=1, linestyle='--') # -1 K limit
+                    
+                    ax.set_xlabel(feature_names[i])
+                    ax.set_ylabel("Error (Predicted - Actual) [K]")
+                    ax.set_title(f"Residuals vs {feature_names[i]}")
+                    ax.grid(True, alpha=0.3)
 
-                # Plot Actual vs Predicted
-                plt.figure(figsize=(6, 6))
-                plt.scatter(y_val, y_scaler.inverse_transform(y_val_pred.reshape(-1, 1)), alpha=0.5)
-                plt.plot([y_val.min(), y_val.max()], [y_val.min(), y_val.max()], 'r--', lw=2) # Perfect fit line
-                plt.xlabel("Actual Surface Temp (K)")
-                plt.ylabel("Predicted Surface Temp (K)")
-                plt.title("Model Accuracy Check")
-                plt.savefig("accuracy_check.png")
-                print("Saved accuracy_check.png")
-
+                plt.tight_layout()
+                plt.savefig("emulator_diagnostics.png")
+                print("Saved emulator_diagnostics.png")
+                
             self.gaussian_process = gaussian_process
             self.x_scaler = x_scaler
             self.y_scaler = y_scaler
@@ -219,13 +258,31 @@ class climate_emulator:
         features_raw = np.array([[instellation, log_p, log_x_co2, log_x_h2o]])
         features_scaled = self.x_scaler.transform(features_raw)
 
-        temp_scaled, std_scaled = self.gaussian_process.predict(features_scaled, return_std=True)
+        log_temp_scaled, log_std_scaled = self.gaussian_process.predict(features_scaled, return_std=True)
+        
+        # Unscale to get "Real" Log10(Temperature)
+        # Note: We unscale the mean using the scaler's mean/scale logic
+        log_temp = self.y_scaler.inverse_transform(log_temp_scaled.reshape(-1, 1))[0][0]
+        
+        # The standard deviation must be unscaled by multiplying by the scale factor
+        # (Standard deviation is a width, not a point, so we don't add the mean)
+        log_std = log_std_scaled[0] * self.y_scaler.scale_[0]
 
-        temp_kelvin = self.y_scaler.inverse_transform(temp_scaled.reshape(-1, 1))
+        # Convert to Kelvin
+        temperature_kelvin = 10 ** log_temp
+        
+        # Calculate Uncertainty in Kelvin
+        # We calculate the temperature at (Log_Mean + Log_Std) and subtract the mean
+        temp_upper_bound = 10 ** (log_temp + log_std)
+        uncertainty_kelvin = temp_upper_bound - temperature_kelvin
 
-        uncertainty_kelvin = std_scaled[0] * self.y_scaler.scale_[0]
+        # temp_scaled, std_scaled = self.gaussian_process.predict(features_scaled, return_std=True)
 
-        return float(temp_kelvin[0][0]), float(uncertainty_kelvin)
+        # temp_kelvin = 10 ** self.y_scaler.inverse_transform(temp_scaled.reshape(-1, 1))
+
+        # uncertainty_kelvin = std_scaled[0] * self.y_scaler.scale_[0]
+
+        return float(temperature_kelvin), float(uncertainty_kelvin)
     
     def get_temperature(self, instellation: float, P_background: float, P_CO2: float, P_H2O: float) -> float:
         """
