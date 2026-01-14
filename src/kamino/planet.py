@@ -1,6 +1,6 @@
 import numpy as np
-np.set_printoptions(precision=3)
-from scipy.optimize import brentq, root, least_squares
+np.set_printoptions(precision=2)
+from scipy.optimize import brentq, root, least_squares, newton
 from scipy.integrate import solve_ivp
 import pandas as pd
 
@@ -64,7 +64,11 @@ class planet:
             T_calc = self.climate_emulator.get_temperature_from_pco2(pco2)
             return T_val - T_calc
         
-        T_s = float(brentq(T_s_residual, 273.2, 373.15)) # type: ignore
+        try:
+            T_s = float(brentq(T_s_residual, 273.2, 373.15)) # type: ignore
+        except ValueError:
+            T_s = float(newton(T_s_residual, 273.2))
+
         pco2 = get_P_CO2(self.P_surface, T_s, Alk, C, Ca)
 
         return T_s, pco2
@@ -86,6 +90,7 @@ class planet:
         climate_calc_time = time.time() - climate_calc_time
 
         T_seafloor = get_T_ocean(T_s, self.ocean_depth)
+        T_seafloor = np.maximum(T_seafloor, -ABSOLUTE_ZERO + 0.1)
         T_pore = T_seafloor + 9
 
         x_CO2 = pco2 / self.P_surface
@@ -122,11 +127,12 @@ class planet:
         dAp_dt = (+ J * delta_A - 2 * F_prec_p + 2 * F_diss) / Mp
         dCao_dt = (- J * delta_Ca - F_prec_o) / Mo
         dCap_dt = (+ J * delta_Ca - F_prec_p + 0.5 * F_diss) / Mp
-        # print(f't = {t:.3e} yr  Y = {Y} mol/kgw  T_s = {T_s:.0f} K  P_CO2 = {pco2:.3e} Pa (x_CO2 = {x_CO2:.4%})')
+
+        print(f't = {t:.3e} yr  Y = {Y} mol/kgw/s  T_s = {T_s:.0f} K  P_CO2 = {pco2:.2e} Pa (x_CO2 = {x_CO2:.4%})')
 
         calc_time = time.time() - calc_time
 
-        print(f'Calculation time: {calc_time:.1e} s (Climate: {climate_calc_time:.1e} s  Weathering: {weathering_calc_time:.1e} s  Precipitation: {precipitation_calc_time:.1e} s)')
+        # print(f'    Calculation time: {calc_time:.1e} s (Climate: {climate_calc_time:.1e} s  Weathering: {weathering_calc_time:.1e} s  Precipitation: {precipitation_calc_time:.1e} s)')
 
         return [float(dCo_dt), float(dCp_dt), float(dAo_dt), float(dAp_dt), float(dCao_dt), float(dCap_dt)]
     
@@ -138,7 +144,7 @@ class planet:
             self.dY_dt,
             (0, t_end),
             Y0,
-            method='LSODA',
+            method='Radau',
             atol=1e-7,
             rtol=1e-4,
             max_step=10.0
