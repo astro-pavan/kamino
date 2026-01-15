@@ -39,7 +39,33 @@ def get_calcite_precipitation_rate(P: float, T: float, alkalinity: float, DIC: f
     k = get_output_kinetics_phases(output)['Calcite']
     SI = get_output_saturation_indexes(output)['Calcite']
 
-    return np.maximum(k, 0), SI
+    act_H = get_output_activities(output)['H+']
+    act_HCO3 = get_output_activities(output)['HCO3-']
+    act_CO3 = get_output_activities(output)['CO3-2']
+
+    SR = 10 ** SI
+
+    Aa = 5.625 # mol.m-2.s-1
+    Ac = 62.5 # mol.m-2.s-1
+    Ea = 16000 # J/mol
+    Eac = 48000 # J/mol
+    R = 8.314 # J.deg-1.mol-1
+    Sig = 1
+    na = 1
+    kc = 160
+    S = 100 # specific surface area
+
+    act_C = act_HCO3 + act_CO3
+    carb_tem = 1 - (kc * act_C) / (1 + kc * act_C)
+
+    scaling_factor = 1e-12
+
+    rplusa = Aa * (np.exp(-Ea / (R * T))) * (act_H ** na) * S
+    rplusc = Ac * (np.exp(-Eac / (R * T))) * carb_tem
+    rplus = rplusa + rplusc
+    rate = rplus * (SR ** (1/Sig) - 1) * scaling_factor
+
+    return rate, SI
 
 def magnesite_precipitation_rate(P: float, T: float, alkalinity: float, DIC: float, Ca: float, Mg: float, Fe: float) -> tuple[float, float]:
     """
@@ -80,7 +106,7 @@ def magnesite_precipitation_rate(P: float, T: float, alkalinity: float, DIC: flo
     k = get_output_kinetics_phases(output)['Magnesite']
     SI = get_output_saturation_indexes(output)['Magnesite']
 
-    return np.maximum(k, 0), SI
+    return k, SI
 
 def siderite_precipitation_rate(P: float, T: float, alkalinity: float, DIC: float, Ca: float, Mg: float, Fe: float) -> tuple[float, float]:
     """
@@ -121,4 +147,4 @@ def siderite_precipitation_rate(P: float, T: float, alkalinity: float, DIC: floa
     k = get_output_kinetics_phases(output)['Siderite']
     SI = get_output_saturation_indexes(output)['Siderite']
 
-    return np.maximum(k, 0), SI
+    return k, SI

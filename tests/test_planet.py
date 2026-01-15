@@ -5,9 +5,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../src'))
 from kamino.planet import planet
 from kamino.constants import *
 
-p1 = planet(1e5, 3000, 0.9)
+p1 = planet(1e5, 3000, 1.0)
 
-p1.find_steady_state()
+p1.find_steady_state(2e5)
 
 # df = p1.run_simulation(100)
 # df.to_csv('tests/test.csv')

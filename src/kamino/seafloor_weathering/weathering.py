@@ -4,6 +4,7 @@ import kamino.seafloor_weathering.chili.equilibrium as eq
 import kamino.seafloor_weathering.chili.kinetics as ki
 import kamino.seafloor_weathering.chili.parameters as pr
 import kamino.seafloor_weathering.chili.climate as cl
+from kamino.utils import *
 
 from kamino.constants import YR, POROSITY
 
@@ -41,16 +42,19 @@ def get_weathering_rate(P: float, T: float, x_CO2: float, runoff: float, flow_pa
     """
 
     P = P / 1e5 # convert to bar
-    x_CO2 = np.maximum(x_CO2, 1e-8) # makes sure x_CO2 is not bleow the minimum value for the interpolator
-    T = np.minimum(T, 372.13)
+    x_CO2 = smooth_max(x_CO2, 1e-8) # makes sure x_CO2 is not bleow the minimum value for the interpolator
+    T = smooth_min(T, 372.13)
 
     arg = np.array((x_CO2, T, P))
     pH = DICeqFuncs['bash']['pH'](arg)
     C_eq = DICeqFuncs['bash']['ALK'](arg) * 1000 # convert to mol/m^3
 
-    k_eff = 1e99
+    k_eff = -1
     for mineral in basalt_composition:
-        k_eff = np.minimum(kFuncs[mineral](T, pH), k_eff)
+        if k_eff == -1:
+            k_eff = kFuncs[mineral](T, pH)
+        else:
+            k_eff = smooth_min(kFuncs[mineral](T, pH), k_eff)
 
     mean_molar_mass = 0.216 # kg / mol
     specific_surface_area = 100 # m^2 / kg
@@ -66,7 +70,7 @@ def get_weathering_rate(P: float, T: float, x_CO2: float, runoff: float, flow_pa
 
     w = runoff * C
 
-    return w
+    return float(w)
 
 def get_weathering_rate_old(P: float, T: float, x_CO2: float) -> float:
     """

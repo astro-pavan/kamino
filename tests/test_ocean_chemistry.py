@@ -22,13 +22,13 @@ comp: dict[str, float] = {
     'C': 0.002 * sal
 }
 
-output = kinetics(10 * EARTH_ATM, 280, comp, None, {'Calcite' : 0.0}, 1e6)
+# output = kinetics(10 * EARTH_ATM, 280, comp, None, {'Calcite' : 0.0}, 1e6)
 
-print(output)
+# print(output)
 
 k, SI = get_calcite_precipitation_rate(20 * EARTH_ATM, 274, 0.001, 0.0002, 0.0002)
 print(k)
 print(SI)
 
-p_CO2 = get_P_CO2(1e5, 280, 0.002, 0.002, 0)
-print(f'{(p_CO2 / 1e5) * 1e6} ppm')
+# p_CO2 = get_P_CO2(1e5, 280, 0.002, 0.002, 0)
+# print(f'{(p_CO2 / 1e5) * 1e6} ppm')
