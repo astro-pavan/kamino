@@ -14,6 +14,7 @@ from kamino.ocean_chemistry.co2 import get_P_CO2
 from kamino.ocean_circulation.analytic import get_T_ocean, get_T_ocean_KT18
 from kamino.seafloor_weathering.weathering import get_weathering_rate, get_weathering_rate_old
 from kamino.ocean_chemistry.precipitation import get_calcite_precipitation_rate
+from kamino.ocean_chemistry.aqueous_geochemistry import PHREEQCError
 from kamino.utils import *
 
 iter = 0
@@ -63,8 +64,8 @@ class planet:
                 return T_val - T_calc
             
             try:
-                T_s = float(newton(T_s_residual, T_init))
-            except (ValueError, RuntimeError):
+                T_s, _ = newton(T_s_residual, T_init, full_output=True, disp=False)
+            except (ValueError, RuntimeError, PHREEQCError):
                 T_s = float(brentq(T_s_residual, 273.5, 373.15)) # type: ignore
 
             pco2 = get_P_CO2(self.P_surface, T_s, Alk, C, Ca)
@@ -107,7 +108,7 @@ class planet:
         # fixed maximum and minimum temperatures
         # T_s = np.minimum(360, T_s)
         # T_s = np.maximum(273.5, T_s)
-        T_s = smooth_min(360, T_s)
+        T_s = smooth_min(350, T_s)
         T_s = smooth_max(273.5, T_s)
 
         # T_seafloor = get_T_ocean(T_s, self.ocean_depth)
@@ -174,7 +175,7 @@ class planet:
         dCp_dt = flux_diff + flux_prec + flux_diss
 
         if should_print:
-            print(f't = {t:.1e} yr  Y = {Y_calc} mol/kgw  T_s = {T_s:.0f} K  P_CO2 = {pco2:.1e} Pa  Calcite SI = {SI_o:.3f}, {SI_p:.3f}')
+            print(f't = {t:.1e} yr  Y = {Y_calc[0]:.1e}, {Y_calc[1]:.1e}, {Y_calc[2]:.1e}, {Y_calc[1]:.1e}, {Y_calc[4]:.1e}, {Y_calc[5]:.1e} mol/kgw  T_s = {T_s:.0f} K  P_CO2 = {pco2:.1e} Pa  Calcite SI = {SI_o:.3f}, {SI_p:.3f}')
             # print(f'dY/dt = {dYdt} mol/kgw/s')
             # print(f"\n--- DEBUG t={t:.2e} ---")
             # print(f"Cp: {Cp:.6e}")
