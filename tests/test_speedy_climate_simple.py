@@ -8,24 +8,25 @@ from kamino.constants import *
 import numpy as np
 import matplotlib.pyplot as plt
 
-x_co2_range = np.logspace(-5.5, 0, num=30)
+p_co2_range = np.logspace(0, 6, num=30)
 S_range = np.linspace(0.3, 1.5, num=30) * SOLAR_CONSTANT
 
-x_co2_arr = []
+p_co2_arr = []
 S_arr = []
 T_arr = []
 
-for x_co2 in x_co2_range:
+for p_co2 in p_co2_range:
     for S in S_range:
-
-        x_co2_arr.append(x_co2)
-        S_arr.append(S)
-        T_arr.append(get_T_surface(S, x_co2))
+        T_s = get_T_surface(S, p_co2)
+        if not np.isnan(T_s):
+            p_co2_arr.append(p_co2)
+            S_arr.append(S)
+            T_arr.append(T_s)
 
 fig, ax = plt.subplots(figsize=(10, 6))
 
 # Define variables for clarity
-x = np.array(x_co2_arr)
+x = np.array(p_co2_arr)
 y = np.array(S_arr) / SOLAR_CONSTANT
 z = np.array(T_arr)
 
@@ -36,15 +37,15 @@ ax.clabel(contour_lines, fmt='%d K', colors='k', inline=False, use_clabeltext=Tr
 ax.set_xscale('log')
 
 # ax.axvline(280e-6, label='Pre-Industrial CO2', color='k', linestyle='--')
-ax.scatter([280e-6], [1], s=10, c='black', label='Earth')
-ax.annotate('Earth', (280e-6, 1))
+ax.scatter([40], [1], s=10, c='black', label='Earth')
+ax.annotate('Earth', (40, 1))
 
 # Add a colorbar to show what T values the colors represent
 cbar = plt.colorbar(contour_filled, ax=ax)
 cbar.set_label('Temperature (K)')
 
 # Axis Labels
-ax.set_xlabel('$x_{CO2}$')
+ax.set_xlabel('$P_{CO2}$')
 ax.set_ylabel('S ($S_{\\oplus}$)')
 
 # Optional: Since x_co2 is very small, scientific notation is automatic,
