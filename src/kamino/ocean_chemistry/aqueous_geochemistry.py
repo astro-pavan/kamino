@@ -104,7 +104,7 @@ def solution_block(P: float, T: float, composition: dict[str, float], pH: Union[
     if 'Alkalinity' in composition.keys():
         pH_line = ''
     else:
-        pH_line = f'    pH        {pH:.4f}' if pH is not None else '    pH        7.0 charge'
+        pH_line = f'    pH        {pH:.8f}' if pH is not None else '    pH        7.0 charge'
 
     lines: list[str] = [
         'SOLUTION 1',
@@ -116,7 +116,7 @@ def solution_block(P: float, T: float, composition: dict[str, float], pH: Union[
 
     for k in composition.keys():
         molality = 0 if composition[k] < 1e-9 and trace_approximation else composition[k]# any concentration too low is brought up to a trace amount of 1e-9
-        lines.append(f'    {k}    {molality:.4e}')
+        lines.append(f'    {k}    {molality:.15e}')
 
     lines.append('')
 
@@ -193,7 +193,7 @@ def kinetics_block(phases: list[str], amounts: list[float], dt: float, specific_
 
     return lines
 
-def output_block(saturation_indexes: list[str]=[], equilibrium_phases: list[str]=[], kinetic_reactants: list[str]=[]) -> list[str]:
+def output_block(saturation_indexes: list[str]=[], equilibrium_phases: list[str]=[], kinetic_reactants: list[str]=[], activities: list[str]=[]) -> list[str]:
     """
     Generates a SELECTED_OUTPUT block for a PHREEQC input file.
 
@@ -205,6 +205,8 @@ def output_block(saturation_indexes: list[str]=[], equilibrium_phases: list[str]
         A list of the phase amount changes to output for equilbrium phase calculation, default [].
     kinetic_reactants : list[str]
         A list of the phase amount changes to output for kinetics calculation, default [].
+    activities : list[str]
+        A list of activities indices to output, default [].
 
     Returns
     -------
@@ -225,6 +227,8 @@ def output_block(saturation_indexes: list[str]=[], equilibrium_phases: list[str]
         lines.append('    -saturation_indices ' + ' '.join(saturation_indexes))
     if kinetic_reactants:
         lines.append('    -kinetic_reactants ' + ' '.join(kinetic_reactants))
+    if activities:
+        lines.append('    -activities ' + ' '.join(activities))
 
     lines.append('')
 
@@ -411,7 +415,27 @@ def get_output_kinetics_phases(output_df: pd.DataFrame) -> dict[str, float]:
     for mineral in non_zero_minerals:
         if mineral not in insoluble_minerals:
             delta_moles[mineral[3:]] = float(output_df.at[1, mineral]) # type: ignore
-    return delta_moles   
+    return delta_moles
+
+def get_output_activities(output_df: pd.DataFrame) -> dict[str, float]:
+    """
+    Returns solution activities in selected output file.
+
+    Parameters
+    ----------
+    output_df : pd.DataFrame
+        DataFrame from selected output file.
+
+    Returns
+    -------
+    dict[str, float]
+        Activities for each phase in mol/kgw.
+    """
+    activities: dict[str, float] = {}
+    phases = [key for key in output_df.columns if key.startswith('la_')]
+    for phase in phases:
+        activities[phase[3:]] = 10 ** float(output_df.at[1, phase]) # type: ignore
+    return activities   
 
 def equilbriate_phases(P: float, T: float, composition: dict[str, float], pH: Union[float, None], phase_amounts: dict[str, float]) -> pd.DataFrame:
     """
@@ -475,7 +499,10 @@ def kinetics(P: float, T: float, composition: dict[str, float], pH: Union[float,
     phases = list(phase_amounts.keys())
     amounts = list(phase_amounts.values())
     
-    input_lines = knobs_block() + solution_block(P, T, composition, pH) + kinetics_block(phases, amounts, dt, specific_surface_area, bad_steps_max) + output_block(kinetic_reactants=phases, saturation_indexes=available_minerals)
+    input_lines = knobs_block() + \
+        solution_block(P, T, composition, pH) + \
+        kinetics_block(phases, amounts, dt, specific_surface_area, bad_steps_max) + \
+        output_block(kinetic_reactants=phases, saturation_indexes=available_minerals, activities=['H+', 'HCO3-', 'CO3-2'])
 
     return run_PHREEQC(input_lines)
 

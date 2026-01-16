@@ -20,3 +20,20 @@ def get_T_ocean(T_surface: float, depth: float, a: float=0.0033, b: float=0) -> 
     """
 
     return T_surface - a * depth + b
+
+def get_T_ocean_KT18(T_surface: float) -> float:
+    """
+    Calculates temperature as a function of ocean depth from a the parameterization from KT18.
+
+    Parameters
+    ----------
+    T_surface : float
+        Ocean surface temperature in K.
+
+    Returns
+    -------
+    float
+        Ocean temperature in K.
+    """
+
+    return 1.02 * T_surface - 16.7
