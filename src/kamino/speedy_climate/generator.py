@@ -8,6 +8,7 @@ import concurrent.futures
 
 from pathlib import Path
 import os
+from typing import Union
 
 from kamino.speedy_climate.climate import run_HELIOS
 from kamino.constants import *
@@ -15,14 +16,37 @@ from kamino.constants import *
 BASE_DIR = Path(__file__).parent
 OUTPUT_DIR = BASE_DIR / 'data' / 'climate_runs'
 
-def generate_input_parameters(n_samples, spectral_type, recirculation_factor, albedo):
+def generate_input_parameters(
+        n_samples: int, 
+        instellation_bounds: Union[tuple[float, float], float],
+        log_P_background_bounds: Union[tuple[float, float], float],
+        log_P_CO2_bounds: Union[tuple[float, float], float],
+        log_P_H2O_bounds: Union[tuple[float, float], float],
+        albedo_bounds: Union[tuple[float, float], float],
+        cloud_fraction_bounds: Union[tuple[float, float], float],
+        spectral_type: str, 
+        recirculation_factor: float,
+        M_planet: float=M_EARTH,
+        R_planet: float=R_EARTH
+        ):
+    
+    param_bounds = {}
+    param_const = {}
 
-    param_bounds = {
-        'instellation': (0.1 * SOLAR_CONSTANT, 1.5 * SOLAR_CONSTANT),
-        'log_pressure': (4, 6),
-        'log_x_h2o': (-6, 0),
-        'log_x_co2': (-6, 0)
+    args = {
+        'instellation': instellation_bounds,
+        'log_p_background': log_P_background_bounds,
+        'log_p_co2': log_P_CO2_bounds,
+        'log_p_h2o': log_P_H2O_bounds,
+        'albedo': albedo_bounds,
+        'cloud_fraction': cloud_fraction_bounds
     }
+
+    for key, val in args.items():
+        if isinstance(val, tuple):
+            param_bounds[key] = val
+        else:
+            param_const[key] = val
 
     n_dimensions = len(param_bounds)
     l_bounds = [b[0] for b in param_bounds.values()]
@@ -35,26 +59,65 @@ def generate_input_parameters(n_samples, spectral_type, recirculation_factor, al
 
     inputs = []
 
-    for i, sample in enumerate(samples_scaled):
+    for j, sample in enumerate(samples_scaled):
 
-        # Format: (name, instellation, spec_type, Rp, Mp, P_surf, x_CO2, x_H2O, alb, recirc)
+        # Format: (name, instellation, spec_type, Rp, Mp, P_background, P_CO2, P_H2O, alb, recirc, cloud_fraction)
 
-        p = 10 ** float(sample[1])
-        x_h2o = 10 ** float(sample[2])
-        x_co2 = 10 ** float(sample[3])
+        for i, key in enumerate(param_bounds.keys()):
+            if key == 'instellation':
+                instellation = float(sample[i])
+            if key == 'log_p_background':
+                log_p_background = float(sample[i])
+            if key == 'log_p_co2':
+                log_p_co2 = float(sample[i])
+            if key == 'log_p_h2o':
+                log_p_h2o = float(sample[i])
+            if key == 'albedo':
+                albedo = float(sample[i])
+            if key == 'cloud_fraction':
+                cloud_fraction = float(sample[i])
 
-        sample_tuple = (f'run_{i}',
-                        float(sample[0]),
-                        spectral_type,
-                        1.0 * R_EARTH,
-                        1.0 * M_EARTH,
-                        p,
-                        x_co2, 
-                        x_h2o,
-                        albedo,
-                        recirculation_factor,
-                        0.55)
-        
+        for i, key in enumerate(param_const.keys()):
+            if key == 'instellation':
+                instellation = param_const[key]
+            if key == 'log_p_background':
+                log_p_background = param_const[key]
+            if key == 'log_p_co2':
+                log_p_co2 = param_const[key]
+            if key == 'log_p_h2o':
+                log_p_h2o = param_const[key]
+            if key == 'albedo':
+                albedo = param_const[key]
+            if key == 'cloud_fraction':
+                cloud_fraction = param_const[key]
+
+        # instellation = float(sample[0]) if 'instellation' in param_bounds else param_const['instellation']
+        # log_p_background = float(sample[1]) if 'log_p_background' in param_bounds else param_const['log_p_background']
+        # log_p_co2 = float(sample[2]) if 'log_p_co2' in param_bounds else param_const['log_p_co2']
+        # log_p_h2o = float(sample[3]) if 'log_p_h2o' in param_bounds else param_const['log_p_h2o']
+        # albedo = float(sample[4]) if 'albedo' in param_bounds else param_const['albedo']
+        # cloud_fraction = float(sample[5]) if 'cloud_fraction' in param_bounds else param_const['cloud_fraction']
+
+        P_back = 10 ** log_p_background # type: ignore
+        P_co2 = 10 ** log_p_co2 # type: ignore
+        P_h2o = 10 ** log_p_h2o # type: ignore
+
+        sample_tuple = (
+            f'run_{j}',
+            instellation, # type: ignore
+            spectral_type,
+            R_planet,
+            M_planet,
+            P_back,
+            P_co2,
+            P_h2o,
+            albedo, # type: ignore
+            recirculation_factor,
+            cloud_fraction, # type: ignore
+            True if 'log_p_h2o' in param_const else False,
+            True if 'cloud_fraction' in param_const else False,
+        )
+
         inputs.append(sample_tuple)
 
     return inputs
@@ -78,14 +141,14 @@ def run_batch_simulation(inputs, output_csv_name="helios_results.csv"):
             futures.append(executor.submit(run_HELIOS, *args))
 
         for future in concurrent.futures.as_completed(futures):
-            
-            result = future.result()
-            results_list.append(result)
 
             count += 1
 
+            result = future.result()
+            results_list.append(result)
+
             if result["Status"] == "Success":
-                print(f"Finished {result['Run_ID']}: {result['Surface_Temp (K)']} K [{count}/{total_models}]")
+                print(f"Finished {result['Run_ID']}: {result['Surface_Temp (K)']:.0f} K [{count}/{total_models}]")
             else:
                 print(f"Failed {result['Run_ID']}: {result.get('Status')} [{count}/{total_models}]")
 

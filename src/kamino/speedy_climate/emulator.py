@@ -102,21 +102,33 @@ class climate_emulator:
             if not csv_path.exists():
                 raise FileNotFoundError(f"Could not find training data at: {csv_path}")
             data = pd.read_csv(csv_path)
-
-            input_features = ['Instellation (W/m^2)', 'P_Surface (Pa)', 'x_CO2', 'x_H2O']
-            output_targets = ['Surface_Temp (K)']
-
             data = data[data['Surface_Temp (K)'] != -1]
+
+            # Identify input features: columns with non-constant values, excluding specified columns
+            excluded_cols = {'Surface_Temp (K)', 'Status', 'Run_ID'}
+            bool_cols = set(data.select_dtypes(include=['bool']).columns)
+            candidate_cols = [col for col in data.columns if col not in excluded_cols and col not in bool_cols]
+
+            input_features = []
+            for col in candidate_cols:
+                if data[col].nunique() > 1:
+                    input_features.append(col)
+
+            # Get indexes of pressure columns in input_features
+            pressure_columns = ['P_Surface (Pa)', 'x_CO2', 'x_H2O']
+            pressure_indexes = [input_features.index(col) for col in pressure_columns if col in input_features]
+
+            # input_features = ['Instellation (W/m^2)', 'P_Surface (Pa)', 'x_CO2', 'x_H2O']
+            output_targets = ['Surface_Temp (K)']
 
             X = data[input_features].values
             y = data[output_targets].values
 
             y = np.log10(y) # log scale y
 
-            # log scale P_surface, x_CO2 and x_H2O
-            X[:, 1] = np.log10(X[:, 1])
-            X[:, 2] = np.log10(X[:, 2])
-            X[:, 3] = np.log10(X[:, 3])
+            # log scale pressures
+            for i in pressure_indexes:
+                X[:, i] = np.log10(X[:, i])
 
             X_train_full, X_test, y_train_full, y_test = train_test_split(X, y, test_size=0.1, random_state=42)
             X_train, X_val, y_train, y_val = train_test_split(X_train_full, y_train_full, test_size=0.1, random_state=42)
@@ -137,18 +149,16 @@ class climate_emulator:
             y_val_scaled   = y_scaler.transform(y_val)
             y_test_scaled  = y_scaler.transform(y_test)
 
-            # kernel = (
-            #     ConstantKernel(1.0, (1e-3, 1e5)) * RBF(length_scale=[1.0, 1.0, 1.0, 1.0], length_scale_bounds=(1e-2, 1e2)) 
-            #     + WhiteKernel(noise_level=1e-5, noise_level_bounds=(1e-10, 1e-1))
-            # )
+            # Set length_scale size to match number of input features
+            n_features = X_train.shape[1]
+            length_scale = [1.0] * n_features
 
             kernel = (
-                ConstantKernel(1.0, (1e-3, 1e5)) 
-                * Matern(length_scale=[1.0, 1.0, 1.0, 1.0], length_scale_bounds=(1e-2, 1e2), nu=2.5) 
+                ConstantKernel(1.0, (1e-3, 1e5)) * RBF(length_scale=length_scale, length_scale_bounds=(1e-2, 1e2)) 
                 # + WhiteKernel(noise_level=1e-5, noise_level_bounds=(1e-10, 1e-1))
             )
 
-            gaussian_process = GaussianProcessRegressor(kernel=kernel, n_restarts_optimizer=2, alpha=1e-10)
+            gaussian_process = GaussianProcessRegressor(kernel=kernel, n_restarts_optimizer=5, alpha=1e-3)
 
             print('Fitting Gaussian process...')
             gaussian_process.fit(X_train_scaled, y_train_scaled)
@@ -177,7 +187,7 @@ class climate_emulator:
                 
                 # 4. Set up the plotting grid (2x2 for 4 features)
                 fig, axes = plt.subplots(2, 2, figsize=(12, 10))
-                feature_names = ['Instellation (W/m^2)', 'Log P_Surface', 'Log x_CO2', 'Log x_H2O']
+                feature_names = input_features
                 
                 # X_val contains: [Instellation, log_P, log_CO2, log_H2O] 
                 # (logs applied in lines 80-82 of emulator.py)

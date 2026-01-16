@@ -61,17 +61,17 @@ def run_HELIOS(
         spectral_type: str, 
         R_planet: float, 
         M_planet: float, 
-        P_surface: float, 
-        x_CO2: float, 
-        x_H2O: float, 
+        P_background: float, 
+        P_CO2: float, 
+        P_H2O: float, 
         albedo: float, 
         recirculation_factor: float,
         clouds: float=0,
-        rainout: bool=True,
         august_roche_magnus: bool=False,
+        cloud_destruction: bool=True,
+        rainout: bool=True,
         relative_humidity: float=0.77,
         moist_convection: bool=True,
-        cloud_destruction: bool=True,
         verbose: bool=False
         ) -> dict[str, object]:
     """
@@ -90,27 +90,27 @@ def run_HELIOS(
     M_planet : float
         Planet mass in kg.
     P_surface : float
-        Surface pressure in Pa.
-    x_CO2 : float
-        CO2 volume mixing ratio.
-    x_H2O : float
-        H2O volume mixing ration.
+        Pressure of background transparent gas (most likely N2) in Pa.
+    P_CO2 : float
+        CO2 partial pressure in Pa.
+    P_H2O : float
+        H2O partial pressure in Pa.
     albedo : float
         Albedo.
     recirculation_factor : float
         Recirculation factor (0.25 if rapidly rotating, 0.666 if tidally locked).
     clouds : float
         Fraction of planet covered in cloud, by default 0.
-    rainout : bool
-        Whether to apply H2O rainout, by default True.
     august_roche_magnus : bool
         Whether to set surface x_H2O with the August-Roches-Magnus formula (overwrites provided x_H2O), by default False. 
+    cloud_destruction : bool
+        Whether to apply temperature dependant cloud destruction, by default True.
+    rainout : bool
+        Whether to apply H2O rainout, by default True.
     relative_humidity : float
         Value of relative humidity used in rainout claculations, by default 0.77.
     moist_convection : bool
         Whether to apply moist convection, by default True.
-    cloud_destruction : bool
-        Whether to apply temperature dependant cloud destruction, by default True.
     verbose : bool, optional
         Whether to print HELIOS output to terminal, by default False.
 
@@ -133,6 +133,10 @@ def run_HELIOS(
 
     result_dict: dict[str, object] = {}
 
+    P_surface = P_background + P_CO2 + P_H2O
+    x_CO2 = P_CO2 / P_surface
+    x_H2O = P_H2O / P_surface
+
     result_dict = {
         "Run_ID": name,
         "Instellation (W/m^2)": instellation,
@@ -140,8 +144,8 @@ def run_HELIOS(
         "R_Planet (m)": R_planet,
         "M_Planet (kg)": M_planet,
         "P_Surface (Pa)": P_surface,
-        "x_CO2": x_CO2,
-        "x_H2O": x_H2O,
+        "P_CO2 (Pa)": P_CO2,
+        "P_H2O (Pa)": P_H2O,
         "Albedo": albedo,
         "Recirculation_Factor": recirculation_factor,
         "Rainout": rainout,
