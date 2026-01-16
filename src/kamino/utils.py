@@ -1,5 +1,8 @@
 import numpy as np
 
+# Raise an exception on invalid floating point operations
+np.seterr(invalid='raise')
+
 def smooth_max(a, b, epsilon=1e-24):
     """
     Returns a smooth approximation of max(a, b).
