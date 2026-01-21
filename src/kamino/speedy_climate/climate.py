@@ -135,7 +135,7 @@ def run_HELIOS(
 
     P_surface = P_background + P_CO2 + P_H2O
     x_CO2 = P_CO2 / P_surface
-    x_H2O = P_H2O / P_surface
+    x_H2O = P_H2O / P_surface if not august_roche_magnus else 1e-12
 
     result_dict = {
         "Run_ID": name,
