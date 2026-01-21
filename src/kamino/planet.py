@@ -60,15 +60,19 @@ class planet:
             def T_s_residual(T_val):
                 pco2 = get_P_CO2(self.P_surface, T_val, Alk, C, Ca)
                 # T_calc = self.climate_emulator.get_temperature_from_pco2(pco2)
-                T_calc = get_T_surface(self.instellation, pco2 / self.P_surface)
+                T_calc = get_T_surface(self.instellation, pco2)
                 return T_val - T_calc
             
-            try:
-                T_s, _ = newton(T_s_residual, T_init, full_output=True, disp=False)
-            except (ValueError, RuntimeError, PHREEQCError):
-                T_s = float(brentq(T_s_residual, 273.5, 373.15)) # type: ignore
+            T_s, _ = newton(T_s_residual, T_init, full_output=True, disp=False)
+
+            # try:
+            #     T_s, _ = newton(T_s_residual, T_init, full_output=True, disp=False)
+            # except (ValueError, RuntimeError, PHREEQCError):
+            #     T_s = float(brentq(T_s_residual, 273.5, 373.15)) # type: ignore
 
             pco2 = get_P_CO2(self.P_surface, T_s, Alk, C, Ca)
+
+            assert ~np.isnan(T_s)
 
             return T_s, pco2
 
@@ -79,7 +83,7 @@ class planet:
             raise RuntimeError
 
 
-    def dY_dt(self, t, Y):
+    def dY_dt(self, t, Y, verbose=True):
 
         dt = t - self.last_t
         self.last_t = t
@@ -109,11 +113,10 @@ class planet:
         # T_s = np.minimum(360, T_s)
         # T_s = np.maximum(273.5, T_s)
         T_s = smooth_min(350, T_s)
-        T_s = smooth_max(273.5, T_s)
+        T_s = smooth_max(273.4, T_s)
 
         # T_seafloor = get_T_ocean(T_s, self.ocean_depth)
         T_seafloor = get_T_ocean_KT18(T_s)
-        # T_seafloor = np.maximum(T_seafloor, -ABSOLUTE_ZERO + 0.1) # seafloor temp fixed at 0 C
         T_seafloor = smooth_max(T_seafloor, -ABSOLUTE_ZERO + 0.1)
         T_pore = T_seafloor + 9
 
@@ -151,6 +154,9 @@ class planet:
         F_prec_o = smooth_min(F_prec_o, F_prec_o_max)
         F_prec_p = smooth_min(F_prec_p, F_prec_p_max)
 
+        # F_prec_o = 0
+        # F_prec_p = 0
+
         # print(f'F_prec_o = {F_prec_o / Mo:.3e} mol/kgw/yr  F_prec_p = {F_prec_p / Mp:.3e} mol/kgw/yr')
 
         delta_C = Co - Cp
@@ -174,7 +180,7 @@ class planet:
         
         dCp_dt = flux_diff + flux_prec + flux_diss
 
-        if should_print:
+        if should_print and verbose:
             print(f't = {t:.1e} yr  Y = {Y_calc[0]:.1e}, {Y_calc[1]:.1e}, {Y_calc[2]:.1e}, {Y_calc[1]:.1e}, {Y_calc[4]:.1e}, {Y_calc[5]:.1e} mol/kgw  T_s = {T_s:.0f} K  P_CO2 = {pco2:.1e} Pa  Calcite SI = {SI_o:.3f}, {SI_p:.3f}')
             # print(f'dY/dt = {dYdt} mol/kgw/s')
             # print(f"\n--- DEBUG t={t:.2e} ---")
@@ -186,9 +192,9 @@ class planet:
 
         return dYdt
     
-    def run_simulation(self, t_end, make_plots=False):
+    def run_simulation(self, t_end, make_plots, Y0):
         
-        Y0 = [0, 0, 0, 0, 0, 0]
+        # Y0 = [0, 0, 0, 0, 0, 0]
 
         sol = solve_ivp(
             self.dY_dt,
@@ -206,35 +212,78 @@ class planet:
 
         T_s = []
         pco2 = []
+        dCodt = []
+        dAodt = []
+        dCaodt = []
 
-        for Co, Ao, Cao in zip(results['C_ocean'], results['Alk_ocean'], results['Ca_ocean']):
+        for Co, Ao, Cao, Cp, Ap, Cap in zip(results['C_ocean'], results['Alk_ocean'], results['Ca_ocean'], results['C_pore'], results['Alk_pore'], results['Ca_pore']):
             T_s_val, pco2_val = self.solve_climate(Ao, Co, Cao)
             T_s.append(T_s_val)
             pco2.append(pco2_val)
+
+            dYdt = self.dY_dt(0, np.array([Co, Cp, Ao, Ap, Cao, Cap]), verbose=False)
+            dCodt.append(dYdt[0])
+            dAodt.append(dYdt[2])
+            dCaodt.append(dYdt[4])
+
+
 
         results['T_surface'] = T_s
         results['P_CO2'] = pco2
 
         if make_plots:
 
-            fig, ax1 = plt.subplots(figsize=(10, 6))
+            fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, figsize=(10, 10))
+            plt.subplots_adjust(hspace=0)
 
+            # --- Top Plot (ax1) ---
             ax1.plot(results['time'], results['C_ocean'], label='C_ocean', color='black')
             ax1.plot(results['time'], results['Alk_ocean'], label='Alk_ocean', color='orange')
             ax1.plot(results['time'], results['Ca_ocean'], label='Ca_ocean', color='green')
-            ax1.set_xlabel('Time (yr)')
+
+            # ax3 = ax1.twinx()
+            # ax3.plot(results['time'], dCodt, label='dC_ocean/dt', color='black', linestyle='--')
+            # ax3.plot(results['time'], dAodt, label='dA_ocean/dt', color='orange', linestyle='--')
+            # ax3.plot(results['time'], dCaodt, label='dCa_ocean/dt', color='green', linestyle='--')
+
+            # ax1.plot(results['time'], results['C_ocean'], label='C_pore', color='black', linestyle='--')
+            # ax1.plot(results['time'], results['Alk_ocean'], label='Alk_pore', color='orange', linestyle='--')
+            # ax1.plot(results['time'], results['Ca_ocean'], label='Ca_pore', color='green', linestyle='--')
+
             ax1.set_ylabel('Concentration (mol/kgw)')
             ax1.set_yscale('log')
-            ax1.legend(loc='lower left')
+            # ax3.set_ylabel('Rate of change of concentration (mol/kgw/s)')
+            # ax3.set_yscale('log')
 
-            ax2 = ax1.twinx()
-            # ax2.plot(results['time'], results['T_surface'], label='T_surface', color='red')
-            ax2.plot(results['time'], (results['P_CO2'] / self.P_surface) * 1e6, 'r-', label='P_CO2')
-            ax2.set_ylabel('x_CO2 (ppm)')
+            # lines1, labels1 = ax1.get_legend_handles_labels()
+            # lines3, labels3 = ax3.get_legend_handles_labels()
+            # ax1.legend(lines1 + lines3, labels1 + labels3, loc='lower right')
+
+            ax1.legend(loc='lower right')
+
+            # --- Bottom Plot (ax2) ---
+            ax4 = ax2.twinx()
+            ax4.plot(results['time'], results['T_surface'], 'k-', label='T_surface')
+            ax2.plot(results['time'], results['P_CO2'], 'r-', label='P_CO2')
+
+            ax2.set_ylabel('$P_{CO2}$ (Pa)')
             ax2.set_yscale('log')
-            # ax2.set_ylim([270, 340])
-            ax2.legend(loc='lower right')
-            plt.tight_layout()
+
+            ax4.set_ylabel('T (K)')
+            ax4.set_ylim([250, 340])
+
+            # Combine legends from ax2 and ax3
+            lines2, labels2 = ax2.get_legend_handles_labels()
+            lines4, labels4 = ax4.get_legend_handles_labels()
+            ax2.legend(lines2 + lines4, labels2 + labels4, loc='lower right')
+
+            # 3. Set the x-axis label ONLY on the bottom plot
+            ax2.set_xlabel('Time (yr)')
+
+            # Optional: Ensure tick labels on the top plot are definitely off (sharex usually handles this)
+            ax1.tick_params(labelbottom=False)
+
+            # plt.tight_layout()
             plt.savefig('Evolution.png')
 
         return results
@@ -242,7 +291,7 @@ class planet:
     def find_steady_state(self, t_init: float=1000):
 
         print(f'Initializing planet by evolving for {t_init} yrs...')
-        initial_results = self.run_simulation(t_init, True)
+        initial_results = self.run_simulation(t_init, True, [0.002, 0.002, 0.002, 0.002, 0.002, 0.002])
         initial_Y_guess = initial_results.iloc[-1][['C_ocean', 'C_pore', 'Alk_ocean', 'Alk_pore', 'Ca_ocean', 'Ca_pore']].values
 
         target_function = lambda Y: self.dY_dt(0, Y)
@@ -259,5 +308,20 @@ class planet:
 
         T_s, pco2 = self.solve_climate(Ao, Co, Cao)
 
-        print(T_s)
-        print(pco2)
+        jacobian = solution.jac
+
+        eigval, _ = np.linalg.eig(jacobian)
+
+        print(f'Surface Temperature  : {T_s:.0f} K')
+        print(f'P_CO2                : {pco2:.1e} Pa')
+        print(f'Jacobian Eigenvalues : {eigval}')
+
+        if np.all(eigval <= 0):
+            print(f'Climate is stable')
+        else:
+            instability_timescale = 1 / np.max(eigval)
+            if instability_timescale > 1e15:
+                print(f'Climate is stable')
+            else:
+                print(f'Climate will become unstable in {instability_timescale:.1e} yrs')
+            

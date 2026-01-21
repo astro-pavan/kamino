@@ -1,4 +1,5 @@
 from kamino.ocean_chemistry.aqueous_geochemistry import *
+from kamino.utils import *
 
 def get_P_CO2(P: float, T: float, alkalinity: float, DIC: float, Ca: float=0, Mg: float=0, Fe: float=0) -> float:
     """_summary_
@@ -34,8 +35,10 @@ def get_P_CO2(P: float, T: float, alkalinity: float, DIC: float, Ca: float=0, Mg
         'Alkalinity' : alkalinity
     }
 
-    if T < -ABSOLUTE_ZERO + 0.1:
-        return 0 # if the temperature is 0 C, the planet has frozen and no CO2 is in the atmosphere? 
+    # if T < -ABSOLUTE_ZERO + 0.1:
+    #     return 0 # if the temperature is 0 C, the planet has frozen and no CO2 is in the atmosphere? 
+
+    T = smooth_max(T, 273.5)
 
     input_lines = solution_block(P, T, composition, None) + output_block(saturation_indexes=['CO2(g)'])
     output = run_PHREEQC(input_lines, single_output=True)
