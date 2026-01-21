@@ -19,3 +19,6 @@ def smooth_min(a, b, epsilon=1e-24):
 
 def smooth_ReLU(x, epsilon=1e-20):
     return 0.5 * (x + np.sqrt(x**2 + epsilon))
+
+def smooth_heaviside(x, k=1e10):
+    return 0.5 *((k*x) / (np.sqrt(1 + (k * x) ** 2)) + 1)
