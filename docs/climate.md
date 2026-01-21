@@ -57,6 +57,10 @@ $$
 
 where $T$ is the surface temperature. The cloud fraction is multiplied by $(1 - d_{\mathrm{cloud}})$.
 
+### Ice-Albedo Feedback
+
+$$ \alpha(T) = \begin{cases} \alpha_{ocean} & T > T_{melt} \\ \alpha_{ice} & T < T_{freeze} \\ \alpha_{ice} + (\alpha_{ocean} - \alpha_{ice}) \frac{T - T_{freeze}}{T_{melt} - T_{freeze}} & \text{otherwise} \end{cases} $$
+
 ## Emulating HELIOS
 
 Each climate run with ``HELIOS`` takes approximately 10 seconds with a desktop computer with a GPU. In solving the carbon cycle equations, the climate state needs to be solved on each iteration, making each run potentially very time consuming. To speed up the climate calculation, an emulator is used to calculate the surface temperature, the value needed for the carbon cycle calulations. The emulator is trained with Gaussian processes. Gaussian processes are chosen over a simple interpolator as there are large amount of input parameters and the climate state has some non-linear behaviours. Gaussian processes are chosen over neural networks as they can be trained on approximately 1000 data points, which takes a few hours to generate with a desktop computer.
