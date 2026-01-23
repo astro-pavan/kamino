@@ -417,7 +417,7 @@ def get_output_kinetics_phases(output_df: pd.DataFrame) -> dict[str, float]:
             delta_moles[mineral[3:]] = float(output_df.at[1, mineral]) # type: ignore
     return delta_moles
 
-def get_output_activities(output_df: pd.DataFrame) -> dict[str, float]:
+def get_output_activities(output_df: pd.DataFrame, get_initial: bool=False) -> dict[str, float]:
     """
     Returns solution activities in selected output file.
 
@@ -434,8 +434,34 @@ def get_output_activities(output_df: pd.DataFrame) -> dict[str, float]:
     activities: dict[str, float] = {}
     phases = [key for key in output_df.columns if key.startswith('la_')]
     for phase in phases:
-        activities[phase[3:]] = 10 ** float(output_df.at[1, phase]) # type: ignore
+        i = 0 if get_initial else 1
+        activities[phase[3:]] = 10 ** float(output_df.at[i, phase]) # type: ignore
     return activities   
+
+def solve_chemistry(P: float, T: float, composition: dict[str, float], pH: Union[float, None]) -> pd.DataFrame:
+    """
+    Solves for the chemical state of a solution.
+
+    Parameters
+    ----------
+    P : float
+        Pressure in Pa.
+    T : float
+        Temperature in K.
+    composition : dict[str, float]
+        Molality of each element in the solution in mol/kgw.
+    pH : Union[float, None]
+        pH of the solution. If None, then the solution will be charge balanced.
+
+    Returns
+    -------
+    pd.DataFrame
+        Dataframe containing the selected output of the chemical calculation.
+    """
+    
+    input_lines = solution_block(P, T, composition, pH) + output_block(saturation_indexes=available_minerals, activities=['H+', 'HCO3-', 'CO3-2'])
+
+    return run_PHREEQC(input_lines, single_output=True)
 
 def equilbriate_phases(P: float, T: float, composition: dict[str, float], pH: Union[float, None], phase_amounts: dict[str, float]) -> pd.DataFrame:
     """
