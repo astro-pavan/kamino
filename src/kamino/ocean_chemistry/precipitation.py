@@ -1,4 +1,5 @@
 from kamino.ocean_chemistry.aqueous_geochemistry import *
+from kamino.utils import *
 
 def get_calcite_precipitation_rate(P: float, T: float, alkalinity: float, DIC: float, Ca: float, Mg: float=0, Fe: float=0) -> tuple[float, float]:
     """
@@ -27,6 +28,8 @@ def get_calcite_precipitation_rate(P: float, T: float, alkalinity: float, DIC: f
         Calcite precipitation rate in mol/s/kgw, Calcite saturation index
     """
 
+    T = smooth_max(273.5, T)
+
     composition = {
         'Ca' : Ca,
         'Mg' : Mg,
@@ -35,13 +38,14 @@ def get_calcite_precipitation_rate(P: float, T: float, alkalinity: float, DIC: f
         'Alkalinity' : alkalinity
     }
 
-    output = kinetics(P, T, composition, None, {'Calcite': 1e-10}, 1, 100)
-    k = get_output_kinetics_phases(output)['Calcite']
-    SI = get_output_saturation_indexes(output)['Calcite']
+    # output = kinetics(P, T, composition, None, {'Calcite': 1e-10}, 1, 100)
+    # k = get_output_kinetics_phases(output)['Calcite']
+    output = solve_chemistry(P, T, composition, None)
+    SI = get_output_saturation_indexes(output, get_initial=True)['Calcite']
 
-    act_H = get_output_activities(output)['H+']
-    act_HCO3 = get_output_activities(output)['HCO3-']
-    act_CO3 = get_output_activities(output)['CO3-2']
+    act_H = get_output_activities(output, get_initial=True)['H+']
+    act_HCO3 = get_output_activities(output, get_initial=True)['HCO3-']
+    act_CO3 = get_output_activities(output, get_initial=True)['CO3-2']
 
     SR = 10 ** SI
 
@@ -53,17 +57,21 @@ def get_calcite_precipitation_rate(P: float, T: float, alkalinity: float, DIC: f
     Sig = 1
     na = 1
     kc = 160
-    S = 100 # specific surface area
+    S = 1 # specific surface area
 
     act_C = act_HCO3 + act_CO3
     carb_tem = 1 - (kc * act_C) / (1 + kc * act_C)
 
-    scaling_factor = 1e-12
+    scaling_factor = 1e-8
 
     rplusa = Aa * (np.exp(-Ea / (R * T))) * (act_H ** na) * S
     rplusc = Ac * (np.exp(-Eac / (R * T))) * carb_tem
     rplus = rplusa + rplusc
-    rate = rplus * (SR ** (1/Sig) - 1) * scaling_factor
+
+    #rate = rplus * (SR ** (1/Sig) - 1) ** 2
+
+    smoother = lambda x : np.maximum(x - x / ((10 * x) ** 2 + 1), 0)
+    rate = rplus * smoother(SR ** (1/Sig) - 1) * 1e-10
 
     return rate, SI
 
