@@ -6,7 +6,7 @@ import kamino.seafloor_weathering.chili.parameters as pr
 import kamino.seafloor_weathering.chili.climate as cl
 from kamino.utils import *
 
-from kamino.constants import YR, POROSITY
+from kamino.constants import YR, POROSITY, R_EARTH
 
 KeqFuncs   = eq.import_thermo_data(eq.DATABASE_DIR / 'species.csv')
 DICeqFuncs = eq.get_DICeq(pr.xCO2, pr.T, pr.Pfull, KeqFuncs)
@@ -41,9 +41,9 @@ def get_weathering_rate(P: float, T: float, x_CO2: float, runoff: float, flow_pa
         Alkalinity production rate in mol / m^2 / yr
     """
 
-    P = P / 1e5 # convert to bar
-    x_CO2 = smooth_max(x_CO2, 1e-8) # makes sure x_CO2 is not bleow the minimum value for the interpolator
-    T = smooth_min(T, 372.13)
+    P = float(P / 1e5) # convert to bar
+    x_CO2 = float(smooth_max(x_CO2, 1e-8)) # makes sure x_CO2 is not bleow the minimum value for the interpolator
+    T = float(smooth_min(T, 372.13))
 
     arg = np.array((x_CO2, T, P))
     pH = DICeqFuncs['bash']['pH'](arg)
@@ -88,9 +88,32 @@ def get_weathering_rate_old(P: float, T: float, x_CO2: float) -> float:
     Returns
     -------
     float
-        Alkalinity production rate in mol / yr (NOT mol / m^2 / yr).
+        Alkalinity production rate in mol / m^2 / yr
     """
 
     P_CO2 = (P / 1e5) * x_CO2 # P_CO2 in bar
 
-    return cl.seaf_brad1997(T, P_CO2) * 1e12
+    return cl.seaf_brad1997(T, P_CO2) * 1e12 / (4 * np.pi * R_EARTH ** 2)
+
+def get_land_weathering_rate_old(P: float, T: float, x_CO2: float) -> float:
+    """
+    Calculates the basalt seafloor weathering rate, giving an alkalinity production rate with the older KT18 method.
+
+    Parameters
+    ----------
+    P : float
+        Pressure in Pa.
+    T : float
+        Temperature in K.
+    x_CO2 : float
+        Atmospheric CO2 fraction.
+
+    Returns
+    -------
+    float
+        Alkalinity production rate in mol / m^2 / yr
+    """
+
+    P_CO2 = (P / 1e5) * x_CO2 # P_CO2 in bar
+
+    return cl.cont_walk1981(T, P_CO2) * 1e12 / (4 * np.pi * R_EARTH ** 2)

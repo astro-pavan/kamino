@@ -2,6 +2,8 @@ import pandas as pd
 import numpy as np
 from scipy.interpolate import LinearNDInterpolator, RBFInterpolator, RegularGridInterpolator
 
+from kamino.utils import *
+
 data_path_original = '/home/pt426/Code/kamino/src/kamino/speedy_climate/data/climate_runs/dataset_4d.csv'
 data_path = '/home/pt426/Code/kamino/src/kamino/speedy_climate/data/climate_runs/dataset_4d_v2.csv'
 
@@ -69,9 +71,12 @@ grid_values = df_sorted[target].values.reshape([len(u) for u in unique_vals])
 # 3. Create the Interpolator
 # bounds_error=False allows extrapolation (returns NaN or nearest), 
 # fill_value=None with bounds_error=False extrapolates using the grid edge.
-rgi = RegularGridInterpolator(unique_vals, grid_values, bounds_error=False, fill_value=None)
+rgi = RegularGridInterpolator(unique_vals, grid_values, bounds_error=True, method='linear')
 
 def get_T_surface(S, P_CO2, P_H2O, albedo):
-    point = [S, P_CO2, P_H2O, albedo]
+    P_CO2 = smooth_max(1e-1, P_CO2)
+    P_H2O = smooth_max(1e-1, P_H2O)
+    point = [S, float(P_CO2), float(P_H2O), albedo]
     temp = rgi(point)
+    assert ~np.isnan(temp)
     return float(temp) - 15
