@@ -1,6 +1,6 @@
 import numpy as np
 np.set_printoptions(precision=1)
-from scipy.optimize import brentq, root, least_squares, newton, basinhopping, direct, differential_evolution
+from scipy.optimize import brentq, root, least_squares, newton, basinhopping, direct, differential_evolution, bisect
 from scipy.integrate import solve_ivp
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -9,7 +9,7 @@ import time
 
 from kamino.constants import *
 from kamino.speedy_climate.emulator import climate_emulator, august_roche_magnus_formula
-# from kamino.speedy_climate.simple import get_T_surface
+from kamino.speedy_climate.analytic import get_surface_temp
 from kamino.speedy_climate.simple_v2 import get_T_surface
 from kamino.ocean_chemistry.co2 import get_P_CO2, get_P_CO2_v2
 from kamino.ocean_circulation.analytic import get_T_ocean, get_T_ocean_KT18
@@ -22,7 +22,7 @@ iter = 0
 
 class planet:
 
-    def __init__(self, P_surface, ocean_depth, instellation):
+    def __init__(self, P_surface, ocean_depth, instellation, hydrothermal_flow_rate, seafloor_age, flow_path_length):
 
         # CONSTANTS
 
@@ -35,7 +35,7 @@ class planet:
         self.ocean_depth: float = ocean_depth
         self.ocean_mass: float = self.ocean_depth * 4 * np.pi * self.radius ** 2 * 1000
 
-        self.outgassing: float = (0.0147 * 4 * np.pi * self.radius ** 2) / 2
+        self.outgassing: float = (0.0147 * 4 * np.pi * self.radius ** 2) * 0.5
 
         self.pore_space_flux: float = 1e14
         self.pore_space_mass = PORE_DEPTH * 4 * np.pi * self.radius ** 2 * 1000 * POROSITY
@@ -43,10 +43,9 @@ class planet:
         self.instellation: float = instellation * SOLAR_CONSTANT
         self.albedo: float = 0.3
 
-        # CLIMATE EMULATOR
-
-        # self.climate_emulator = climate_emulator("earth_rapid_rotator", "helios_1000_runs_earth_rapid_rotator.csv")
-        # self.climate_emulator.make_temperature_pco2_interpolator(self.instellation, self.P_surface)
+        self.hydrothermal_flow_rate = hydrothermal_flow_rate
+        self.seafloor_age = seafloor_age
+        self.flow_path_length = flow_path_length
 
         self.use_KT18_weathering = False
 
@@ -128,14 +127,6 @@ class planet:
         T_seafloor = smooth_max(T_seafloor, 273.5)
         T_pore = T_seafloor + 9
 
-        # T_seafloor = self.temperature_profile(90, T_s, 30)
-        # T_seafloor = smooth_max(T_seafloor, 273.5)
-        # T_pore = T_seafloor + 9
-
-        # T_seafloor = self.temperature_profile(0, T_s, 30)
-        # T_seafloor = smooth_max(T_seafloor, 273.5)
-        # T_pore = T_seafloor + 9
-
         x_CO2 = pco2 / (self.P_surface + pco2 + ph2o)
 
         P_pore = (self.P_surface + pco2 + ph2o) + 1000 * self.gravity * self.ocean_depth
@@ -144,7 +135,7 @@ class planet:
         if self.use_KT18_weathering:
             F_diss = get_weathering_rate_old(P_pore, T_pore, x_CO2) * (self.radius / R_EARTH) ** 2 # mol / s
         else:
-            F_diss = get_weathering_rate(P_pore, T_pore, x_CO2, 0.05, PORE_DEPTH, 50e6) * (4 * np.pi * self.radius ** 2) # mol / s
+            F_diss = get_weathering_rate(P_pore, T_pore, x_CO2, self.hydrothermal_flow_rate, PORE_DEPTH, self.seafloor_age) * (4 * np.pi * self.radius ** 2) # mol / s
         weathering_calc_time = time.time() - weathering_calc_time
 
         precipitation_calc_time = time.time()
@@ -154,10 +145,6 @@ class planet:
 
         # F_prec_o = rate_o * Mo * YR
         # F_prec_p = rate_p * Mp * YR
-
-        # tau = 1 # in yrs
-        # F_prec_o_max = (Co * Mo) / tau
-        # F_prec_p_max = (Cp * Mp) / tau
 
         F_prec_o = 0.5 * F_diss
         F_prec_p = 0.5 * F_diss
@@ -189,19 +176,11 @@ class planet:
 
         if should_print and verbose:
             print(f't = {t:.1e} yr  Y = {Y_calc[0]:.1e}, {Y_calc[1]:.1e}, {Y_calc[2]:.1e}, {Y_calc[1]:.1e}, {Y_calc[4]:.1e}, {Y_calc[5]:.1e} mol/kgw  T_s = {T_s:.0f} K  T_f = {T_pore:.0f} K  P_CO2 = {pco2:.1e} Pa  Calcite SI = {SI_o:.3f}, {SI_p:.3f}')
-            # print(f'dY/dt = {dYdt} mol/kgw/s')
-            # print(f"\n--- DEBUG t={t:.2e} ---")
-            # print(f"Cp: {Cp:.6e}")
-            # print(f"dCp_dt: {dCp_dt:.2e} = (Diff: {flux_diff:.2e}) + (Prec: {flux_prec:.2e})")
-            # print(f"Prec Rate (raw): {F_prec_p:.2e} | Max Allowed: {F_prec_p_max:.2e}")
-            # print(f"T_pore: {T_pore:.4f} K")
             # print(f'Step time: {calc_time:.1e} s (Climate: {climate_calc_time:.1e} s  Weathering: {weathering_calc_time:.1e} s  Precipitation: {precipitation_calc_time:.1e} s)')
 
         return dYdt
     
     def run_simulation(self, t_end, make_plots, Y0):
-        
-        # Y0 = [0, 0, 0, 0, 0, 0]
 
         sol = solve_ivp(
             self.dY_dt,
@@ -246,20 +225,12 @@ class planet:
             T_seafloor = smooth_max(T_seafloor, 273.5)
             T_pore = T_seafloor + 9
 
-            # T_seafloor = self.temperature_profile(90, T_s, 30)
-            # T_seafloor = smooth_max(T_seafloor, 273.5)
-            # T_pore = T_seafloor + 9
-
-            # T_seafloor = self.temperature_profile(0, T_s, 30)
-            # T_seafloor = smooth_max(T_seafloor, 273.5)
-            # T_pore = T_seafloor + 9
-
             T_f.append(T_seafloor)
 
             x_CO2 = pco2_val / (self.P_surface + pco2_val + ph2o_val)
             P_pore = (self.P_surface + pco2_val + ph2o_val) + 1000 * self.gravity * self.ocean_depth
 
-            F_diss_val = get_weathering_rate(P_pore, T_pore, x_CO2, 0.05, PORE_DEPTH, 50e6) * (4 * np.pi * self.radius ** 2)
+            F_diss_val = get_weathering_rate(P_pore, T_pore, x_CO2, self.hydrothermal_flow_rate, PORE_DEPTH, self.seafloor_age) * (4 * np.pi * self.radius ** 2)
 
             rate_o, SI_o = get_calcite_precipitation_rate(P_pore, T_seafloor, Ao, Co, Cao)
             rate_p, SI_p = get_calcite_precipitation_rate(P_pore, T_pore, Ap, Cp, Cap)
@@ -395,58 +366,40 @@ class planet:
 
         return T_s, stable, Co
     
-    def find_steady_state_simple(self):
-
-        # pco2_range = np.logspace(-2, 4)
-        # r = []
-        # for pco2 in pco2_range:
-        #     r.append(self.solve_climate_from_CO2(pco2)[0])
-
-        # plt.plot(pco2_range, r)
-        # plt.scatter(40, 288)
-        # plt.xscale('log')
-        # plt.show()
-        # plt.close()
-
-        def H(x, k=1e20):
-            return 0.5 *((k*x) / (np.sqrt(1 + (k * x) ** 2)) + 1)
+    def find_steady_state_no_evolution(self, start_pco2, use_KT18_weathering=False, use_WHAK_weathering=False):
                                     
         def target_function_climate(pco2):
 
             T_s, ph2o = self.solve_climate_from_CO2(pco2)
+            # T_s = get_surface_temp(self.instellation, pco2)
+            # ph2o = 0
 
             x_CO2 = pco2 / (self.P_surface + pco2 + ph2o)
             P_pore = (self.P_surface + pco2 + ph2o) + 1000 * self.gravity * self.ocean_depth
 
             T_seafloor = get_T_ocean_KT18(T_s)
             T_seafloor = smooth_max(T_seafloor, 273.5)
-
-            # T_seafloor_cold = self.temperature_profile(90, T_s, 30)
-            # T_seafloor_cold = smooth_max(T_seafloor_cold, 273.5)
-
-            # T_seafloor_hot = self.temperature_profile(0, T_s, 30)
-            # T_seafloor_hot = smooth_max(T_seafloor_hot, 273.5)
-
-            # T_threshold = 300
-            # T_seafloor = T_seafloor_cold * H(T_threshold - T_s) + T_seafloor_hot * H(T_s - T_threshold)
-            
             T_pore = T_seafloor + 9
 
-            # print(f'P_CO2 = {float(pco2):.2e} Pa')
-            weathering = get_weathering_rate(P_pore, T_pore, x_CO2, 0.05, PORE_DEPTH, 50e6) * 4 * np.pi * self.radius ** 2
-            # weathering = get_land_weathering_rate_old(self.P_surface, T_s, x_CO2) * 4 * np.pi * self.radius ** 2
-            # weathering = get_weathering_rate_old(self.P_surface, T_s - 14, x_CO2) * 4 * np.pi * self.radius ** 2
+            if use_WHAK_weathering:
+                weathering = get_land_weathering_rate_old(self.P_surface, T_s, x_CO2) * 4 * np.pi * self.radius ** 2
+            elif use_KT18_weathering:
+                weathering = get_weathering_rate_old(self.P_surface, T_pore, x_CO2) * 4 * np.pi * self.radius ** 2
+            else:
+                weathering = get_weathering_rate(P_pore, T_pore, x_CO2, self.hydrothermal_flow_rate, self.flow_path_length, self.seafloor_age) * 4 * np.pi * self.radius ** 2
 
-            res = 0.5 * weathering - self.outgassing
-            print(f'P_CO2 = {float(pco2):.2e} Pa  T_pore = {T_pore:.0f} K  Residual = {float(res):.2e}')
+            residual = 0.5 * weathering - self.outgassing
+            # print(f'P_CO2 = {float(pco2):.2e} Pa  T_pore = {T_pore:.0f} K  Residual = {float(residual):.2e}')
 
-            return res / self.outgassing
+            return residual / self.outgassing
         
         pco2_range = np.logspace(-2, 5)
         r = []
         for pco2 in pco2_range:
-            r.append((target_function_climate(pco2) * self.outgassing + self.outgassing) * 2)
+            r.append(target_function_climate(pco2))
 
+        plt.figure(figsize=(3,3))
+        plt.title(f'S={self.instellation}')
         plt.plot(pco2_range, r)
         plt.axhline(0)
         plt.xscale('log')
@@ -454,13 +407,13 @@ class planet:
         plt.close()
         
         print('Solving climate state...')
-        sol_climate = least_squares(target_function_climate, 40, bounds=(1e-2, 1e5))
-        # sol_climate = direct(target_function_climate, [(0, 1e4)])
+        sol_climate = bisect(target_function_climate, 1e-2, 1e5)
         print('Solved.')
 
-        print(sol_climate)
+        # print(sol_climate)
 
-        P_CO2 = float(sol_climate.x)
+        # P_CO2 = float(sol_climate.root)
+        P_CO2 = float(sol_climate)
         T_s, P_H2O = self.solve_climate_from_CO2(P_CO2)
 
         x_CO2 = P_CO2 / (self.P_surface + P_CO2 + P_H2O)
@@ -470,45 +423,12 @@ class planet:
         T_seafloor = smooth_max(T_seafloor, 273.5)
         T_pore = T_seafloor + 9
 
-        weathering = get_weathering_rate(P_pore, T_pore, x_CO2, 0.05, PORE_DEPTH, 50e6) * 4 * np.pi * self.radius ** 2
+        if use_WHAK_weathering:
+            T_weather = T_s
+        elif use_KT18_weathering:
+            T_weather = T_pore
+        else:
+            T_weather = T_pore
 
-        print(f'T_s = {T_s:.0f}')
-
-        target_function_chemistry = lambda Y: self.dY_dt(0, Y, T_surface=T_s, P_CO2=P_CO2)
-
-        def get_chemistry(Y):
-            
-            logC, logAlk, logCa = Y
-
-            C, Alk, Ca = 10 ** float(logC), 10 ** float(logAlk), 10 ** float(logCa)
-
-            rate_o, SI_o = get_calcite_precipitation_rate(P_pore, T_seafloor, Alk, C, Ca)
-
-            precipitation = rate_o * self.ocean_mass * YR
-
-            res = precipitation - 0.5 * weathering
-
-            print(f'Y = {Y[0]:.3f} {Y[1]:.3f} {Y[2]:.3f} mol/kgw  SI = {SI_o:.2f}  Residual = {res / weathering}')
-
-            return res / weathering
-
-
-        init = 0.001
-        x0 = [init, init, init, init, init, init]
-
-        lower_bounds = [-7, -7, -7, -7, -7, -7]
-        upper_bounds = [0, 0, 0, 0, 0, 0]
-
-        bounds = [(-7, 0), (-7, 0), (-7, 0)]
-
-        sol_chemistry = least_squares(
-            target_function_chemistry, 
-            x0, 
-        )
-
-        # sol_chemistry = differential_evolution(get_chemistry, bounds)
-
-        Y_chem = sol_chemistry.x
-
-        return T_s, P_CO2
+        return T_s, P_CO2, T_weather
         

@@ -24,9 +24,9 @@ plt.figure(figsize=(20, 20))
 
 for s in S:
 
-    p1 = planet(1e5, 300, s)
+    p1 = planet(1e5, 300, s, 0.05, 50e6)
     # T_s, st = p1.find_steady_state(7e4)
-    T_s, pco2, Co, Ao, Cao = p1.find_steady_state_simple()
+    T_s, pco2 = p1.find_steady_state_no_evolution()
     T.append(T_s)
     co2.append(pco2)
     # DIC.append(Co)
