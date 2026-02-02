@@ -11,14 +11,14 @@ from kamino.seafloor_weathering.weathering import *
 from kamino.constants import YR
 
 T_range = np.linspace(274, 340, num=20)
-pco2_range = np.logspace(-1, 4, num=20)
+pco2_range = np.logspace(-1, 5, num=20)
 W = np.zeros((20,20))
 W2 = np.zeros((20,20))
 
 for i, T in enumerate(T_range):
     for j, pco2 in enumerate(pco2_range):
         W[i, j] = get_weathering_rate(1e6, T, pco2 / 1e5, 0.05, 100, 50e6)
-        W2[i, j] = get_weathering_rate_old(1e6, T, pco2 / 1e5)
+        W2[i, j] = get_weathering_rate_KT18(1e6, T, pco2 / 1e5)
 
 plt.contourf(T_range, pco2_range, np.log10(W.T), 200, cmap='turbo')
 plt.colorbar(label='log[Weathering rate (mol/m^2/yr)]')
@@ -59,7 +59,7 @@ W2 = np.zeros((20,20))
 for i, T in enumerate(T_range):
     for j, pco2 in enumerate(pco2_range):
         W[i, j] = get_weathering_rate(1e6, T, pco2 / 1e5, 1, 10, 0)
-        W2[i, j] = get_weathering_rate_old(1e6, T, pco2 / 1e5)
+        W2[i, j] = get_weathering_rate_KT18(1e6, T, pco2 / 1e5)
 
 plt.contourf(T_range, pco2_range, np.log10(W.T), 200, cmap='turbo')
 plt.colorbar(label='log[Weathering rate (mol/m^2/yr)]')

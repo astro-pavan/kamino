@@ -7,7 +7,10 @@ from kamino.constants import*
 
 data_path = 'src/kamino/speedy_climate/data/climate_runs/clima_data_grid_rapid.csv'
 
-df = pd.read_csv(data_path)
+try:
+    df = pd.read_csv(data_path)
+except FileNotFoundError:
+    df = pd.read_csv('../' + data_path)
 
 # 1. Define your grid axes
 dims = ['Instellation (S0)', 'P_CO2 (bar)', 'Albedo']

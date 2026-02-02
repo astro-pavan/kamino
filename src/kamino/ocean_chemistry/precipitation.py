@@ -57,12 +57,10 @@ def get_calcite_precipitation_rate(P: float, T: float, alkalinity: float, DIC: f
     Sig = 1
     na = 1
     kc = 160
-    S = 1 # specific surface area
+    S = 1e-6 # specific surface area
 
     act_C = act_HCO3 + act_CO3
     carb_tem = 1 - (kc * act_C) / (1 + kc * act_C)
-
-    scaling_factor = 1e-8
 
     rplusa = Aa * (np.exp(-Ea / (R * T))) * (act_H ** na) * S
     rplusc = Ac * (np.exp(-Eac / (R * T))) * carb_tem
@@ -71,7 +69,19 @@ def get_calcite_precipitation_rate(P: float, T: float, alkalinity: float, DIC: f
     #rate = rplus * (SR ** (1/Sig) - 1) ** 2
 
     smoother = lambda x : np.maximum(x - x / ((10 * x) ** 2 + 1), 0)
-    rate = rplus * smoother(SR ** (1/Sig) - 1) * 1e-10
+    # rate = rplus * smoother(SR ** (1/Sig) - 1)
+
+    Omega = SR ** (1/Sig)
+    
+    # Strictly forbid dissolution (Physics Constraint)
+    if Omega <= 1.0:
+        return 0.0, SI
+    
+    # Use a Squared dependence for precipitation (Numerical Stability)
+    # The square (x^2) ensures the transition from 0 is smooth (continuous slope),
+    # but not as "flat" as your previous cubic smoother.
+    
+    rate = rplus * (Omega - 1.0) ** 2
 
     return rate, SI
 

@@ -7,6 +7,10 @@ from kamino.constants import *
 
 import matplotlib.pyplot as plt
 
+pl = planet(1e5, 3000, 1.0, 1, 0.05, 50e6, 100)
+pl.find_steady_state(1e7)
+pl.find_steady_state_no_evolution()
+
 # p1 = planet(1e5, 3000, 1.0)
 # T_s, st = p1.find_steady_state(1000000)
 
@@ -20,34 +24,32 @@ co2 = []
 DIC = []
 stable = []
 
-plt.figure(figsize=(20, 20))
+# for s in S:
 
-for s in S:
+#     p1 = planet(1e5, 300, s, 0.05, 50e6, 100)
+#     # T_s, st = p1.find_steady_state(7e4)
+#     T_s, pco2, T_weather = p1.find_steady_state_no_evolution(diagnostic_plots=False)
+#     T.append(T_s)
+#     co2.append(pco2)
+#     # DIC.append(Co)
+#     # stable.append(st)
 
-    p1 = planet(1e5, 300, s, 0.05, 50e6)
-    # T_s, st = p1.find_steady_state(7e4)
-    T_s, pco2 = p1.find_steady_state_no_evolution()
-    T.append(T_s)
-    co2.append(pco2)
-    # DIC.append(Co)
-    # stable.append(st)
+# # plt.savefig('Rates2.png')
 
-# plt.savefig('Rates2.png')
+# fig, ax1 = plt.subplots(figsize=(20, 20))
 
-fig, ax1 = plt.subplots(figsize=(20, 20))
+# ax1.plot(S, T, label='Temperature (T)', marker='o', color='tab:blue')
+# ax1.set_xlabel('S')
+# ax1.set_ylabel('Temperature (T)', color='tab:blue')
+# ax1.axhline(273, color='tab:blue')
+# ax1.axhline(340, color='tab:blue')
+# ax1.tick_params(axis='y', labelcolor='tab:blue')
 
-ax1.plot(S, T, label='Temperature (T)', marker='o', color='tab:blue')
-ax1.set_xlabel('S')
-ax1.set_ylabel('Temperature (T)', color='tab:blue')
-ax1.axhline(273, color='tab:blue')
-ax1.axhline(340, color='tab:blue')
-ax1.tick_params(axis='y', labelcolor='tab:blue')
+# ax2 = ax1.twinx()
+# ax2.plot(S, co2, label='P_CO2', marker='s', color='tab:orange')
+# ax2.set_ylabel('P_CO2', color='tab:orange')
+# ax2.set_yscale('log')
+# ax2.tick_params(axis='y', labelcolor='tab:orange')
 
-ax2 = ax1.twinx()
-ax2.plot(S, co2, label='P_CO2', marker='s', color='tab:orange')
-ax2.set_ylabel('P_CO2', color='tab:orange')
-ax2.set_yscale('log')
-ax2.tick_params(axis='y', labelcolor='tab:orange')
-
-fig.tight_layout()
-plt.show()
+# fig.tight_layout()
+# plt.show()

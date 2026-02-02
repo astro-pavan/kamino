@@ -70,9 +70,9 @@ def get_weathering_rate(P: float, T: float, x_CO2: float, runoff: float, flow_pa
 
     w = runoff * C
 
-    return float(w)
+    return float(w[0])
 
-def get_weathering_rate_old(P: float, T: float, x_CO2: float) -> float:
+def get_weathering_rate_KT18(P: float, T: float, x_CO2: float) -> float:
     """
     Calculates the basalt seafloor weathering rate, giving an alkalinity production rate with the older KT18 method.
 
@@ -95,7 +95,7 @@ def get_weathering_rate_old(P: float, T: float, x_CO2: float) -> float:
 
     return cl.seaf_brad1997(T, P_CO2) * 1e12 / (4 * np.pi * R_EARTH ** 2)
 
-def get_land_weathering_rate_old(P: float, T: float, x_CO2: float) -> float:
+def get_weathering_rate_WHAK(P: float, T: float, x_CO2: float) -> float:
     """
     Calculates the basalt seafloor weathering rate, giving an alkalinity production rate with the older KT18 method.
 
@@ -117,3 +117,51 @@ def get_land_weathering_rate_old(P: float, T: float, x_CO2: float) -> float:
     P_CO2 = (P / 1e5) * x_CO2 # P_CO2 in bar
 
     return cl.cont_walk1981(T, P_CO2) * 1e12 / (4 * np.pi * R_EARTH ** 2)
+
+# MAC weathering
+
+mu = np.exp(2)
+# A: specific surface area (m^2.kg^-1)
+A = 100
+# L: reactive flow path length (m)
+L = 1
+# phi: porosity, of soil
+phi = 0.1
+# t_s: soil age (year)
+t_s = 1e5
+# rho_sf: mineral mass to fluid volume ratio (kg.m^-3)
+rho_sf = 12728
+# keff_ref: reference rate constant for mineral dissolution (mol.m^-2.year^-1)
+keff_ref = 8.7e-6
+# T_e: Kinetic weathering temperature dependence (K)
+Te = 11.1
+# T_ref: modern global average temperature (K)
+T_ref = 288
+# pco2_ref: pre-industrial co2 (bar)
+pco2_ref = 280e-6
+# beta: kinetic weathering pco2 dependence
+beta = 0.2
+# m: mineral molar mass (kg.mol^-1)
+m = 0.27
+# X_r: reactive mineral concentration in fresh rock
+X_r = 0.36
+# lmbda: thermodynamic coefficient for C_eq, variable by orders of magnitude
+lmbda = 1.4e0
+# 
+# n: thermodynamic pco2 dependence of C_eq
+n = 0.316
+
+def get_weathering_rate_MAC(T, pco2):
+
+    q = 0.2
+    pco2 = pco2 * 1e-5
+
+    def Ceq(pco2):
+        return lmbda * pco2**n
+
+    alpha = L * phi * rho_sf * A * X_r * mu
+    top = alpha
+    keff = keff_ref * np.exp((T-T_ref)/Te) * (pco2/pco2_ref)**beta
+    bottom = (keff**(-1) + m*A*t_s + alpha/(q*Ceq(pco2)))
+
+    return top/bottom
