@@ -5,18 +5,11 @@ import time
 import sys
 import os
 
-# --- IMPORTS ---
-# Ensure we can find the modules
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../src'))
 
-try:
-    from kamino.ocean_chemistry.precipitation import get_calcite_precipitation_rate as get_phreeqc
-    from kamino.ocean_chemistry.precipitation_interpolator import get_calcite_data_interpolated as get_interpolator
-    from kamino.ocean_chemistry.precipitation_interpolator import PrecipitationInterpolator
-except ImportError:
-    print("Error: Could not import Kamino modules. Run this script from the project root.")
-    print("Ensure 'kamino' is a valid package with an __init__.py.")
-    sys.exit()
+from kamino.ocean_chemistry.precipitation import get_calcite_precipitation_rate as get_phreeqc
+from kamino.ocean_chemistry.precipitation_interpolator import get_calcite_data_interpolated as get_interpolator
+from kamino.ocean_chemistry.precipitation_interpolator import PrecipitationInterpolator
 
 def run_accuracy_test(n_samples=500):
     print(f"--- Starting Accuracy Test (N={n_samples} random points) ---")
