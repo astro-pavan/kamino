@@ -30,7 +30,7 @@ grid_values = df_sorted[target].values.reshape([len(u) for u in unique_vals])
 # 3. Create the Interpolator
 # bounds_error=False allows extrapolation (returns NaN or nearest), 
 # fill_value=None with bounds_error=False extrapolates using the grid edge.
-rgi_rapid = RegularGridInterpolator(unique_vals, grid_values, bounds_error=True, method='linear')
+rgi_rapid = RegularGridInterpolator(unique_vals, grid_values, bounds_error=False, method='linear')
 
 # Extract unique, sorted values for each dimension
 unique_vals = [np.sort(df_tidal[col].unique()) for col in dims]
@@ -43,11 +43,12 @@ grid_values = df_sorted[target].values.reshape([len(u) for u in unique_vals])
 # 3. Create the Interpolator
 # bounds_error=False allows extrapolation (returns NaN or nearest), 
 # fill_value=None with bounds_error=False extrapolates using the grid edge.
-rgi_tidal = RegularGridInterpolator(unique_vals, grid_values, bounds_error=True, method='linear')
+rgi_tidal = RegularGridInterpolator(unique_vals, grid_values, bounds_error=False, method='linear')
 
 def get_T_surface(S, P_CO2, albedo, tidally_locked=False):
     
-    P_CO2 = smooth_max(1e-2, P_CO2)
+    P_CO2 = smooth_max(1e-2, P_CO2) # 0.01 Pa minimum
+    albedo = np.clip(albedo, 0.0, 0.5) # the interpolator only goes to 0.5
     point = [S / SOLAR_CONSTANT, float(P_CO2) * 1e-5, albedo]
 
     if tidally_locked:
@@ -55,5 +56,6 @@ def get_T_surface(S, P_CO2, albedo, tidally_locked=False):
     else:
         temp = rgi_rapid(point)[0]
 
-    assert ~np.isnan(temp)
+    assert ~np.isnan(temp) # NEDD TO REPLACE WITH BETTER ERROR HANDLING
+    
     return float(temp)

@@ -20,6 +20,8 @@ from kamino.ocean_chemistry.precipitation_interpolator import *
 from kamino.utils import *
 
 iter = 0
+T_min = 240
+T_max = 350
 
 class planet:
 
@@ -78,35 +80,41 @@ class planet:
 
     def solve_climate_from_chemistry(self, t: float, Alk: float, C: float, Ca: float, T_init: float=288) -> tuple[float, float, float]:
 
+        def T_s_residual(T_guess):
+            T_guess = np.clip(T_guess, 150, 500)
+            pco2 = get_P_CO2(self.P_surface, T_guess, Alk, C, Ca)
+            T_calc = get_T_surface(self.instellation, pco2, self.albedo, tidally_locked=self.tidally_locked)
+            return T_guess - T_calc
+        
         try:
+            T_s = newton(T_s_residual, T_init, maxiter=50, tol=1e-4)
+        except (RuntimeError, ValueError):
+            try:
+                T_s = bisect(T_s_residual, T_min, T_max) 
+            except ValueError:
+                T_s = T_max if T_s_residual(T_max) < 0 else T_min
+        
+        pco2 = get_P_CO2(self.P_surface, T_s, Alk, C, Ca)
+        ph2o = august_roche_magnus_formula(T_s) * 0.5
 
-            def T_s_residual(T_val):
-                pco2 = get_P_CO2(self.P_surface, T_val, Alk, C, Ca)
-                T_calc = get_T_surface(self.instellation, pco2, self.albedo, tidally_locked=self.tidally_locked)
-                return T_val - T_calc
-            
-            T_s, r = newton(T_s_residual, T_init, full_output=True, disp=False)
-            
-            pco2 = get_P_CO2(self.P_surface, T_s, Alk, C, Ca)
-            ph2o = august_roche_magnus_formula(T_s) * 0.5
+        assert ~np.isnan(T_s)
 
-            assert ~np.isnan(T_s)
-
-            return float(T_s), pco2, ph2o
-
-        except RuntimeError as e:
-
-            print(e)
-
-            raise RuntimeError
+        return float(T_s), pco2, ph2o
         
     def solve_climate_from_CO2(self, P_CO2: float, T_init: float=288) -> tuple[float, float]:
 
-        def T_s_residual(T_val):
+        def T_s_residual(T_guess):
             T_calc = get_T_surface(self.instellation, P_CO2, self.albedo, tidally_locked=self.tidally_locked)
-            return T_val - T_calc
+            return T_guess - T_calc
         
-        T_s = float(newton(T_s_residual, T_init))
+        try:
+            T_s = newton(T_s_residual, T_init, maxiter=50, tol=1e-4)
+        except (RuntimeError, ValueError):
+            try:
+                T_s = bisect(T_s_residual, T_min, T_max) 
+            except ValueError:
+                T_s = T_max if T_s_residual(T_max) < 0 else T_min
+
         P_H2O = august_roche_magnus_formula(T_s) * 0.5
 
         return T_s, P_H2O
@@ -121,6 +129,8 @@ class planet:
 
         # T, P_CO2, Co, Cp, Ao, Ap, Cao, Cap = Y_calc
         T, P_CO2, Co, Ao, Cao = Y_calc
+
+        T_phys = np.clip(T, T_min, T_max)
 
         F_out = self.outgassing
         J = self.pore_space_flux
@@ -167,14 +177,10 @@ class planet:
         # T, P_CO2, Co, Cp, Ao, Ap, Cao, Cap = Y_calc
         T, P_CO2, Co, Ao, Cao = Y_calc
 
-        P_H2O = august_roche_magnus_formula(T) * 0.5
-
         T_seafloor, T_pore, P_pore = self.get_seafloor_properties(T, P_CO2)
 
-        x_CO2 = P_CO2 / (self.P_surface + P_CO2 + P_H2O)
-
         Mo = self.ocean_mass
-        Mp = self.pore_space_mass
+        # Mp = self.pore_space_mass
 
         F_diss = self.get_weathering(T, P_CO2)
 
@@ -250,27 +256,32 @@ class planet:
 
         return T_seafloor, T_pore, P_pore
 
-    def run_simulation(self, t_end, make_plots, Y0):
+    def run_simulation(self, t_start, t_end, make_plots, Y0):
 
-        def check_equilibrium(t, Y):
-            F_diss, F_prec_o, F_prec_p, T_pore = self.get_fluxes(t, Y)
-            return F_prec_o - (0.5 * F_diss)
-        
-        check_equilibrium.terminal = True
-        check_equilibrium.direction = 0
+        def snowball_event(t, Y):
+            T = Y[0]
+            # Returns 0 when T crosses 240. Direction -1 means crossing downwards.
+            return T - T_min
+        snowball_event.terminal = True
+        snowball_event.direction = -1
+
+        def runaway_event(t, Y):
+            T = Y[0]
+            # Returns 0 when T crosses 350. Direction 1 means crossing upwards.
+            return T - T_max
+        runaway_event.terminal = True
+        runaway_event.direction = 1
 
         sol1 = solve_ivp(
             self.dY_dt,
-            (0, t_end),
+            (t_start, t_end),
             Y0,
             method='LSODA',
             atol=1e-10,
             rtol=1e-2,
             first_step=1,
-            # events=check_equilibrium
+            events=[snowball_event, runaway_event]
         )
-
-        # results = pd.DataFrame(res, columns=['T_surface', 'P_CO2',  'C_ocean', 'C_pore', 'Alk_ocean', 'Alk_pore', 'Ca_ocean', 'Ca_pore'])
 
         results = self.post_process_evolution(sol1.t, sol1.y)
 
@@ -324,7 +335,8 @@ class planet:
                                     
         def target_function_climate(pco2: float):
             T_s, _ = self.solve_climate_from_CO2(pco2)
-            weathering = self.get_weathering(T_s, pco2)
+            T_w = np.clip(T_s, T_min, T_max)
+            weathering = self.get_weathering(T_w, pco2)
             residual = weathering - self.outgassing
             return residual / self.outgassing
         
@@ -342,10 +354,10 @@ class planet:
             plt.show()
             plt.close()
         
-        print('Solving climate state...')
+        # print('Solving climate state...')
         try:
             sol_climate = float(bisect(target_function_climate, 1e-2, 1e5)) # type: ignore
-            print('Solved.')
+            # print('Solved.')
         except ValueError:
             print('No solution.')
             return np.nan, np.nan, np.nan
@@ -397,7 +409,6 @@ class planet:
                 atol=1e-10,
                 rtol=1e-2,
                 first_step=1,
-                # events=check_equilibrium
             )
 
             Y = sol.y[:, -1]
@@ -408,7 +419,8 @@ class planet:
 
         print(f'Surface Temperature  : {T_s:.0f} K')
         print(f'P_CO2                : {P_CO2:.1e} Pa')
-        print(f'Chemistry found      : {Co:.1e}, {Ao:.1e}, {Cao:.1e} mol/kgw')
+        if solve_chemistry:
+            print(f'Chemistry found      : {Co:.1e}, {Ao:.1e}, {Cao:.1e} mol/kgw')
 
         return T_s, P_CO2, Co, Ao, Cao, T_weather
     
@@ -469,6 +481,7 @@ class planet:
         res = np.maximum(sol_y.T, 1e-9)
         
         results = pd.DataFrame(res, columns=['T_surface', 'P_CO2',  'C_ocean', 'Alk_ocean', 'Ca_ocean'])
+        # results = pd.DataFrame(res, columns=['T_surface', 'P_CO2',  'C_ocean', 'C_pore', 'Alk_ocean', 'Alk_pore', 'Ca_ocean', 'Ca_pore'])
         results['time'] = sol_t
 
         T_f = []

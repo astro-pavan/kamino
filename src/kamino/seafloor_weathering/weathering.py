@@ -42,8 +42,12 @@ def get_weathering_rate(P: float, T: float, x_CO2: float, runoff: float, flow_pa
     """
 
     P = float(P / 1e5) # convert to bar
-    x_CO2 = float(smooth_max(x_CO2, 1e-8)) # makes sure x_CO2 is not bleow the minimum value for the interpolator
-    T = float(smooth_min(T, 372.13))
+    P = np.clip(P, pr.P.min(), pr.P.max())
+    x_CO2 = np.clip(x_CO2, pr.xCO2.min(), pr.xCO2.max())
+    T = np.clip(T, pr.T.min(), pr.T.max())
+
+    # x_CO2 = float(smooth_max(x_CO2, 1e-8)) # makes sure x_CO2 is not bleow the minimum value for the interpolator
+    # T = float(smooth_min(T, 372.13))
 
     arg = np.array((x_CO2, T, P))
     pH = DICeqFuncs['bash']['pH'](arg)
