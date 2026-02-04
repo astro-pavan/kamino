@@ -15,6 +15,70 @@ logkDict   = ki.import_kinetics_data()
 kFuncs     = ki.get_keff(pr.T, pr.pHfull, logkDict)
 
 basalt_composition = ['woll','enst','ferr','anoh','albh']
+granite_composition = ['albi', 'kfel', 'phlo', 'anni', 'quar']
+
+def get_C_eq(P: float, T: float, x_CO2: float, granite=False):
+    
+    lithology = 'grah' if granite else 'bash'
+    
+    arg = np.array((x_CO2, T, P))
+    C_eq = DICeqFuncs[lithology]['ALK'](arg) * 1000 # convert to mol/m^3
+    return C_eq
+
+def get_k_eff(P: float, T: float, x_CO2: float, granite=False):
+
+    lithology = 'grah' if granite else 'bash'
+
+    arg = np.array((x_CO2, T, P))
+    pH = DICeqFuncs[lithology]['pH'](arg)
+    k_eff = -1
+
+    composition = granite_composition if granite else basalt_composition
+
+    for mineral in composition:
+        if k_eff == -1:
+            k_eff = kFuncs[mineral](T, pH)
+        else:
+            k_eff = smooth_min(kFuncs[mineral](T, pH), k_eff)
+
+    return k_eff
+
+def get_Dw(P: float, T: float, x_CO2: float, flow_path_length: float, rock_age: float, granite=False):
+
+    mean_molar_mass = 0.216 # kg / mol
+    specific_surface_area = 100 # m^2 / kg
+    rock_density = 2700 # kg / m^3
+    fresh_mineral_fraction = 1 # all minerals are considered reactive
+    porosity = POROSITY
+
+    C_eq = get_C_eq(P, T, x_CO2)
+    k_eff = get_k_eff(P, T, x_CO2)
+    
+    psi = flow_path_length * (1 - porosity) * rock_density * specific_surface_area * fresh_mineral_fraction
+    
+    Dw = psi / (C_eq * (k_eff ** -1 + mean_molar_mass * specific_surface_area * rock_age))
+
+    return Dw
+
+def w_kinetic(P: float, T: float, x_CO2: float, flow_path_length: float, rock_age: float, granite=False):
+
+    mean_molar_mass = 0.216 # kg / mol
+    specific_surface_area = 100 # m^2 / kg
+    rock_density = 2700 # kg / m^3
+    fresh_mineral_fraction = 1
+    porosity = POROSITY
+
+    k_eff = get_k_eff(P, T, x_CO2)
+    psi = flow_path_length * (1 - porosity) * rock_density * specific_surface_area * fresh_mineral_fraction
+
+    return (k_eff * psi) / (1 + mean_molar_mass * specific_surface_area * k_eff * rock_age)
+
+def w_thermodynamic(P: float, T: float, x_CO2: float, runoff: float, granite=False):
+
+    C_eq = get_C_eq(P, T, x_CO2)
+
+    return runoff * C_eq
+
 
 def get_weathering_rate(P: float, T: float, x_CO2: float, runoff: float, flow_path_length: float, rock_age: float) -> float:
     """
@@ -46,19 +110,8 @@ def get_weathering_rate(P: float, T: float, x_CO2: float, runoff: float, flow_pa
     x_CO2 = np.clip(x_CO2, pr.xCO2.min(), pr.xCO2.max())
     T = np.clip(T, pr.T.min(), pr.T.max())
 
-    # x_CO2 = float(smooth_max(x_CO2, 1e-8)) # makes sure x_CO2 is not bleow the minimum value for the interpolator
-    # T = float(smooth_min(T, 372.13))
-
-    arg = np.array((x_CO2, T, P))
-    pH = DICeqFuncs['bash']['pH'](arg)
-    C_eq = DICeqFuncs['bash']['ALK'](arg) * 1000 # convert to mol/m^3
-
-    k_eff = -1
-    for mineral in basalt_composition:
-        if k_eff == -1:
-            k_eff = kFuncs[mineral](T, pH)
-        else:
-            k_eff = smooth_min(kFuncs[mineral](T, pH), k_eff)
+    C_eq = get_C_eq(P, T, x_CO2)
+    k_eff = get_k_eff(P, T, x_CO2)
 
     mean_molar_mass = 0.216 # kg / mol
     specific_surface_area = 100 # m^2 / kg

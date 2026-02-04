@@ -9,8 +9,8 @@ import time
 
 from kamino.constants import *
 # from kamino.speedy_climate.simple_v2 import get_T_surface
-# from kamino.speedy_climate.clima_interpolator import get_T_surface
-from kamino.speedy_climate.analytic import get_T_surface
+from kamino.speedy_climate.clima_interpolator import get_T_surface
+# from kamino.speedy_climate.analytic import get_T_surface
 from kamino.ocean_chemistry.co2 import get_P_CO2
 from kamino.ocean_circulation.analytic import get_T_ocean, get_T_ocean_KT18
 from kamino.seafloor_weathering.weathering import *
@@ -251,7 +251,7 @@ class planet:
         P_H2O = august_roche_magnus_formula(T_s) * 0.5
         P_pore = (self.P_surface + P_CO2 + P_H2O) + 1000 * self.gravity * self.ocean_depth
 
-        T_seafloor = get_T_ocean_KT18(T_s)
+        T_seafloor = T_s # get_T_ocean_KT18(T_s)
         T_seafloor = smooth_max(T_seafloor, 273.5)
         T_pore = T_seafloor + 9
 
