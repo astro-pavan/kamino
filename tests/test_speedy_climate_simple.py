@@ -3,7 +3,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../src'))
 
 from kamino.speedy_climate.simple import get_T_surface
-from kamino.speedy_climate.analytic import get_surface_temp
+from kamino.speedy_climate.analytic import get_T_surface
 from kamino.constants import *
 
 import numpy as np

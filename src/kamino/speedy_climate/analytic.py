@@ -1,5 +1,5 @@
 import numpy as np
-from scipy.optimize import root, minimize, least_squares, newton
+from scipy.optimize import root, minimize, least_squares, newton, brentq
 
 from kamino.utils import *
 
@@ -30,7 +30,7 @@ T_ref = 288
 
 alb_ref = 0.3
 
-def albedo(pCO2: float, ag: float, cos_zeta: float=0.6666) -> float:
+def albedo_funtion(pCO2: float, ag: float, cos_zeta: float=0.6666) -> float:
 
    tau_ray = 0.19513 * pCO2 # pCO2 in bar
    aa = ((0.5 - 0.75*cos_zeta)*(1 - np.exp(-(tau_ray/cos_zeta))) + 0.75*tau_ray)/(1 + 0.75 * tau_ray)
@@ -38,8 +38,9 @@ def albedo(pCO2: float, ag: float, cos_zeta: float=0.6666) -> float:
 
    return 1 - ((1 - ag) * (1 - aa))/((1 - ag) * aa2 + (1 - aa2))
 
-def average_instellation(albedo: float, instellation: float) -> float:
-   return 0.25 * (1 - albedo) * instellation
+def average_instellation(albedo: float, instellation: float, tidally_locked) -> float:
+   f = 0.66 if tidally_locked else 0.25
+   return f * (1 - albedo) * instellation
 
 def get_instellation(T: float, pCO2: float) -> float:
    # S = (4 * OLR(T, pCO2)) / (1 - albedo(pCO2, alb_ref))
@@ -66,16 +67,61 @@ def OLR(T: float, pCO2: float) -> float:
    else:
       return I0 + high_pCO2_LR
 
-def get_surface_temp(S: float, pCO2: float) -> float:
+def get_T_surface_v0(S, P_CO2, albedo, tidally_locked=False) -> float:
    
-   pCO2 = pCO2 / 1e5
+   pCO2 = P_CO2 / 1e5
    
    # func = lambda T: average_instellation(albedo(pCO2, alb_ref), S) - OLR(T, pCO2)
-   func = lambda T: np.abs(average_instellation(albedo(pCO2, alb_ref), S) - OLR(T, pCO2))
+   func = lambda T: average_instellation(albedo_funtion(pCO2, albedo), S, tidally_locked) - OLR(T, pCO2)
 
-   sol = least_squares(func, 273)
+   sol = newton(func, 273, disp=False)
 
-   T_res = sol.x[0]
-   T_res = smooth_max(T_res, 272)
+   T_res = sol
 
-   return T_res
+   return float(T_res)
+
+def get_T_surface(S, P_CO2, albedo, tidally_locked=False):
+    
+    pCO2_bar = P_CO2 / 1e5
+    
+    # 1. Handle Albedo Consistency
+    # If you want to match the Interpolator (which likely treats 'albedo' as total Bond albedo):
+    # A_bond = albedo  
+    # If you want to use the WK97 physics (Surface + Atmosphere):
+    A_bond = albedo_funtion(pCO2_bar, albedo)
+    
+    # 2. Define Energy Balance: Incoming - Outgoing = 0
+    def residual(T):
+        # Clip T to valid range of the polynomial to prevent divergence
+        T_safe = np.clip(T, 180, 400) 
+        
+        # Calculate Incoming Flux (W/m^2)
+        # S is passed in W/m^2 (based on planet.py usage)
+        f_geo = 0.25  # Geometric factor (1/4 for rapid)
+        if tidally_locked:
+            f_geo = 0.66 # Tuning for tidal locking
+            
+        F_in = S * (1 - A_bond) * f_geo
+        
+        # Calculate Outgoing Flux
+        F_out = OLR(T_safe, pCO2_bar)
+        
+        return F_in - F_out
+
+    # 3. Solve with brackets (safer than newton)
+    try:
+        # Search between 180K and 400K
+        T_surf = brentq(residual, 180, 400)
+    except ValueError:
+        # If signs are the same at both ends, we are either in Snowball or Runaway
+        res_min = residual(180)
+        res_max = residual(400)
+        
+        if res_max > 0: # Energy In > Energy Out at 400K -> Runaway
+            T_surf = 400.0 
+        elif res_min < 0: # Energy In < Energy Out at 180K -> Snowball
+            T_surf = 180.0
+        else:
+            T_surf = np.nan
+            
+    return float(T_surf)
