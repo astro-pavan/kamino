@@ -251,7 +251,7 @@ class planet:
         P_H2O = august_roche_magnus_formula(T_s) * 0.5
         P_pore = (self.P_surface + P_CO2 + P_H2O) + 1000 * self.gravity * self.ocean_depth
 
-        T_seafloor = T_s # get_T_ocean_KT18(T_s)
+        T_seafloor = get_T_ocean_KT18(T_s)
         T_seafloor = smooth_max(T_seafloor, 273.5)
         T_pore = T_seafloor + 9
 
@@ -425,15 +425,29 @@ class planet:
 
         return T_s, P_CO2, Co, Ao, Cao, T_weather
     
-    def stability_analysis(self, T_s, P_CO2, Co, Ao, Cao):
+    def stability_analysis(self, dS, T_s, P_CO2, Co, Ao, Cao):
 
         # peturb instellation
 
+        def snowball_event(t, Y):
+            T = Y[0]
+            # Returns 0 when T crosses 240. Direction -1 means crossing downwards.
+            return T - T_min
+        snowball_event.terminal = True
+        snowball_event.direction = -1
+
+        def runaway_event(t, Y):
+            T = Y[0]
+            # Returns 0 when T crosses 350. Direction 1 means crossing upwards.
+            return T - T_max
+        runaway_event.terminal = True
+        runaway_event.direction = 1
+
         Y0 = T_s, P_CO2, Co, Ao, Cao
 
-        t_switch_01 = 1e5
-        t_switch_12 = 1e5
-        t_end = 1e6
+        t_switch_01 = 10e5
+        t_switch_12 = 10e5
+        t_end = 3e6
 
         sol0 = solve_ivp(
             self.dY_dt,
@@ -441,12 +455,13 @@ class planet:
             Y0,
             method='LSODA',
             atol=1e-10,
-            rtol=1e-2
+            rtol=1e-2,
+            events=[snowball_event, runaway_event]
         )
 
         Y1 = sol0.y[:, -1]
 
-        self.instellation *= 1.1
+        self.instellation += dS * SOLAR_CONSTANT
 
         sol1 = solve_ivp(
             self.dY_dt,
@@ -454,10 +469,9 @@ class planet:
             Y1,
             method='LSODA',
             atol=1e-10,
-            rtol=1e-2
+            rtol=1e-2,
+            events=[snowball_event, runaway_event]
         )
-
-        # self.instellation /= 1.1
 
         Y2 = sol1.y[:, -1]
 
@@ -467,7 +481,8 @@ class planet:
             Y2,
             method='LSODA',
             atol=1e-10,
-            rtol=1e-2
+            rtol=1e-2,
+            events=[snowball_event, runaway_event]
         )
 
         sol_y = np.hstack([sol0.y, sol1.y, sol2.y])
@@ -475,7 +490,11 @@ class planet:
 
         results = self.post_process_evolution(sol_t, sol_y)
 
-        self.plot_evolution(results)
+        # self.plot_evolution(results)
+
+        self.instellation -= dS * SOLAR_CONSTANT
+
+        return results
 
     def post_process_evolution(self, sol_t, sol_y):
         

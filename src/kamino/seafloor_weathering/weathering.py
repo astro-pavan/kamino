@@ -77,10 +77,22 @@ def w_thermodynamic(P: float, T: float, x_CO2: float, runoff: float, granite=Fal
 
     C_eq = get_C_eq(P, T, x_CO2)
 
-    return runoff * C_eq
+    return runoff * C_eq[0]
+
+def w_supply(flow_path_length: float, rock_age: float):
+
+    mean_molar_mass = 0.216 # kg / mol
+    specific_surface_area = 100 # m^2 / kg
+    rock_density = 2700 # kg / m^3
+    fresh_mineral_fraction = 1
+    porosity = POROSITY
+
+    psi = flow_path_length * (1 - porosity) * rock_density * specific_surface_area * fresh_mineral_fraction
+
+    return psi / (mean_molar_mass * specific_surface_area * rock_age)
 
 
-def get_weathering_rate(P: float, T: float, x_CO2: float, runoff: float, flow_path_length: float, rock_age: float) -> float:
+def get_weathering_rate(P: float, T: float, x_CO2: float, runoff: float, flow_path_length: float, rock_age: float, granite=False) -> float:
     """
     Calculates the basalt seafloor weathering rate, giving an alkalinity production rate.
 
@@ -110,8 +122,8 @@ def get_weathering_rate(P: float, T: float, x_CO2: float, runoff: float, flow_pa
     x_CO2 = np.clip(x_CO2, pr.xCO2.min(), pr.xCO2.max())
     T = np.clip(T, pr.T.min(), pr.T.max())
 
-    C_eq = get_C_eq(P, T, x_CO2)
-    k_eff = get_k_eff(P, T, x_CO2)
+    C_eq = get_C_eq(P, T, x_CO2, granite)
+    k_eff = get_k_eff(P, T, x_CO2, granite)
 
     mean_molar_mass = 0.216 # kg / mol
     specific_surface_area = 100 # m^2 / kg
@@ -208,13 +220,22 @@ lmbda = 1.4e0
 # n: thermodynamic pco2 dependence of C_eq
 n = 0.316
 
+q_ref = 0.2
+# p_ref: global average precipitation per unit area (m.yr^-1)
+p_ref = 0.99
+# Gamma: fraction of precipitation that becomes runoff = q_ref/p_ref = 0.2
+Gamma = q_ref / p_ref
+# eps: fractional change in precipitation per K change in temperature (1/K)
+eps = 0.03
+
 def get_weathering_rate_MAC(T, pco2):
 
-    q = 0.2
     pco2 = pco2 * 1e-5
 
     def Ceq(pco2):
         return lmbda * pco2**n
+    
+    q = Gamma * p_ref * (1 + eps * (T - T_ref))
 
     alpha = L * phi * rho_sf * A * X_r * mu
     top = alpha
