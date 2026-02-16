@@ -84,3 +84,5 @@ WATER_MOLALITY = 55.510 # mol / kg
 
 POROSITY = 0.1 # dimensionless
 PORE_DEPTH = 100 # m
+
+EARTH_OUTGASSING = 0.0147 # mol / m^2 / yr 

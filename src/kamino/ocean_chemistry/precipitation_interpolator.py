@@ -2,7 +2,6 @@ import numpy as np
 import pickle
 import os
 from scipy.interpolate import RegularGridInterpolator
-from kamino.ocean_chemistry.fast_chemistry import get_calcite_data_fast
 from kamino.ocean_chemistry.precipitation import get_calcite_precipitation_rate
 from tqdm import tqdm
 

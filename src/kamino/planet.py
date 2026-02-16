@@ -8,15 +8,11 @@ import matplotlib.pyplot as plt
 import time
 
 from kamino.constants import *
-# from kamino.speedy_climate.simple_v2 import get_T_surface
 from kamino.speedy_climate.clima_interpolator import get_T_surface
-# from kamino.speedy_climate.analytic import get_T_surface
 from kamino.ocean_chemistry.co2 import get_P_CO2
 from kamino.ocean_circulation.analytic import get_T_ocean, get_T_ocean_KT18
 from kamino.seafloor_weathering.weathering import *
 from kamino.ocean_chemistry.precipitation import get_calcite_precipitation_rate
-from kamino.ocean_chemistry.aqueous_geochemistry import PHREEQCError
-from kamino.ocean_chemistry.fast_chemistry import get_calcite_data_fast
 from kamino.ocean_chemistry.precipitation_interpolator import *
 from kamino.utils import *
 
@@ -34,47 +30,47 @@ class planet:
             outgassing_rate: float,
             hydrothermal_flow_rate: float,
             seafloor_age: float,
-            flow_path_length: float,
             tidally_locked: bool=False,
-            albedo: float=0.05,
-            use_KT18_weathering: bool=False,
-            use_WHAK_weathering: bool=False,
-            use_MAC_weathering: bool=False
+            land_fraction: float=0.0,
+            seafloor_weathering_mode: str='H21',
+            land_weathering_mode: str='MAC',
+            earth_callibration: bool=True
             ):
 
-        # CONSTANTS
-
-        self.mass: float = M_EARTH
-        self.radius: float = R_EARTH
-        self.gravity: float = (G * self.mass) / (self.radius ** 2)
-        self.surface_area: float = 4 * np.pi * self.radius ** 2
+        self.mass = M_EARTH
+        self.radius = R_EARTH
+        self.gravity = (G * self.mass) / (self.radius ** 2)
+        self.surface_area = 4 * np.pi * self.radius ** 2
 
         self.tidally_locked = tidally_locked
 
-        self.P_surface: float = P_surface
+        self.P_surface = P_surface
         
-        self.ocean_depth: float = ocean_depth
-        self.ocean_mass: float = self.ocean_depth * self.surface_area * 1000
+        self.ocean_depth = ocean_depth
+        self.ocean_mass = self.ocean_depth * self.surface_area * 1000
+        # self.pore_space_mass = PORE_DEPTH * self.surface_area * 1000 * POROSITY
 
-        self.outgassing: float = 0.0147 * self.surface_area * outgassing_rate
+        self.outgassing = EARTH_OUTGASSING * self.surface_area * outgassing_rate
 
-        self.pore_space_flux: float = 1e14
-        self.pore_space_mass = PORE_DEPTH * self.surface_area * 1000 * POROSITY
-
-        self.instellation: float = instellation * SOLAR_CONSTANT
-        self.albedo: float = albedo
+        self.instellation = instellation * SOLAR_CONSTANT
+        self.albedo = 0.3 * land_fraction + 0.3 * (1 - land_fraction)
 
         self.hydrothermal_flow_rate = hydrothermal_flow_rate
         self.seafloor_age = seafloor_age
-        self.flow_path_length = flow_path_length
+        self.hydrothermal_flow_path_length = PORE_DEPTH
 
-        self.use_KT18_weathering = use_KT18_weathering
-        self.use_WHAK_weathering = use_WHAK_weathering
-        self.use_MAC_weathering = use_MAC_weathering
+        self.land_fraction = land_fraction
+        self.seafloor_weathering_mode = seafloor_weathering_mode
+        self.land_weathering_mode = land_weathering_mode
 
-        self.last_t = 0
-        self.last_T_s = 288
-        self.debug_counter = 0
+        self.weathering_multiplier = 1.0
+
+        if earth_callibration:
+
+            baseline_T = 288.0
+            baseline_PCO2 = 280e-6 * EARTH_ATM
+
+            raw_baseline_weathering = self.get_weathering(baseline_T, baseline_PCO2)
 
     def temperature_profile(self, latitude: float, T_avg: float, delta_T: float):
         return T_avg - delta_T * 0.5 * (3 * np.sin(latitude) ** 2 - 1)
@@ -83,8 +79,8 @@ class planet:
 
         def T_s_residual(T_guess):
             T_guess = np.clip(T_guess, 150, 500)
-            pco2 = get_P_CO2(self.P_surface, T_guess, Alk, C, Ca)
-            T_calc = get_T_surface(self.instellation, pco2, self.albedo, tidally_locked=self.tidally_locked)
+            P_CO2 = get_P_CO2(self.P_surface, T_guess, Alk, C, Ca)
+            T_calc = get_T_surface(self.instellation, P_CO2, self.albedo, tidally_locked=self.tidally_locked)
             return T_guess - T_calc
         
         try:
@@ -95,12 +91,12 @@ class planet:
             except ValueError:
                 T_s = T_max if T_s_residual(T_max) < 0 else T_min
         
-        pco2 = get_P_CO2(self.P_surface, T_s, Alk, C, Ca)
+        P_CO2 = get_P_CO2(self.P_surface, T_s, Alk, C, Ca)
         ph2o = august_roche_magnus_formula(T_s) * 0.5
 
         assert ~np.isnan(T_s)
 
-        return float(T_s), pco2, ph2o
+        return float(T_s), P_CO2, ph2o
         
     def solve_climate_from_CO2(self, P_CO2: float, T_init: float=288) -> tuple[float, float]:
 
@@ -128,15 +124,10 @@ class planet:
         # keeps Y above 1e-9 smoothly
         Y_calc = np.maximum(Y, 1e-9)
 
-        # T, P_CO2, Co, Cp, Ao, Ap, Cao, Cap = Y_calc
         T, P_CO2, Co, Ao, Cao = Y_calc
 
-        T_phys = np.clip(T, T_min, T_max)
-
         F_out = self.outgassing
-        J = self.pore_space_flux
         Mo = self.ocean_mass
-        Mp = self.pore_space_mass
 
         T_new, P_CO2_new, P_H2O = self.solve_climate_from_chemistry(t, Ao, Co, Cao)
         F_diss, F_prec_o, T_pore, SI_o = self.get_fluxes(t, Y, full_precipitation_calculation)
@@ -147,19 +138,6 @@ class planet:
 
         dT_dt = (T_new - T) / tau_atm
         dP_CO2_dt = (P_CO2_new - P_CO2) / tau_atm
-
-        # delta_C = Co - Cp
-        # delta_A = Ao - Ap
-        # delta_Ca = Cao - Cap
-
-        # dCo_dt = (- J * delta_C + F_out - F_prec_o) / Mo
-        # dCp_dt = (+ J * delta_C - F_prec_p) / Mp
-        # dAo_dt = (- J * delta_A - 2 * F_prec_o) / Mo
-        # dAp_dt = (+ J * delta_A - 2 * F_prec_p + 2 * F_diss) / Mp
-        # dCao_dt = (- J * delta_Ca - F_prec_o) / Mo
-        # dCap_dt = (+ J * delta_Ca - F_prec_p + 0.5 * F_diss) / Mp
-
-        # dYdt = np.array([float(dT_dt), float(dP_CO2_dt), float(dCo_dt), float(dCp_dt), float(dAo_dt), float(dAp_dt), float(dCao_dt), float(dCap_dt)])
 
         dCo_dt = (F_out - F_prec_o) / Mo
         dAo_dt = (- 2 * F_prec_o + 2 * F_diss) / Mo
@@ -175,55 +153,36 @@ class planet:
     def get_fluxes(self, t, Y, full_precipitation_calculation=True):
 
         Y_calc = smooth_max(np.array(Y), 1e-9)
-        # T, P_CO2, Co, Cp, Ao, Ap, Cao, Cap = Y_calc
         T, P_CO2, Co, Ao, Cao = Y_calc
 
         T_seafloor, T_pore, P_pore = self.get_seafloor_properties(T, P_CO2)
 
         Mo = self.ocean_mass
-        # Mp = self.pore_space_mass
 
         F_diss = self.get_weathering(T, P_CO2)
 
         if full_precipitation_calculation:
 
-            # rate_o, SI_o = get_calcite_precipitation_rate(P_pore, T_seafloor, Ao, Co, Cao)
-            # rate_p, SI_p = get_calcite_precipitation_rate(P_pore, T_pore, Ap, Cp, Cap)
-
             rate_o, SI_o = get_calcite_data_interpolated(P_pore, T_seafloor, Ao, Co, Cao)
-            # rate_p, SI_p = get_calcite_data_interpolated(P_pore, T_pore, Ap, Cp, Cap)
 
             kinetics_scaler = 1e-5
             smoothness = 0.01
+
             switch_o = smoothness * np.logaddexp(0, SI_o / smoothness)
-            # switch_p = smoothness * np.logaddexp(0, SI_p / smoothness)
-        
             rate_o *= kinetics_scaler
-            # rate_p *= kinetics_scaler
-
             F_prec_o = rate_o * Mo * YR * switch_o
-            # F_prec_p = rate_p * Mp * YR * switch_p
 
-            tau_prec = 100
+            # tau_prec = 100
+            # F_Co_max = (Co * Mo) / tau_prec
+            # F_Ao_max = (Ao * Mo) / tau_prec
+            # F_Cao_max = (Cao * Mo) / tau_prec
 
-            F_Co_max = (Co * Mo) / tau_prec
-            F_Ao_max = (Ao * Mo) / tau_prec
-            F_Cao_max = (Cao * Mo) / tau_prec
-            # F_prec_o_max = np.min([F_Co_max, F_Ao_max, F_Cao_max])
-
-            # F_Cp_max = (Cp * Mp) / tau_prec
-            # F_Ap_max = (Ap * Mp) / tau_prec
-            # F_Cap_max = (Cap * Mp) / tau_prec
-            # F_prec_p_max = np.min([F_Cp_max, F_Ap_max, F_Cap_max])
-
-            # F_prec_o = smooth_min(F_prec_o_max, F_prec_o)
             F_prec_o = smooth_min(20 * self.outgassing, F_prec_o)
-            # F_prec_p = smooth_min(F_prec_p_max, F_prec_p)
 
         else:
 
-            F_prec_o = 0.5 * F_diss
-            # F_prec_p = 0.5 * F_diss
+            F_prec_o = F_diss
+            SI_o = np.nan
         
         return F_diss, F_prec_o, T_pore, SI_o
     
@@ -235,14 +194,21 @@ class planet:
 
         x_CO2 = P_CO2 / (self.P_surface + P_CO2 + P_H2O)
 
-        if self.use_MAC_weathering:
-            weathering = get_weathering_rate_MAC(T_s, P_CO2) * self.surface_area
-        elif self.use_WHAK_weathering:
-            weathering = get_weathering_rate_WHAK(self.P_surface, T_s, x_CO2) * self.surface_area
-        elif self.use_KT18_weathering:
-            weathering = get_weathering_rate_KT18(self.P_surface, T_pore, x_CO2) * self.surface_area
+        if self.seafloor_weathering_mode == 'H21':
+            seafloor_weathering = get_weathering_rate(P_pore, T_pore, x_CO2, self.hydrothermal_flow_rate, self.hydrothermal_flow_path_length, self.seafloor_age) * self.surface_area
+        elif self.seafloor_weathering_mode == 'KT18':
+            seafloor_weathering = weathering = get_weathering_rate_KT18(self.P_surface, T_pore, x_CO2) * self.surface_area
         else:
-            weathering = get_weathering_rate(P_pore, T_pore, x_CO2, self.hydrothermal_flow_rate, self.flow_path_length, self.seafloor_age) * self.surface_area
+            seafloor_weathering = 0
+
+        if self.land_weathering_mode == 'MAC':
+            land_weathering = get_weathering_rate_MAC(T_s, P_CO2) * self.surface_area
+        elif self.land_weathering_mode == 'WHAK':
+            land_weathering = get_weathering_rate_WHAK(self.P_surface, T_s, x_CO2) * self.surface_area
+        else:
+            land_weathering = 0
+
+        weathering = self.land_fraction * land_weathering + (1 - self.land_fraction) * seafloor_weathering
 
         return weathering
 
@@ -303,7 +269,6 @@ class planet:
 
         print('Finding steady state solution...')
         solution = least_squares(target_function, initial_Y_guess, bounds=(0, np.inf))
-        # T, P_CO2, Co, Cp, Ao, Ap, Cao, Cap = solution.x
         T, P_CO2, Co, Ao, Cao = solution.x
         
         print('Solution found: ')
@@ -332,24 +297,24 @@ class planet:
 
         return T, stable, Co
 
-    def find_steady_state_no_evolution(self, use_KT18_weathering=False, use_WHAK_weathering=False, use_MAC_weathering=False, diagnostic_plots: bool=False, solve_chemistry: bool=False) -> tuple[float, float, float, float, float, float]:
+    def find_steady_state_no_evolution(self, diagnostic_plots: bool=False, solve_chemistry: bool=False) -> tuple[float, float, float, float, float]:
                                     
-        def target_function_climate(pco2: float):
-            T_s, _ = self.solve_climate_from_CO2(pco2)
+        def target_function_climate(P_CO2: float):
+            T_s, _ = self.solve_climate_from_CO2(P_CO2)
             T_w = np.clip(T_s, T_min, T_max)
-            weathering = self.get_weathering(T_w, pco2)
+            weathering = self.get_weathering(T_w, P_CO2)
             residual = weathering - self.outgassing
             return residual / self.outgassing
         
         if diagnostic_plots:
-            pco2_range = np.logspace(-2, 5)
+            P_CO2_range = np.logspace(-2, 5)
             r = []
-            for pco2 in pco2_range:
-                r.append(target_function_climate(pco2))
+            for P_CO2 in P_CO2_range:
+                r.append(target_function_climate(P_CO2))
 
             plt.figure(figsize=(3,3))
             plt.title(f'S={self.instellation}')
-            plt.plot(pco2_range, r)
+            plt.plot(P_CO2_range, r)
             plt.axhline(0)
             plt.xscale('log')
             plt.show()
@@ -361,16 +326,10 @@ class planet:
             # print('Solved.')
         except ValueError:
             print('No solution.')
-            return np.nan, np.nan, np.nan
+            return np.nan, np.nan, np.nan, np.nan, np.nan
 
         P_CO2 = float(sol_climate)
         T_s, P_H2O = self.solve_climate_from_CO2(P_CO2)
-        T_seafloor, T_pore, P_pore = self.get_seafloor_properties(T_s, P_CO2)
-
-        if use_WHAK_weathering or use_MAC_weathering:
-            T_weather = T_s
-        else:
-            T_weather = T_pore
 
         if solve_chemistry:
 
@@ -384,12 +343,12 @@ class planet:
                 Cao = (Ao - k_conservative) / 2.0
                 
                 P_CO2_calc = get_P_CO2(self.P_surface, T_s, Ao, Co, Cao)
-                res_pco2 = (P_CO2_calc - P_CO2) / P_CO2
+                res_P_CO2 = (P_CO2_calc - P_CO2) / P_CO2
                 
                 F_diss, F_prec_o, _, _  = self.get_fluxes(0, [T_s, P_CO2, Co, Ao, Cao])
                 res_flux = (F_prec_o - self.outgassing) / self.outgassing
 
-                return [res_pco2, res_flux]
+                return [res_P_CO2, res_flux]
             
             solution = least_squares(target_function_chemistry, [0.0001, 0.0001], bounds=(0, np.inf))
             Co, Ao = solution.x
@@ -423,7 +382,7 @@ class planet:
         if solve_chemistry:
             print(f'Chemistry found      : {Co:.1e}, {Ao:.1e}, {Cao:.1e} mol/kgw')
 
-        return T_s, P_CO2, Co, Ao, Cao, T_weather
+        return T_s, P_CO2, Co, Ao, Cao
     
     def stability_analysis(self, dS, T_s, P_CO2, Co, Ao, Cao):
 
@@ -539,19 +498,8 @@ class planet:
         ax1.plot(results['time'], results['Alk_ocean'], label='Alk_ocean', color='orange')
         ax1.plot(results['time'], results['Ca_ocean'], label='Ca_ocean', color='green')
 
-        # ax12 = ax1.twinx()
-        # ax12.plot(results['time'], np.array(dCodt), label='dC_ocean/dt', color='black', linestyle='--')
-        # ax12.plot(results['time'], np.array(dAodt), label='dA_ocean/dt', color='orange', linestyle='--')
-        # ax12.plot(results['time'], np.array(dCaodt), label='dCa_ocean/dt', color='green', linestyle='--')
-
         ax1.set_ylabel('Concentration (mol/kgw)')
         ax1.set_yscale('log')
-        # ax12.set_ylabel('Rate of change of concentration (mol/kgw/s)')
-        # ax12.set_yscale('log')
-
-        # lines1, labels1 = ax1.get_legend_handles_labels()
-        # lines12, labels12 = ax12.get_legend_handles_labels()
-        # ax1.legend(lines1 + lines12, labels1 + labels12, loc='lower right')
 
         ax1.legend(loc='lower left')
 
@@ -578,7 +526,6 @@ class planet:
         ax3.plot(results['time'], results['F_diss'] / self.outgassing, 'b-', label='Dissolution rate')
         ax3.plot(results['time'], results['F_prec'] / self.outgassing, 'r-', label='Precipitation rate')
         # ax3.plot(results['time'], self.outgassing / self.outgassing, 'g-', label='Outgassing rate')
-        # ax3.axhline(0.5, color='black')
 
         ax32 = ax3.twinx()
 
