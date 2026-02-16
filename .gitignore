@@ -9,6 +9,7 @@ tests/output.txt
 tests/phreeqc.log
 tests/*.csv
 *.png
+*.pdf
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
