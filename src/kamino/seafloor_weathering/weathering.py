@@ -17,6 +17,42 @@ kFuncs     = ki.get_keff(pr.T, pr.pHfull, logkDict)
 basalt_composition = ['woll','enst','ferr','anoh','albh']
 granite_composition = ['albi', 'kfel', 'phlo', 'anni', 'quar']
 
+# Mineral fractions by mass, mirroring ocean_chem's basalt/granite compositions.
+# Used when weighted_sum=True in get_k_eff.
+basalt_composition_weighted = {
+    'woll': 0.1,  # Wollastonite
+    'enst': 0.2,  # Enstatite
+    'anoh': 0.3,  # Anorthite (high-T)
+    'albh': 0.2,  # Albite (high-T)
+    'fors': 0.1,  # Forsterite
+    'faya': 0.1,  # Fayalite
+}
+
+granite_composition_weighted = {
+    'albi': 0.25,  # Albite
+    'kfel': 0.25,  # K-feldspar
+    'phlo': 0.20,  # Phlogopite
+    'anni': 0.20,  # Annite
+    'quar': 0.10,  # Quartz
+}
+
+# mol alkalinity produced per mol mineral dissolved.
+# Derived from H+ stoichiometry of dissolution reactions (Phreeqc / ocean_chem database).
+alk_stoich = {
+    'woll': 2.0,  # CaSiO3 + 2H+ -> Ca2+ + SiO2 + H2O
+    'enst': 2.0,  # MgSiO3 + 2H+ -> Mg2+ + SiO2 + H2O
+    'ferr': 2.0,  # FeSiO3 + 2H+ -> Fe2+ + SiO2 + H2O
+    'anoh': 8.0,  # CaAl2Si2O8 + 8H+ -> Ca2+ + 2Al3+ + 2SiO2 + 4H2O
+    'albh': 4.0,  # NaAlSi3O8 + 4H+ -> Na+ + Al3+ + 3SiO2 + 2H2O
+    'albi': 4.0,
+    'fors': 4.0,  # Mg2SiO4 + 4H+ -> 2Mg2+ + SiO2 + 2H2O
+    'faya': 4.0,  # Fe2SiO4 + 4H+ -> 2Fe2+ + SiO2 + 2H2O
+    'kfel': 4.0,  # KAlSi3O8 + 4H+ -> K+ + Al3+ + 3SiO2 + 2H2O
+    'phlo': 8.0,  # KMg3AlSi3O10(OH)2 + 8H+ -> K+ + 3Mg2+ + Al3+ + 3SiO2 + 5H2O
+    'anni': 8.0,  # KFe3AlSi3O10(OH)2 + 8H+ -> K+ + 3Fe2+ + Al3+ + 3SiO2 + 5H2O
+    'quar': 0.0,  # SiO2: no alkalinity production
+}
+
 def get_C_eq(P: float, T: float, x_CO2: float, granite=False):
     
     lithology = 'grah' if granite else 'bash'
@@ -25,21 +61,52 @@ def get_C_eq(P: float, T: float, x_CO2: float, granite=False):
     C_eq = DICeqFuncs[lithology]['ALK'](arg) * 1000 # convert to mol/m^3
     return C_eq
 
-def get_k_eff(P: float, T: float, x_CO2: float, granite=False):
+def get_k_eff(P: float, T: float, x_CO2: float, granite=False,
+              weighted_sum=False, alk_correction=False):
+    """
+    Returns the effective kinetic rate coefficient k_eff [mol m⁻² yr⁻¹].
+
+    Parameters
+    ----------
+    weighted_sum : bool
+        If False (default), use the original CHILI approach: k_eff = min over
+        all minerals (slowest mineral is rate-limiting).
+        If True, use a composition-weighted sum over minerals (parallel reactions),
+        matching the approach in ocean_chem's get_k.
+    alk_correction : bool
+        If False (default), k_eff is in mol mineral m⁻² yr⁻¹ (no stoichiometry).
+        If True, multiply by mol_alk / mol_mineral so that k_eff is in
+        mol alkalinity m⁻² yr⁻¹, making it dimensionally consistent with C_eq.
+        For weighted_sum=True: each mineral's rate is multiplied by its own stoich.
+        For weighted_sum=False: the minimum k is multiplied by the
+        composition-weighted mean stoichiometry.
+    """
 
     lithology = 'grah' if granite else 'bash'
 
     arg = np.array((x_CO2, T, P))
     pH = DICeqFuncs[lithology]['pH'](arg)
-    k_eff = -1
 
-    composition = granite_composition if granite else basalt_composition
-
-    for mineral in composition:
-        if k_eff == -1:
-            k_eff = kFuncs[mineral](T, pH)
-        else:
-            k_eff = smooth_min(kFuncs[mineral](T, pH), k_eff)
+    if weighted_sum:
+        composition = granite_composition_weighted if granite else basalt_composition_weighted
+        k_eff = 0.0
+        for mineral, fraction in composition.items():
+            k_mineral = kFuncs[mineral](T, pH)
+            stoich = alk_stoich[mineral] if alk_correction else 1.0
+            k_eff += fraction * k_mineral * stoich
+    else:
+        composition = granite_composition if granite else basalt_composition
+        k_eff = -1
+        for mineral in composition:
+            if k_eff == -1:
+                k_eff = kFuncs[mineral](T, pH)
+            else:
+                k_eff = smooth_min(kFuncs[mineral](T, pH), k_eff)
+        if alk_correction:
+            # Weighted-average stoichiometry over the weighted composition
+            ref_composition = granite_composition_weighted if granite else basalt_composition_weighted
+            mean_stoich = sum(f * alk_stoich[m] for m, f in ref_composition.items())
+            k_eff = k_eff * mean_stoich
 
     return k_eff
 
@@ -92,7 +159,8 @@ def w_supply(flow_path_length: float, rock_age: float):
     return psi / (mean_molar_mass * specific_surface_area * rock_age)
 
 
-def get_weathering_rate(P: float, T: float, x_CO2: float, runoff: float, flow_path_length: float, rock_age: float, granite=False) -> float:
+def get_weathering_rate(P: float, T: float, x_CO2: float, runoff: float, flow_path_length: float, rock_age: float, granite=False,
+                        weighted_sum=False, alk_correction=False) -> float:
     """
     Calculates the basalt seafloor weathering rate, giving an alkalinity production rate.
 
@@ -110,6 +178,12 @@ def get_weathering_rate(P: float, T: float, x_CO2: float, runoff: float, flow_pa
         Length of flow path through seafloor pore space.
     rock_age : float
         Age of rocks in the pore space in yr.
+    weighted_sum : bool
+        Passed to get_k_eff. If True, use a composition-weighted sum of mineral
+        rates instead of the minimum (see get_k_eff for details).
+    alk_correction : bool
+        Passed to get_k_eff. If True, scale k_eff by mol_alk / mol_mineral so
+        it is dimensionally consistent with C_eq (see get_k_eff for details).
 
     Returns
     -------
@@ -123,12 +197,12 @@ def get_weathering_rate(P: float, T: float, x_CO2: float, runoff: float, flow_pa
     T = np.clip(T, pr.T.min(), pr.T.max())
 
     C_eq = get_C_eq(P, T, x_CO2, granite)
-    k_eff = get_k_eff(P, T, x_CO2, granite)
+    k_eff = get_k_eff(P, T, x_CO2, granite, weighted_sum=weighted_sum, alk_correction=alk_correction)
 
     mean_molar_mass = 0.216 # kg / mol
-    specific_surface_area = 100 # m^2 / kg
+    specific_surface_area = 0.005 # m^2 / kg
     rock_density = 2700 # kg / m^3
-    fresh_mineral_fraction = 1
+    fresh_mineral_fraction = 0.1
     porosity = POROSITY
     
     psi = flow_path_length * (1 - porosity) * rock_density * specific_surface_area * fresh_mineral_fraction
