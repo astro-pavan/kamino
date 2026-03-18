@@ -1,9 +1,9 @@
 import numpy as np
 
-import kamino.seafloor_weathering.chili.equilibrium as eq
-import kamino.seafloor_weathering.chili.kinetics as ki
-import kamino.seafloor_weathering.chili.parameters as pr
-import kamino.seafloor_weathering.chili.climate as cl
+import kamino.H21.chili.equilibrium as eq
+import kamino.H21.chili.kinetics as ki
+import kamino.H21.chili.parameters as pr
+import kamino.H21.chili.climate as cl
 from kamino.utils import *
 
 from kamino.constants import YR, POROSITY, R_EARTH
