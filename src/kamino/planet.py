@@ -10,8 +10,7 @@ import time
 from kamino.constants import *
 from kamino.speedy_climate.clima_interpolator import get_T_surface
 from kamino.ocean_chemistry.co2 import get_P_CO2
-from kamino.ocean_circulation.analytic import get_T_ocean, get_T_ocean_KT18
-from kamino.seafloor_weathering.weathering import *
+from kamino.H21.weathering import *
 from kamino.ocean_chemistry.precipitation import get_calcite_precipitation_rate
 from kamino.ocean_chemistry.precipitation_interpolator import *
 from kamino.utils import *
