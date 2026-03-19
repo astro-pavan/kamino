@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 
 # import kamino.seafloor_weathering.chili.plot_example
 
-from kamino.seafloor_weathering.weathering import *
+from kamino.H21.weathering import *
 from kamino.constants import YR
 
 T_range = np.linspace(274, 340, num=20)
