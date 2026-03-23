@@ -290,18 +290,20 @@ def get_precipitation_flux(P: float, T: float, b: npt.NDArray[np.float64], preci
 
     return aqueous_fluxes
 
-def reactive_area(T: float, pH: float, rate: float, alpha: float, clog: bool=True, cover: bool=True) -> float:
+def reactive_area(T: float, pH: float, rate: float, alpha: float, clog: bool=True, cover: bool=True, sedimentation_rate: float | None = None) -> float:
 
     T_ref = 280 # Pore space temperature
     T_c = 7 # Activation energy 92 kJ
     pH_ref = 8.1
     t_clog_ref = 20e6 * YR # Coogan & Gillis (2018), Fig 6
-    beta = 0 # no pH dependence 
+    beta = 0 # no pH dependence
     h_cover = 100 # m
     S_ref = 5 / (1e6 * YR) # 5 m / Myr
+    S_min = 0.3 / (1e6 * YR) # 0.3 m / Myr background (dust)
 
     t_clog = t_clog_ref * np.exp(- (T - T_ref) / T_c) * (pH / pH_ref) ** beta
-    t_cover = h_cover / S_ref
+    S = max(sedimentation_rate, S_min) if sedimentation_rate is not None else S_ref
+    t_cover = h_cover / S
 
     if clog and cover:
         t_reduce = (1 / t_clog + 1 / t_cover) ** -1
@@ -319,9 +321,15 @@ J_ref = 1.4e15 / YR # kg / yr
 A_seafloor = 0.7 * 4 * np.pi * R_EARTH ** 2
 J_ref_normalised = J_ref / A_seafloor
 
-def get_weathering_flux(P: float, T: float, P_CO2: float, b_input: npt.NDArray[np.float64], alpha: float, rate: float, J: float | None=None, cover: bool=True, clog: bool=False, high_temperature: bool=False, precipitating_minerals: list[str] | None=None, fO2: float=0) -> tuple[npt.NDArray[np.float64], float]:
+def get_weathering_flux(P: float, T: float, P_CO2: float, b_input: npt.NDArray[np.float64], alpha: float | None=None, rate: float | None=None, J: float | None=None, cover: bool=True, clog: bool=False, high_temperature: bool=False, precipitating_minerals: list[str] | None=None, fO2: float=0, sedimentation_rate: float | None=None) -> tuple[npt.NDArray[np.float64], dict[str, float]]:
 
     molar_mass = 0.216 # kg / mol
+
+    if alpha is None:
+        alpha = ALPHA_REF
+
+    if rate is None:
+        rate = rate_ref
 
     if J is None:
         J = J_ref_normalised * (rate / rate_ref) # hydrothermal flux proportional to crust production rate
@@ -347,7 +355,7 @@ def get_weathering_flux(P: float, T: float, P_CO2: float, b_input: npt.NDArray[n
                                  high_temperature=high_temperature, fO2=fO2)
     k_primary = get_k(P, T, pH, composition)
 
-    A_reactive = reactive_area(T, pH, rate, alpha, clog, cover)
+    A_reactive = reactive_area(T, pH, rate, alpha, clog, cover, sedimentation_rate=sedimentation_rate)
 
     # Flux formula: F = A*(b_eq - b_in) / (b_eq/k + A/J)
     # Correct first-order kinetics box-model generalisation for non-zero b_input.
@@ -372,7 +380,15 @@ def get_weathering_flux(P: float, T: float, P_CO2: float, b_input: npt.NDArray[n
     d_b_carb = get_precipitation_flux(P, T, b_pore, carbonate_minerals, [])
     flux += J * d_b_carb
 
-    return flux, Da_primary[0]
+    supply_efficiency = 1 - np.exp(-Da_primary[0])
+
+    weathering_diagnostics = {
+        'Da': Da_primary[0],
+        'A_reactive': A_reactive,
+        'supply_efficiency': supply_efficiency
+    }
+
+    return flux, weathering_diagnostics
 
 def get_P_CO2(P: float, T: float, b: npt.NDArray[np.float64]):
 
@@ -383,33 +399,28 @@ def get_P_CO2(P: float, T: float, b: npt.NDArray[np.float64]):
 
     return P_CO2
 
-if __name__ == '__main__':
+from scipy.optimize import least_squares
 
-    b_seawater = np.array([2.3e-3, 2.0e-3, 1e-4, 0.0, 0.0, 10.3e-3, 52.7e-3, 468e-3])
+print("Calibrating weathering model to modern Earth baseline (1 Tmol/yr Alkalinity)...")
 
-    get_P_CO2(1e5, 300, b_seawater)
+_T_ref_calib = 280
+_P_ref_calib = 1000 * 10 * 3000
+_P_CO2_ref_calib = EARTH_ATM * 280e-6
+_seafloor_flux = 1e12 / YR
+_seafloor_flux_normalised = _seafloor_flux / A_seafloor
 
-    # seafloor_flux = 1e12 / YR # 1 Tmol / yr
-    # seafloor_flux_normalised = seafloor_flux / A_seafloor
+# Residual function to find the alpha that produces the correct Alkalinity flux (Index 0)
+def _calibration_residual(a_array):
+    a_val = a_array[0]
+    flux, _ = get_weathering_flux(
+        _P_ref_calib, _T_ref_calib, _P_CO2_ref_calib, 
+        np.array([]), alpha=a_val, rate=rate_ref, J=J_ref_normalised
+    )
+    alkalinity_flux = flux[0] 
+    return (alkalinity_flux - _seafloor_flux_normalised) / _seafloor_flux_normalised
 
-    # print(f'Earth reference weathering flux: {seafloor_flux_normalised:.2e} mol/m^2/s')
-
-    # T_ref = 280
-    # P_ref = 1000 * 10 * 3000
-    # P_CO2_ref = EARTH_ATM * 280e-6
-
-    # print(f'Normalised hydrothermal flux: {J_ref_normalised:.2e} kg/s/m^2')
-
-    # residual = lambda a: (get_weathering_flux(P_ref, T_ref, P_CO2_ref, np.array([]), a, rate_ref, J_ref_normalised)[0][0] - seafloor_flux_normalised) / seafloor_flux_normalised
-
-    # from scipy.optimize import least_squares
-
-    # root = least_squares(residual, 100)
-
-    # print(root)
-
-    # alpha_ref = float(root.x[0])
-
-    # print(f'Alpha required for reference flux: {alpha_ref:.2e}')
-
+# Run the optimization
+_root = least_squares(_calibration_residual, [100.0])
+ALPHA_REF = float(_root.x[0])
+print(f"Calibration complete: ALPHA_REF = {ALPHA_REF:.2e}")
 
