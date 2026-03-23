@@ -1,13 +1,15 @@
 import numpy as np
 import numpy.typing as npt
 from scipy.optimize import newton, bisect
+from tqdm import tqdm
+import matplotlib.pyplot as plt
 
 from kamino.constants import *
 from kamino.kamino_chem.ocean_chemistry import *
 from kamino.speedy_climate.clima_interpolator import get_T_surface
 from kamino.utils import *
 
-T_min = 240
+T_min = 275
 T_max = 350
 
 class Planet:
@@ -68,7 +70,7 @@ class Planet:
         P_H2O = august_roche_magnus_formula(T_s) * 0.5
         P_pore = (self.P_surface + P_CO2 + P_H2O) + 1000 * self.gravity * self.ocean_depth
 
-        T_seafloor = smooth_max(T_seafloor, 273.5)
+        T_seafloor = smooth_max(T_seafloor, 274)
         T_pore = T_seafloor + 9
 
         return T_seafloor, T_pore, P_pore
@@ -118,3 +120,39 @@ class Planet:
 
         Y_steady = newton(residual, Y_initial, maxiter=100, tol=1e-6)
         return Y_steady
+    
+    def time_evolve(self, dt=5*YR):
+
+        Y = np.zeros(2 + elements.shape[0])
+        Y[0] = 288
+        Y[1] = 280e-6 * self.P_surface
+
+        t_current = 0
+        n = 50000
+
+        t = np.empty(n)
+        P_CO2 = np.empty(n)
+        T = np.empty(n)
+        Alk = np.empty(n)
+
+        for i in tqdm(range(n)):
+
+            Y += self.dYdt(0, Y) * dt
+            t_current += dt
+
+            t[i] = t_current
+            T[i] = Y[0]
+            P_CO2[i] = Y[1]
+            Alk[i] = Y[2]
+
+        plt.plot(t / YR, T)
+        plt.show()
+
+        plt.plot(t / YR, P_CO2 / self.P_surface)
+        plt.yscale('log')
+        plt.show()
+
+        plt.plot(t / YR, Alk)
+        plt.yscale('log')
+        plt.show()
+        
