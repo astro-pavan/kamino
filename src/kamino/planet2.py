@@ -4,6 +4,7 @@ from scipy.optimize import newton, bisect
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import csv
+import json
 import os
 
 from kamino.constants import *
@@ -19,13 +20,14 @@ tau_atm = 1000 * YR
 
 class Planet:
 
-    def __init__(self, mass, radius, surface_pressure, instellation, tectonics, ocean_depth):
+    def __init__(self, mass, radius, background_pressure, instellation, tectonics, ocean_depth, land_fraction=0.0, name='planet'):
 
+        self.name = name
         self.mass = mass
         self.radius = radius
         self.gravity = (G * self.mass) / (self.radius ** 2)
         self.surface_area = 4 * np.pi * self.radius ** 2
-        self.P_surface = surface_pressure
+        self.P_background = background_pressure
 
         self.ocean_depth = ocean_depth
         self.ocean_water_mass = self.ocean_depth * self.surface_area * 1000
@@ -39,30 +41,42 @@ class Planet:
 
         self.tidally_locked = False
 
-        land_fraction = 0
+        # Store original constructor inputs for summary output
+        self._input_instellation = instellation  # in units of solar constant
+        self._input_tectonics = tectonics
+
+        self.land_fraction = land_fraction
+        self.land_area = land_fraction * self.surface_area
+
         ocean_albedo = 0.3
         land_albedo = 0.3
 
         self.instellation = instellation * SOLAR_CONSTANT
         self.albedo = land_albedo * land_fraction + ocean_albedo * (1 - land_fraction)
 
-    def solve_climate_from_chemistry(self, b_ocean: npt.NDArray[np.float64], T_init: float=288) -> tuple[float, float]:
+    def solve_climate_from_chemistry(self, b_ocean: npt.NDArray[np.float64], T_init: float=288, P_CO2_est: float=0.0) -> tuple[float, float]:
 
         def T_s_residual(T_guess):
+            if not np.isfinite(T_guess):
+                raise ValueError("T_guess is not finite")
             T_guess = np.clip(T_guess, T_min, 500)
-            P_CO2 = get_P_CO2(self.P_surface, T_guess, b_ocean)
+            P_H2O = august_roche_magnus_formula(T_guess) * 0.5
+            P_atm = self.P_background + P_CO2_est + P_H2O
+            P_CO2 = get_P_CO2(P_atm, T_guess, b_ocean)
             T_calc = get_T_surface(self.instellation, P_CO2, self.albedo, tidally_locked=self.tidally_locked)
             return T_guess - T_calc
-        
+
         try:
             T_s = newton(T_s_residual, T_init, maxiter=50, tol=1e-4)
-        except (RuntimeError, ValueError):
+        except (RuntimeError, ValueError, AssertionError):
             try:
-                T_s = bisect(T_s_residual, T_min, T_max) 
-            except ValueError:
+                T_s = bisect(T_s_residual, T_min, T_max)
+            except (ValueError, AssertionError):
                 T_s = T_max if T_s_residual(T_max) < 0 else T_min
-        
-        P_CO2 = get_P_CO2(self.P_surface, T_s, b_ocean) # type: ignore
+
+        P_H2O = august_roche_magnus_formula(T_s) * 0.5  # type: ignore
+        P_atm = self.P_background + P_CO2_est + P_H2O
+        P_CO2 = get_P_CO2(P_atm, T_s, b_ocean) # type: ignore
 
         assert ~np.isnan(T_s)
 
@@ -73,7 +87,7 @@ class Planet:
         T_seafloor = 1.02 * T_s - 16.7
 
         P_H2O = august_roche_magnus_formula(T_s) * 0.5
-        P_pore = (self.P_surface + P_CO2 + P_H2O) + 1000 * self.gravity * self.ocean_depth
+        P_pore = (self.P_background + P_CO2 + P_H2O) + 1000 * self.gravity * self.ocean_depth
 
         T_seafloor = smooth_max(T_seafloor, 274)
         T_pore = T_seafloor + 9
@@ -86,7 +100,7 @@ class Planet:
         P_CO2 = Y[1]
         b_ocean = smooth_max(Y[2:], np.zeros_like(Y[2:]))
 
-        T_new, P_CO2_new = self.solve_climate_from_chemistry(b_ocean)
+        T_new, P_CO2_new = self.solve_climate_from_chemistry(b_ocean, P_CO2_est=P_CO2)
         T_seafloor, T_pore, P_pore = self.get_seafloor_properties(T_new, P_CO2_new)
 
         decay = np.exp(-dt / tau_atm)
@@ -95,8 +109,21 @@ class Planet:
 
         F_out = self.outgassing_flux / self.ocean_water_mass
 
-        delta_b_prec = get_precipitation_flux(P_pore, T_seafloor, b_ocean, 
-                                            precipitating_minerals=carbonate_minerals + secondary_sink_minerals)
+        # Deep burial: calcite must be stable at the seafloor P/T to be buried.
+        # This is the only pathway on fully-ocean planets (land_fraction = 0).
+        delta_b_prec = get_precipitation_flux(P_pore, T_seafloor, b_ocean,
+                                              precipitating_minerals=carbonate_minerals + secondary_sink_minerals)
+
+        # Shallow burial: continental shelves sit above the CCD so carbonate is
+        # stable there. Only active when land is present; scaled by land_fraction
+        # as a proxy for shelf area.
+        if self.land_fraction > 0:
+            P_H2O_surf = august_roche_magnus_formula(T_new) * 0.5
+            P_surf = self.P_background + P_CO2_new + P_H2O_surf
+            delta_b_shallow = get_precipitation_flux(P_surf, T_new, b_ocean,
+                                                     precipitating_minerals=carbonate_minerals)
+            delta_b_prec = delta_b_prec + self.land_fraction * delta_b_shallow
+
         decay_prec = np.exp(-dt / tau_prec)
         F_prec = delta_b_prec * (1 - decay_prec) / dt
 
@@ -112,7 +139,13 @@ class Planet:
                                                 self.alpha, self.crust_production_rate, clog=False, sedimentation_rate=S_sed)
         F_diss = (weathering_flux * self.surface_area) / self.ocean_water_mass
 
-        F_net = F_out + F_diss + F_prec
+        if self.land_area > 0:
+            F_cont_per_area = get_continental_weathering_flux(T_new, P_CO2_new)
+            F_cont = (F_cont_per_area * self.land_area) / self.ocean_water_mass
+        else:
+            F_cont = np.zeros(len(elements))
+
+        F_net = F_out + F_diss + F_prec + F_cont
         dYdt = np.zeros_like(Y)
         dYdt[0] = dT_dt
         dYdt[1] = dP_CO2_dt
@@ -121,7 +154,7 @@ class Planet:
         diagnostics = {
             'T_new': T_new, 'P_CO2_new': P_CO2_new,
             'T_seafloor': T_seafloor, 'T_pore': T_pore, 'P_pore': P_pore,
-            'F_out': F_out, 'F_diss': F_diss, 'F_prec': F_prec,
+            'F_out': F_out, 'F_diss': F_diss, 'F_prec': F_prec, 'F_cont': F_cont,
             'delta_b_prec': delta_b_prec, 'F_net': F_net,
             'Da': w_diag['Da'],
             'A_reactive': w_diag['A_reactive'],
@@ -130,13 +163,24 @@ class Planet:
 
         return dYdt, diagnostics
     
-    def time_evolve_to_steady_state(self, dt=20000*YR, tol=1e-3, check_every=100, max_steps=100000, dt_max=200000*YR, dt_min=100*YR, debug_log='convergence_debug.csv'):
+    def time_evolve_to_steady_state(self, dt=20000*YR, tol=5e-3, check_every=100, max_steps=30000, dt_max=200000*YR, dt_min=100*YR, output_dir='.', b_ocean_init: dict | None = None):
+
+        output_csv = os.path.join(output_dir, f'{self.name}_timeseries.csv')
+        summary_file = os.path.join(output_dir, f'{self.name}_summary.json')
 
         Y = np.zeros(2 + elements.shape[0])
         Y[0] = 288
-        Y[1] = 280e-6 * self.P_surface
+        Y[1] = 280e-6 * self.P_background
+
+        if b_ocean_init is not None:
+            for elem, val in b_ocean_init.items():
+                idx = int(np.where(elements == elem)[0][0])
+                Y[2 + idx] = val
 
         t_current = 0
+        convergence_status = 'max_steps'
+        convergence_reason = f'Max steps ({max_steps}) reached without convergence'
+        last_fb = None
 
         # Setup lists before the loop
         t = []
@@ -152,29 +196,33 @@ class Planet:
         stagnation_window = 40   # number of checks
         rel_change_history: list[float] = []
 
-        # Set up CSV debug log
+        # Set up timeseries CSV
         _csv_fields = (
             ['t_Myr', 'dt_kyr', 'T', 'P_CO2', 'rel_change', 'slowest', 'Da', 'A_reactive', 'supply_efficiency']
             + [f'Y_{e}' for e in elements]
             + [f'F_out_{e}' for e in elements]
             + [f'F_diss_{e}' for e in elements]
             + [f'F_prec_{e}' for e in elements]
+            + [f'F_cont_{e}' for e in elements]
             + [f'F_net_{e}' for e in elements]
         )
-        _csv_file = open(debug_log, 'w', newline='')
+        _csv_file = open(output_csv, 'w', newline='')
         _csv_writer = csv.DictWriter(_csv_file, fieldnames=_csv_fields)
         _csv_writer.writeheader()
 
-        pbar = tqdm(total=max_steps, unit='step')
+        # pbar = tqdm(total=max_steps, unit='step')
 
         for i in range(max_steps):
 
             dY, fb = self._compute_fluxes_and_derivatives(Y, dt)
+            last_fb = fb
 
             if not np.all(np.isfinite(dY)):
                 print(f"[time_evolve DEBUG] Non-finite dY at step {i}, t={t_current/YR:.2f} yr")
                 print(f"  Y (before step): T={Y[0]:.4f}, P_CO2={Y[1]:.4e}, b_ocean={Y[2:]}")
                 print(f"  dY: {dY}")
+                convergence_status = 'nonfinite'
+                convergence_reason = f'Non-finite dY at step {i}, t={t_current/YR:.2f} yr'
                 break
 
             Y += dY * dt
@@ -186,7 +234,7 @@ class Planet:
             P_CO2.append(Y[1])
             concentrations.append(Y[2:].copy())
 
-            pbar.update(1)
+            # pbar.update(1)
 
             if i > 0 and i % check_every == 0:
                 # Flux-based convergence: |F_net| / (|F_out| + |F_diss| + |F_prec|)
@@ -217,13 +265,13 @@ class Planet:
                 slowest_idx = int(np.argmax(all_metrics))
                 slowest_label = Y_labels[slowest_idx]
 
-                pbar.set_postfix({
-                    't(Myr)': f'{t_current / YR / 1e6:.4f}',
-                    'T(K)': f'{Y[0]:.0f}',
-                    'rel_chg': f'{rel_change:.3%}',
-                    'slowest': slowest_label,
-                    'dt(kyr)': f'{dt / YR / 1e3:.2f}'
-                })
+                # pbar.set_postfix({
+                #     't(Myr)': f'{t_current / YR / 1e6:.4f}',
+                #     'T(K)': f'{Y[0]:.0f}',
+                #     'rel_chg': f'{rel_change:.3%}',
+                #     'slowest': slowest_label,
+                #     'dt(kyr)': f'{dt / YR / 1e3:.2f}'
+                # })
 
                 # Detailed flux breakdown for convergence diagnostics (fb already computed above)
                 row = {
@@ -239,17 +287,20 @@ class Planet:
                 }
                 
                 for j, e in enumerate(elements):
-                    row[f'Y_{e}']     = f'{Y[2+j]:.6e}'
-                    row[f'F_out_{e}'] = f'{fb["F_out"][j]:.6e}'
-                    row[f'F_diss_{e}']= f'{fb["F_diss"][j]:.6e}'
-                    row[f'F_prec_{e}']= f'{fb["F_prec"][j]:.6e}'
-                    row[f'F_net_{e}'] = f'{fb["F_net"][j]:.6e}'
+                    row[f'Y_{e}']      = f'{Y[2+j]:.6e}'
+                    row[f'F_out_{e}']  = f'{fb["F_out"][j]:.6e}'
+                    row[f'F_diss_{e}'] = f'{fb["F_diss"][j]:.6e}'
+                    row[f'F_prec_{e}'] = f'{fb["F_prec"][j]:.6e}'
+                    row[f'F_cont_{e}'] = f'{fb["F_cont"][j]:.6e}'
+                    row[f'F_net_{e}']  = f'{fb["F_net"][j]:.6e}'
                 _csv_writer.writerow(row)
                 _csv_file.flush()
 
                 if rel_change < tol:
                     print(f"\nConverged at t = {t_current / YR / 1e6:.4f} Myr  "
                           f"(rel_change = {rel_change:.2e} < tol = {tol:.2e})")
+                    convergence_status = 'converged'
+                    convergence_reason = f'rel_change = {rel_change:.2e} < tol = {tol:.2e}'
                     break
 
                 # Stagnation / runaway detection.
@@ -283,6 +334,8 @@ class Planet:
                               f"improved by only {improvement:.1%} over "
                               f"{stagnation_window} checks ({stagnation_window * check_every * dt / YR / 1e6:.1f} Myr).")
                         print(f"Cause: {cause}")
+                        convergence_status = 'stagnated'
+                        convergence_reason = cause
                         break
 
                 # Adapt dt: grow when converging smoothly, shrink only on a
@@ -301,9 +354,46 @@ class Planet:
             print(f"\nMax steps ({max_steps}) reached without convergence at "
                   f"t = {t_current / YR / 1e6:.4f} Myr")
 
-        pbar.close()
+        # pbar.close()
         _csv_file.close()
-        print(f"\nFlux debug log written to: {os.path.abspath(debug_log)}")
+        print(f"\nTimeseries written to: {os.path.abspath(output_csv)}")
+
+        # --- Write summary JSON ---
+        final_ocean_chemistry = {str(e): float(Y[2 + j]) for j, e in enumerate(elements)}
+        summary = {
+            'input_parameters': {
+                'name': self.name,
+                'mass_kg': float(self.mass),
+                'radius_m': float(self.radius),
+                'surface_pressure_Pa': float(self.P_background),
+                'instellation_solar': float(self._input_instellation),
+                'tectonics': float(self._input_tectonics),
+                'land_fraction': float(self.land_fraction),
+                'ocean_depth_m': float(self.ocean_depth),
+                'alpha': float(self.alpha),
+                'tidally_locked': bool(self.tidally_locked),
+            },
+            'convergence': {
+                'status': convergence_status,
+                'reason': convergence_reason,
+                'time_to_converge_Myr': float(t_current / YR / 1e6),
+                'runaway': convergence_status == 'stagnated' and 'T pinned' in convergence_reason,
+                'stagnated': convergence_status == 'stagnated',
+            },
+            'final_state': {
+                'T_K': float(Y[0]),
+                'P_CO2_Pa': float(Y[1]),
+                'ocean_chemistry_mol_kgw': final_ocean_chemistry,
+            },
+            'final_diagnostics': {
+                'Da': float(last_fb['Da']) if last_fb is not None else None,
+                'A_reactive_m2': float(last_fb['A_reactive']) if last_fb is not None else None,
+                'supply_efficiency': float(last_fb['supply_efficiency']) if last_fb is not None else None,
+            },
+        }
+        with open(summary_file, 'w') as _sf:
+            json.dump(summary, _sf, indent=2)
+        print(f"Summary written to:    {os.path.abspath(summary_file)}")
 
         t = np.array(t)
         T = np.array(T)
@@ -318,39 +408,22 @@ class Planet:
         ax1.set_yscale('log')
         ax1.set_ylabel('Concentration (mol/kgw)')
         ax1.set_title('Time Evolution of Ocean Chemistry')
-        # Put the legend outside the plot so it doesn't cover the data
         ax1.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
         ax1.grid(True, which="both", ls="--", alpha=0.5)
 
-        # --- Bottom Plot: P_CO2 and T ---
-        # Left Y-axis for P_CO2 (Log scale)
         color_co2 = 'tab:blue'
         ax2.set_xlabel('Time (years)')
-        ax2.set_ylabel('P_CO2 / P_surface', color=color_co2)
-        ax2.plot(t / YR, P_CO2 / self.P_surface, color=color_co2, label='P_CO2')
+        ax2.set_ylabel('$P_{CO2}$ (bar)', color=color_co2)
+        ax2.plot(t / YR, P_CO2 / 1e5, color=color_co2, label='P_CO2')
         ax2.tick_params(axis='y', labelcolor=color_co2)
         ax2.set_yscale('log')
         ax2.grid(True, alpha=0.5)
 
-        # Right Y-axis for Temperature (Linear scale)
         ax3 = ax2.twinx()  
         color_t = 'tab:red'
         ax3.set_ylabel('Temperature (K)', color=color_t)
         ax3.plot(t / YR, T, color=color_t, label='Temperature')
         ax3.tick_params(axis='y', labelcolor=color_t)
 
-        # Adjust layout so the external legend and right y-label aren't cut off
         fig.tight_layout()  
-        plt.show()
-
-        # plt.plot(t / YR, T)
-        # plt.show()
-
-        # plt.plot(t / YR, P_CO2 / self.P_surface)
-        # plt.yscale('log')
-        # plt.show()
-
-        # plt.plot(t / YR, Alk)
-        # plt.yscale('log')
-        # plt.show()
-        
+        plt.savefig(os.path.join(output_dir, f'{self.name}_plot.pdf'))

@@ -163,7 +163,7 @@ def solve_solution(P: float, T: float, b: npt.NDArray[np.float64], pH: float | N
         solution_lines.append(f'    pH     {pH:5f}')
 
     for element, x in zip(elements, b):
-        molality = 0 if x < 1e-9 and trace_approximation else x # any concentration too low is brought up to a trace amount of 1e-9
+        molality = 0 if x < 1e-9 and trace_approximation else x
         solution_lines.append(f'    {element}    {molality:.15e}')
 
     solution_lines.append('')
@@ -390,6 +390,55 @@ def get_weathering_flux(P: float, T: float, P_CO2: float, b_input: npt.NDArray[n
 
     return flux, weathering_diagnostics
 
+# ---------------------------------------------------------------------------
+# Continental silicate weathering (Walker-Hays-Kasting parameterization)
+# ---------------------------------------------------------------------------
+
+# Reference alkalinity flux per unit land area at modern Earth conditions.
+# Calibrated so that 0.3 land fraction gives ~8 Tmol eq/yr total, which
+# balances modern volcanic outgassing after accounting for seafloor weathering.
+_CONT_LAND_AREA_EARTH = 0.3 * 4 * np.pi * R_EARTH ** 2   # m²
+EARTH_CONTINENTAL_WEATHERING_REF = (8e12 / YR) / _CONT_LAND_AREA_EARTH  # mol_eq / m² / s
+
+def get_continental_weathering_flux(
+    T: float,
+    P_CO2: float,
+    F_alk_ref: float = EARTH_CONTINENTAL_WEATHERING_REF,
+    T_ref: float = 288.0,
+    P_CO2_ref: float = EARTH_ATM * 280e-6,
+    beta: float = 0.3,
+    T_e: float = 17.0,
+) -> npt.NDArray[np.float64]:
+    """Walker-Hays-Kasting continental silicate weathering parameterization.
+
+    Returns flux per unit land area [mol/m²/s] using CaSiO3 stoichiometry:
+        CaSiO3 + 2CO2 + H2O -> Ca2+ + 2HCO3-
+
+    Parameters
+    ----------
+    T        : surface temperature [K]
+    P_CO2    : atmospheric CO2 partial pressure [Pa]
+    F_alk_ref: reference alkalinity flux at (T_ref, P_CO2_ref) [mol_eq/m²/s]
+    beta     : CO2 sensitivity exponent (default 0.3)
+    T_e      : temperature e-folding scale [K] (default 17 K ~ 70 kJ/mol)
+    """
+    f = (P_CO2 / P_CO2_ref) ** beta * np.exp((T - T_ref) / T_e)
+    F_alk = F_alk_ref * f   # mol_eq / m² / s
+
+    flux = np.zeros(len(elements))
+    _alk_idx = int(np.where(elements == 'Alkalinity')[0][0])
+    _C_idx   = int(np.where(elements == 'C')[0][0])
+    _Ca_idx  = int(np.where(elements == 'Ca')[0][0])
+
+    # Per mol CaSiO3 dissolved: 1 mol Ca2+, 2 mol HCO3-
+    # => 2 eq Alk, 2 mol C, 1 mol Ca per mol CaSiO3
+    flux[_alk_idx] = F_alk        # eq / m² / s
+    flux[_C_idx]   = F_alk        # mol C / m² / s  (1 HCO3- = 1 C = 1 eq Alk)
+    flux[_Ca_idx]  = F_alk / 2    # mol Ca / m² / s (2 eq per mol Ca2+)
+
+    return flux
+
+
 def get_P_CO2(P: float, T: float, b: npt.NDArray[np.float64]):
 
     output = solve_solution(P, T, b, precipitating_minerals=['CO2(g)'])
@@ -401,7 +450,7 @@ def get_P_CO2(P: float, T: float, b: npt.NDArray[np.float64]):
 
 from scipy.optimize import least_squares
 
-print("Calibrating weathering model to modern Earth baseline (1 Tmol/yr Alkalinity)...")
+# print("Calibrating weathering model to modern Earth baseline (1 Tmol/yr Alkalinity)...")
 
 _T_ref_calib = 280
 _P_ref_calib = 1000 * 10 * 3000
@@ -422,5 +471,5 @@ def _calibration_residual(a_array):
 # Run the optimization
 _root = least_squares(_calibration_residual, [100.0])
 ALPHA_REF = float(_root.x[0])
-print(f"Calibration complete: ALPHA_REF = {ALPHA_REF:.2e}")
+# print(f"Calibration complete: ALPHA_REF = {ALPHA_REF:.2e}")
 

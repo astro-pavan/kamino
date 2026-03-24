@@ -1,0 +1,40 @@
+{
+  "input_parameters": {
+    "name": "planet_inst_0.55_tect_1.00",
+    "mass_kg": 5.972e+24,
+    "radius_m": 6371000.0,
+    "surface_pressure_Pa": 100000.0,
+    "instellation_solar": 0.55,
+    "tectonics": 1.0,
+    "land_fraction": 0.0,
+    "ocean_depth_m": 3000.0,
+    "alpha": 2.0,
+    "tidally_locked": false
+  },
+  "convergence": {
+    "status": "stagnated",
+    "reason": "T pinned at T_min = 275 K \u2014 planet is too cold for the carbonate thermostat to operate (CO2 runaway / acid ocean).",
+    "time_to_converge_Myr": 781.1604053790722,
+    "runaway": true,
+    "stagnated": true
+  },
+  "final_state": {
+    "T_K": 275.0,
+    "P_CO2_Pa": 100611.8623857885,
+    "ocean_chemistry_mol_kgw": {
+      "Alkalinity": 0.4878577806510884,
+      "C": 3.0907309958410623,
+      "Si": 0.00023595624490812061,
+      "Al": 0.0,
+      "Fe": 9.970330692764955e-06,
+      "Ca": 0.013879962848742015,
+      "Mg": 0.0005543466352665549,
+      "Na": 0.0
+    }
+  },
+  "final_diagnostics": {
+    "Da": 0.0004389493117384724,
+    "A_reactive_m2": 1.8572269809992292,
+    "supply_efficiency": 0.00043885298758361557
+  }
+}

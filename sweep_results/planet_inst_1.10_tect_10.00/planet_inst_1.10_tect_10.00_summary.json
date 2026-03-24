@@ -1,0 +1,40 @@
+{
+  "input_parameters": {
+    "name": "planet_inst_1.10_tect_10.00",
+    "mass_kg": 5.972e+24,
+    "radius_m": 6371000.0,
+    "surface_pressure_Pa": 100000.0,
+    "instellation_solar": 1.1,
+    "tectonics": 10.0,
+    "land_fraction": 0.0,
+    "ocean_depth_m": 3000.0,
+    "alpha": 2.0,
+    "tidally_locked": false
+  },
+  "convergence": {
+    "status": "stagnated",
+    "reason": "T pinned at T_max = 350 K \u2014 climate model ceiling reached; consider extending the interpolation grid.",
+    "time_to_converge_Myr": 134.52520765838608,
+    "runaway": true,
+    "stagnated": true
+  },
+  "final_state": {
+    "T_K": 350.00000000000006,
+    "P_CO2_Pa": 100986.94969749222,
+    "ocean_chemistry_mol_kgw": {
+      "Alkalinity": 0.27607911826452236,
+      "C": 0.308058376824122,
+      "Si": 0.004087921069131797,
+      "Al": 1.1307100865472893e-12,
+      "Fe": 1.6682517261870206e-07,
+      "Ca": 0.0014527156929931375,
+      "Mg": 0.0,
+      "Na": 0.0
+    }
+  },
+  "final_diagnostics": {
+    "Da": 0.004287353825560199,
+    "A_reactive_m2": 1.6077572786682817,
+    "supply_efficiency": 0.004278176244677634
+  }
+}

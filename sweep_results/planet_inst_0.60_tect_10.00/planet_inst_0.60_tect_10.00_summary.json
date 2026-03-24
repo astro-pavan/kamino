@@ -1,0 +1,40 @@
+{
+  "input_parameters": {
+    "name": "planet_inst_0.60_tect_10.00",
+    "mass_kg": 5.972e+24,
+    "radius_m": 6371000.0,
+    "surface_pressure_Pa": 100000.0,
+    "instellation_solar": 0.6,
+    "tectonics": 10.0,
+    "land_fraction": 0.0,
+    "ocean_depth_m": 3000.0,
+    "alpha": 2.0,
+    "tidally_locked": false
+  },
+  "convergence": {
+    "status": "stagnated",
+    "reason": "elements ['Alkalinity', 'C', 'Fe', 'Ca', 'Mg'] have persistent flux imbalance > 50% with no sign of improvement \u2014 likely no accessible steady state in the current mineral set.",
+    "time_to_converge_Myr": 116.74,
+    "runaway": false,
+    "stagnated": true
+  },
+  "final_state": {
+    "T_K": 288.0471507748451,
+    "P_CO2_Pa": 100703.12274790596,
+    "ocean_chemistry_mol_kgw": {
+      "Alkalinity": 0.20976896905953624,
+      "C": 5.61195970217529,
+      "Si": 8.473781375558042e-05,
+      "Al": 2.1835634386806072e-13,
+      "Fe": 1.586095261125754e-05,
+      "Ca": 0.03639440159207095,
+      "Mg": 0.0011167862175873089,
+      "Na": 0.0
+    }
+  },
+  "final_diagnostics": {
+    "Da": 6.187356584205116e-05,
+    "A_reactive_m2": 1.9850747195916472,
+    "supply_efficiency": 6.18716517124529e-05
+  }
+}

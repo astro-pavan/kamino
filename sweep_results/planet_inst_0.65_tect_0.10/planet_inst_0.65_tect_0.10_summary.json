@@ -1,0 +1,40 @@
+{
+  "input_parameters": {
+    "name": "planet_inst_0.65_tect_0.10",
+    "mass_kg": 5.972e+24,
+    "radius_m": 6371000.0,
+    "surface_pressure_Pa": 100000.0,
+    "instellation_solar": 0.65,
+    "tectonics": 0.1,
+    "land_fraction": 0.0,
+    "ocean_depth_m": 3000.0,
+    "alpha": 2.0,
+    "tidally_locked": false
+  },
+  "convergence": {
+    "status": "max_steps",
+    "reason": "Max steps (30000) reached without convergence",
+    "time_to_converge_Myr": 5784.2642411581455,
+    "runaway": false,
+    "stagnated": false
+  },
+  "final_state": {
+    "T_K": 275.0,
+    "P_CO2_Pa": 18302.681837486372,
+    "ocean_chemistry_mol_kgw": {
+      "Alkalinity": 0.4916135939551426,
+      "C": 0.5010427780256301,
+      "Si": 0.0001357194268218623,
+      "Al": 2.898975386358735e-12,
+      "Fe": 1.4227112930337293e-07,
+      "Ca": 0.00015514636178107623,
+      "Mg": 1.5352805660757033e-05,
+      "Na": 0.0
+    }
+  },
+  "final_diagnostics": {
+    "Da": 0.002270112217476699,
+    "A_reactive_m2": 1.0358264531354269,
+    "supply_efficiency": 0.0022675374614335997
+  }
+}
