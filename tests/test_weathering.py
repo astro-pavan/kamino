@@ -13,7 +13,7 @@ def run_all_benchmarks():
     print("--- Starting Ocean Chemistry Benchmarks ---\n")
     
     # Modern Earth Seawater Approximation
-    b_seawater = np.array([2.3e-3, 2.0e-3, 1e-4, 0.0, 0.0, 10.3e-3, 52.7e-3, 468e-3])
+    b_seawater = np.array([2.3e-3, 2.0e-3, 1e-4, 0.0, 0.0, 10.3e-3, 52.7e-3, 468e-3, 546e-3])
     
     # Standard Earth Seafloor Conditions
     P_seafloor = 1e5 + 1000 * 9.81 * 3000  # ~300 atm
@@ -26,6 +26,7 @@ def run_all_benchmarks():
     idx_Ca = int(np.where(elements == 'Ca')[0][0])
     idx_Mg = int(np.where(elements == 'Mg')[0][0])
     idx_Na = int(np.where(elements == 'Na')[0][0])
+    idx_Cl = int(np.where(elements == 'Cl')[0][0])
 
     # ---------------------------------------------------------
     # Test 1: Modern Earth Baseline
@@ -127,10 +128,13 @@ def run_all_benchmarks():
     # Approx check: Alk ≈ 2*Ca + 2*Mg + Na (ignoring minor Fe/Al species for a rough check)
     cations_charge = 2 * flux_pure[idx_Ca] + 2 * flux_pure[idx_Mg] + 1 * flux_pure[idx_Na]
     alk_flux = flux_pure[idx_Alk]
+    cl_flux = flux_pure[idx_Cl]
+
     
     print(f"   Flux Alkalinity:    {alk_flux:.4e}")
+    print(f"   Charge from Anions: {cl_flux:.4e}")
     print(f"   Charge from Cations:{cations_charge:.4e}")
-    print(f"   Ratio (Alk/Cations): {alk_flux / cations_charge:.2f} (Should be ~1.0)\n")
+    print(f"   Ratio (Anions+Alk/Cations): {(alk_flux + cl_flux) / cations_charge:.2f} (Should be ~1.0)\n")
 
     # ---------------------------------------------------------
     # Test 6: Dead Ocean Edge Case
