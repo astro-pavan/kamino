@@ -109,7 +109,7 @@ def solution_block(P: float, T: float, composition: dict[str, float], pH: Union[
     lines: list[str] = [
         'SOLUTION 1',
         f'    pressure  {P / EARTH_ATM:.4f}',
-        f'    temp      {T + ABSOLUTE_ZERO:.4f}',
+        f'    temp      {max(T + ABSOLUTE_ZERO, 0.01):.4f}',  # LLNL database valid from 0.01°C
         pH_line,
         f'    units     mol/kgw'
     ]
