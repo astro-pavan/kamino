@@ -19,12 +19,19 @@ elements = np.array([
     'Ca',
     'Mg',
     'Na',
+    'Cl',
     #'K',
     #'S',
     #'N',
     #'F',
-    #'Cl'
 ])
+
+cl_idx  = int(np.where(elements == 'Cl')[0][0])
+alk_idx = int(np.where(elements == 'Alkalinity')[0][0])
+ca_idx  = int(np.where(elements == 'Ca')[0][0])
+mg_idx  = int(np.where(elements == 'Mg')[0][0])
+c_idx   = int(np.where(elements == 'C')[0][0])
+si_idx = int(np.where(elements == 'Si')[0][0])
 
 element_string = ' '.join(elements[1:])
 
@@ -69,7 +76,7 @@ species_to_element = {
     'CO3-2': 'C',
     #'SO4-2': 'S',
     #'HS-': 'S',
-    #'Cl-': 'Cl',
+    'Cl-': 'Cl',
     #'F-': 'F'
 }
 
@@ -146,16 +153,48 @@ if p_LT.load_database("ocean_chem.dat") == 1:
 p_HT = Phreeqc()
 p_HT.load_database("hydrothermal.dat")
 
-def solve_solution(P: float, T: float, b: npt.NDArray[np.float64], pH: float | None=None, P_CO2: float | None=None, precipitating_minerals: list[str]=[], equilibriating_minerals: list[str]=[], high_temperature: bool=False, fO2: float=0, trace_approximation: bool=False, verbose: bool=False):
+def solve_solution(P: float, T: float, b: npt.NDArray[np.float64], pH: float | None=None, P_CO2: float | None=None, precipitating_minerals: list[str]=[], equilibriating_minerals: list[str]=[], high_temperature: bool=False, fO2: float=0, trace_approximation: bool=True, verbose: bool=False, enforce_charge_balance: bool=True):
+
+    if enforce_charge_balance:
+
+        b_modified = False
+
+        alk = b[alk_idx]
+        cl_conc = b[cl_idx]
+        alk_effective = alk + cl_conc
+        divalent = 2 * b[ca_idx] + 2 * b[mg_idx]
+        
+        # Trigger with a margin: PHREEQC's internal speciation (CaHCO3+, CaCO3(aq), etc.)
+        # reduces free Ca2+/Mg2+ from their totals, shifting the effective non-carbonate
+        # alkalinity. The 2% theoretical limit isn't enough — in practice PHREEQC's Newton
+        # iteration overshoots into unphysical states when divalent/Alk > 0.95, so we
+        # use a 5% margin. Floored at 1e-8; capped at 50% so (alk - margin) stays +ve.
+        margin = min(max(alk_effective * 0.05, 1e-8), alk_effective * 0.5)
+        if divalent > 0 and divalent >= alk_effective - margin:
+            if not b_modified:
+                b = b.copy()
+                b_modified = True
+            scale = (alk_effective - margin) / divalent
+            b[ca_idx] *= scale
+            b[mg_idx] *= scale
+
+        # # enforce 
+        # C_FLOOR = 1e-8  # mol/kgw
+        # if b[c_idx] < C_FLOOR:
+        #     if not b_modified:
+        #         b = b.copy()
+        #         b_modified = True
+        #     b[c_idx] = C_FLOOR
 
     solution_lines: list[str] = [
-        # KNOBS: increase iteration limit for robustness with extreme-K minerals at low T
         'KNOBS',
         '    -iterations 2000',
+        '    -convergence_tolerance 1e-8',
+        '    -step_size 0.5',   # half-step Newton: more stable near charge-balance limit
         '',
         'SOLUTION 1',
         f'    pressure  {P / EARTH_ATM:.4f}',
-        f'    temp      {T + ABSOLUTE_ZERO:.4f}',
+        f'    temp      {max(T + ABSOLUTE_ZERO, 0.01):.4f}',  # LLNL database valid from 0.01°C
         '    units     mol/kgw'
     ]
 
@@ -240,20 +279,10 @@ def get_b_eq(P: float, T: float, P_CO2: float, composition: dict[str, float], b_
 
     b_eq = np.zeros(elements.shape)
 
-    # Anorthite and Forsterite have extreme PHREEQC log_k values at seafloor T (~31 at 1.85°C)
-    # due to SUPCRT92 temperature extrapolation. Equilibrating them from dilute water causes
-    # numerical divergence. Exclude them for the low-T database only; the high-T database
-    # (bl-1kb.dat) has proper analytic fits and does not have this problem.
-    # Anorthite drives Al to molar levels without an Al-sink (Kaolinite is not in
-    # hydrothermal.dat). Exclude it for both databases. Forsterite is only problematic
-    # with SUPCRT92 low-T extrapolation; keep it for the HT database.
-
+    # These minerals cause problems for the equilbrium calculations
     _problematic = {'Anorthite'} if high_temperature else {'Anorthite', 'Forsterite'}
-    # Under oxic conditions Fayalite (Fe2SiO4) is thermodynamically unstable —
-    # it oxidises to Goethite/Magnetite during early alteration and is absent as
-    # a reactive phase. Equilibrating it with O2(g) at low T drives PHREEQC to a
-    # non-physical state (pH > 20) because log_k ~21 at 2°C gives enormous Fe2+
-    # that the O2/H2O redox couple cannot stably handle.
+    
+    # These minerals cause problems with oxic conditions
     if fO2 > 0:
         _problematic.add('Fayalite')
 
@@ -278,7 +307,7 @@ def aqueous_flux(P: float, T: float, P_CO2: float, J: float, A_reactive: float, 
     
     return A_reactive / ((1 / k) + (A_reactive / (J * b_eq)))
 
-def get_precipitation_flux(P: float, T: float, b: npt.NDArray[np.float64], precipitating_minerals: list[str], equilibrium_minerals: list[str]=[], fO2: float=0) -> npt.NDArray[np.float64]:
+def get_precipitation_flux(P: float, T: float, b: npt.NDArray[np.float64], precipitating_minerals: list[str], equilibrium_minerals: list[str]=[], fO2: float=0) -> tuple[npt.NDArray[np.float64], float]:
 
     output = solve_solution(P, T, b, precipitating_minerals=precipitating_minerals, equilibriating_minerals=equilibrium_minerals, fO2=fO2)
 
@@ -288,7 +317,9 @@ def get_precipitation_flux(P: float, T: float, b: npt.NDArray[np.float64], preci
         output_key = 'Alk(eq/kgw)' if element == 'Alkalinity' else f'{element}(mol/kgw)'
         aqueous_fluxes[i] = (float(output[output_key][-1]) - float(output[output_key][0]))
 
-    return aqueous_fluxes
+    pH = float(output['pH'][-1])
+
+    return aqueous_fluxes, pH
 
 def reactive_area(T: float, pH: float, rate: float, alpha: float, clog: bool=True, cover: bool=True, sedimentation_rate: float | None = None) -> float:
 
@@ -377,7 +408,7 @@ def get_weathering_flux(P: float, T: float, P_CO2: float, b_input: npt.NDArray[n
 
     flux = F_primary
 
-    d_b_carb = get_precipitation_flux(P, T, b_pore, carbonate_minerals, [])
+    d_b_carb, _ = get_precipitation_flux(P, T, b_pore, carbonate_minerals, [])
     flux += J * d_b_carb
 
     supply_efficiency = 1 - np.exp(-Da_primary[0])
@@ -465,11 +496,17 @@ def _calibration_residual(a_array):
         _P_ref_calib, _T_ref_calib, _P_CO2_ref_calib, 
         np.array([]), alpha=a_val, rate=rate_ref, J=J_ref_normalised
     )
-    alkalinity_flux = flux[0] 
+    alkalinity_flux = flux[0]
     return (alkalinity_flux - _seafloor_flux_normalised) / _seafloor_flux_normalised
 
 # Run the optimization
 _root = least_squares(_calibration_residual, [100.0])
 ALPHA_REF = float(_root.x[0])
-# print(f"Calibration complete: ALPHA_REF = {ALPHA_REF:.2e}")
 
+W_REF, _ = get_weathering_flux(
+        _P_ref_calib, _T_ref_calib, _P_CO2_ref_calib, 
+        np.array([]), alpha=ALPHA_REF, rate=rate_ref, J=J_ref_normalised
+)
+
+# print(f"Calibration complete: ALPHA_REF = {ALPHA_REF:.2e}")
+print(f'Weathering flux: {W_REF[0] * YR * A_seafloor / 1e12:.2e} Tmol/yr')
