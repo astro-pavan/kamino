@@ -22,7 +22,8 @@ import itertools
 
 # instellation_range = [0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.15, 1.2, 1.25]
 instellation_range = [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2]
-tectonics_range = [0.01, 0.1, 1, 10, 100]
+# tectonics_range = [0.01, 0.1, 1, 10, 100]
+tectonics_range = [1]
 ocean_depth_range = [100, 500, 1000, 3000, 5000, 10000]
 
 
@@ -30,6 +31,17 @@ ocean_depth_range = [100, 500, 1000, 3000, 5000, 10000]
 BACKGROUND_PRESSURE = 1e5   # Pa (~1 bar)
 OCEAN_DEPTH = 3000          # m
 TECTONICS = 1.0
+
+def test():
+
+    p1 = Planet(M_EARTH, R_EARTH, BACKGROUND_PRESSURE, 0.7, 1.0, 3000)
+    p1.time_evolve_to_steady_state(verbose=True, dt_max=40000 * YR, dt=10000 * YR, dt_min=1 * YR, max_steps=10000)
+
+def test_sweep():
+
+    for s in instellation_range:
+        p1 = Planet(M_EARTH, R_EARTH, BACKGROUND_PRESSURE, s, 1.0, 3000, name=f'test_s_{s}')
+        p1.time_evolve_to_steady_state(verbose=True, dt_max=200000 * YR, dt=100 * YR)
 
 def run_single_planet(params, rerun=True):
     """
@@ -224,11 +236,13 @@ def plot_steady_states(
 
 if __name__ == "__main__":
 
-    multiprocessing.set_start_method('spawn')
-    run_parameter_sweep_tectonics()
+    test()
+
+    # multiprocessing.set_start_method('spawn')
+    # run_parameter_sweep_tectonics()
     # run_parameter_sweep_ocean_depth()
 
-    plot_steady_states()
+    # plot_steady_states()
 
     # plot_steady_states(
     #     results_dir="sweep_results_depth", 

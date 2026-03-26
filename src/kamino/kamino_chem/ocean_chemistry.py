@@ -153,7 +153,7 @@ if p_LT.load_database("ocean_chem.dat") == 1:
 p_HT = Phreeqc()
 p_HT.load_database("hydrothermal.dat")
 
-def solve_solution(P: float, T: float, b: npt.NDArray[np.float64], pH: float | None=None, P_CO2: float | None=None, precipitating_minerals: list[str]=[], equilibriating_minerals: list[str]=[], high_temperature: bool=False, fO2: float=0, trace_approximation: bool=True, verbose: bool=False, enforce_charge_balance: bool=True):
+def solve_solution(P: float, T: float, b: npt.NDArray[np.float64], pH: float | None=None, P_CO2: float | None=None, precipitating_minerals: list[str]=[], equilibriating_minerals: list[str]=[], high_temperature: bool=False, fO2: float=0, trace_approximation: bool=True, verbose: bool=False, enforce_charge_balance: bool=False):
 
     if enforce_charge_balance:
 
@@ -178,7 +178,9 @@ def solve_solution(P: float, T: float, b: npt.NDArray[np.float64], pH: float | N
             b[ca_idx] *= scale
             b[mg_idx] *= scale
 
-        # # enforce 
+        # Minimum C floor: pure-zero DIC leaves PHREEQC with ~5 nmol/kgw dissolved
+        # carbon, which is at the edge of its numerical stability. Clamping prevents
+        # H(1) convergence failures when the carbonate system is nearly empty.
         # C_FLOOR = 1e-8  # mol/kgw
         # if b[c_idx] < C_FLOOR:
         #     if not b_modified:
@@ -187,11 +189,11 @@ def solve_solution(P: float, T: float, b: npt.NDArray[np.float64], pH: float | N
         #     b[c_idx] = C_FLOOR
 
     solution_lines: list[str] = [
-        'KNOBS',
-        '    -iterations 2000',
-        '    -convergence_tolerance 1e-8',
-        '    -step_size 0.5',   # half-step Newton: more stable near charge-balance limit
-        '',
+        #'KNOBS',
+        #'    -iterations 2000',
+        #'    -convergence_tolerance 1e-9',
+        #'    -step_size 0.5',   # half-step Newton: more stable near charge-balance limit
+        #'',
         'SOLUTION 1',
         f'    pressure  {P / EARTH_ATM:.4f}',
         f'    temp      {max(T + ABSOLUTE_ZERO, 0.01):.4f}',  # LLNL database valid from 0.01°C
@@ -202,7 +204,7 @@ def solve_solution(P: float, T: float, b: npt.NDArray[np.float64], pH: float | N
         solution_lines.append(f'    pH     {pH:5f}')
 
     for element, x in zip(elements, b):
-        molality = 0 if x < 1e-9 and trace_approximation else x
+        molality = 1e-9 if x < 1e-9 and trace_approximation else x
         solution_lines.append(f'    {element}    {molality:.15e}')
 
     solution_lines.append('')
@@ -251,7 +253,9 @@ def solve_solution(P: float, T: float, b: npt.NDArray[np.float64], pH: float | N
     p = p_HT if high_temperature else p_LT 
 
     if p.run_string(input_string) == 1:
+        print(input_string)
         print(p.get_error_string())
+        raise ChemistryError
 
     output_dict = p.get_selected_output()
     if output_dict and verbose:
@@ -307,7 +311,7 @@ def aqueous_flux(P: float, T: float, P_CO2: float, J: float, A_reactive: float, 
     
     return A_reactive / ((1 / k) + (A_reactive / (J * b_eq)))
 
-def get_precipitation_flux(P: float, T: float, b: npt.NDArray[np.float64], precipitating_minerals: list[str], equilibrium_minerals: list[str]=[], fO2: float=0) -> tuple[npt.NDArray[np.float64], float]:
+def get_precipitation_flux(P: float, T: float, b: npt.NDArray[np.float64], precipitating_minerals: list[str], equilibrium_minerals: list[str]=[], fO2: float=0) -> tuple[npt.NDArray[np.float64], float, dict[str, float]]:
 
     output = solve_solution(P, T, b, precipitating_minerals=precipitating_minerals, equilibriating_minerals=equilibrium_minerals, fO2=fO2)
 
@@ -319,7 +323,14 @@ def get_precipitation_flux(P: float, T: float, b: npt.NDArray[np.float64], preci
 
     pH = float(output['pH'][-1])
 
-    return aqueous_fluxes, pH
+    si_dict = {}
+    for min_name in precipitating_minerals:
+        si_key = f'si_{min_name}'
+        if si_key in output:
+            # Index 0 is the initial state of the solution BEFORE precipitation occurs
+            si_dict[min_name] = float(output[si_key][0])
+
+    return aqueous_fluxes, pH, si_dict
 
 def reactive_area(T: float, pH: float, rate: float, alpha: float, clog: bool=True, cover: bool=True, sedimentation_rate: float | None = None) -> float:
 
@@ -408,7 +419,7 @@ def get_weathering_flux(P: float, T: float, P_CO2: float, b_input: npt.NDArray[n
 
     flux = F_primary
 
-    d_b_carb, _ = get_precipitation_flux(P, T, b_pore, carbonate_minerals, [])
+    d_b_carb, _, _ = get_precipitation_flux(P, T, b_pore, carbonate_minerals, [])
     flux += J * d_b_carb
 
     supply_efficiency = 1 - np.exp(-Da_primary[0])
@@ -470,6 +481,27 @@ def get_continental_weathering_flux(
     return flux
 
 
+def get_P_CO2_analytic(T_kelvin: float, C_chem: float) -> tuple[float, float]:
+
+    # K0: Weiss (1974)
+    ln_K0 = -60.2409 + 93.4517 * (100.0 / T_kelvin) + 23.3585 * np.log(T_kelvin / 100.0)
+    K0 = np.exp(ln_K0)
+    
+    # K1: Harned & Davis (1943)
+    pK1 = (3404.71 / T_kelvin) + 0.032786 * T_kelvin - 14.8435
+    K1 = 10 ** -pK1
+    
+    # K2: Harned & Scholes (1941)
+    pK2 = (2902.39 / T_kelvin) + 0.02379 * T_kelvin - 6.4980
+    K2 = 10 ** -pK2
+
+    thermo_ratio = K2 / (K0 * K1)
+
+    P_CO2 = C_chem * thermo_ratio
+    
+    return P_CO2, thermo_ratio
+
+
 def get_P_CO2(P: float, T: float, b: npt.NDArray[np.float64]):
 
     output = solve_solution(P, T, b, precipitating_minerals=['CO2(g)'])
@@ -478,6 +510,9 @@ def get_P_CO2(P: float, T: float, b: npt.NDArray[np.float64]):
     P_CO2 = EARTH_ATM * 10 ** si_CO2
 
     return P_CO2
+
+class ChemistryError(Exception):
+    pass
 
 from scipy.optimize import least_squares
 
