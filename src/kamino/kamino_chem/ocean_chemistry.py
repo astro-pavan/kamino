@@ -18,15 +18,15 @@ elements = np.array([
     'Fe',
     'Ca',
     'Mg',
-    'Na',
-    'Cl',
+    #'Na',
+    #'Cl',
     #'K',
     #'S',
     #'N',
     #'F',
 ])
 
-cl_idx  = int(np.where(elements == 'Cl')[0][0])
+#cl_idx  = int(np.where(elements == 'Cl')[0][0])
 alk_idx = int(np.where(elements == 'Alkalinity')[0][0])
 ca_idx  = int(np.where(elements == 'Ca')[0][0])
 mg_idx  = int(np.where(elements == 'Mg')[0][0])
@@ -66,7 +66,7 @@ available_mineral_string = ' '.join(minerals)
 species_to_element = {
     'Ca+2': 'Ca',
     'Mg+2': 'Mg',
-    'Na+': 'Na',
+    # 'Na+': 'Na',
     # 'K+': 'K',
     'Fe+2': 'Fe',
     'Fe+3': 'Fe',
@@ -76,7 +76,7 @@ species_to_element = {
     'CO3-2': 'C',
     #'SO4-2': 'S',
     #'HS-': 'S',
-    'Cl-': 'Cl',
+    #'Cl-': 'Cl',
     #'F-': 'F'
 }
 

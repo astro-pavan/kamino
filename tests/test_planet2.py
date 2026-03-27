@@ -34,8 +34,8 @@ TECTONICS = 1.0
 
 def test():
 
-    p1 = Planet(M_EARTH, R_EARTH, BACKGROUND_PRESSURE, 0.7, 1.0, 3000)
-    p1.time_evolve_to_steady_state(verbose=True, dt_max=40000 * YR, dt=10000 * YR, dt_min=1 * YR, max_steps=10000)
+    p1 = Planet(M_EARTH, R_EARTH, BACKGROUND_PRESSURE, 1.0, 1.0, 3000)
+    p1.time_evolve_to_steady_state(verbose=True, dt_max=1e7 * YR, dt=1e5 * YR, dt_min=1 * YR, max_steps=20000)
 
 def test_sweep():
 
@@ -93,7 +93,7 @@ def run_parameter_sweep_tectonics():
     
     # Use ProcessPoolExecutor to manage the CPU cores
     # By default, it uses as many workers as you have processors on your machine
-    with concurrent.futures.ProcessPoolExecutor(max_workers=20) as executor:
+    with concurrent.futures.ProcessPoolExecutor(max_workers=7) as executor:
         # Submit all tasks to the executor
         futures = {executor.submit(run_single_planet, task): task for task in tasks}
         

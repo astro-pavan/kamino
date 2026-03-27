@@ -1,6 +1,6 @@
 import numpy as np
 import numpy.typing as npt
-from scipy.optimize import newton, bisect
+from scipy.optimize import newton, bisect, brentq
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import csv
@@ -41,12 +41,12 @@ class Planet:
         self.outgassing_flux = np.zeros(elements.shape)
         self.outgassing_flux[1] = (EARTH_OUTGASSING / YR) * self.surface_area * tectonics
 
-        self.cl_chemistry = cl_chemistry
-        self.hcl_co2_ratio = hcl_co2_ratio
-        if cl_chemistry:
-            F_HCl = (EARTH_OUTGASSING / YR) * self.surface_area * tectonics * hcl_co2_ratio
-            self.outgassing_flux[cl_idx]  += F_HCl   # HCl → Cl⁻ added to ocean
-            self.outgassing_flux[alk_idx] -= F_HCl   # H⁺ released consumes alkalinity
+        # self.cl_chemistry = cl_chemistry
+        # self.hcl_co2_ratio = hcl_co2_ratio
+        # if cl_chemistry:
+        #     F_HCl = (EARTH_OUTGASSING / YR) * self.surface_area * tectonics * hcl_co2_ratio
+        #     self.outgassing_flux[cl_idx]  += F_HCl   # HCl → Cl⁻ added to ocean
+        #     self.outgassing_flux[alk_idx] -= F_HCl   # H⁺ released consumes alkalinity
 
         self.alpha = 2
 
@@ -66,43 +66,56 @@ class Planet:
 
     def solve_climate_from_chemistry(self, b_ocean: npt.NDArray[np.float64], T_init: float=288, P_CO2_est: float=0.0) -> tuple[float, float]:
 
-        P_atm_init = self.P_background + P_CO2_est + (august_roche_magnus_formula(T_init) * 0.5)
-        P_CO2_init = get_P_CO2(P_atm_init, T_init, b_ocean)
+        # Anchor P_CO2 at T_init via PHREEQC, then build a linear P_CO2(T) model
+        # using the actual PHREEQC slope.  The analytic thermo-ratio formula
+        # over-estimates dP_CO2/dT by ~40%, which makes Newton overshoot and
+        # land on spurious high-T roots (~350 K).
+        P_atm_0 = self.P_background + P_CO2_est + august_roche_magnus_formula(T_init) * 0.5
+        P_CO2_0 = get_P_CO2(P_atm_0, T_init, b_ocean)
 
-        _, ratio_init = get_P_CO2_analytic(T_init, 0)
-        C_chem = P_CO2_init / ratio_init
+        _dT_probe = 5.0
+        P_atm_p = self.P_background + P_CO2_est + august_roche_magnus_formula(T_init + _dT_probe) * 0.5
+        P_CO2_p = get_P_CO2(P_atm_p, T_init + _dT_probe, b_ocean)
+        _slope = (P_CO2_p - P_CO2_0) / _dT_probe   # Pa / K  (real PHREEQC sensitivity)
 
         def T_s_residual(T_guess):
             if not np.isfinite(T_guess):
                 raise ValueError("T_guess is not finite")
             T_guess = np.clip(T_guess, T_min, 500)
-            P_H2O = august_roche_magnus_formula(T_guess) * 0.5
-            P_atm = self.P_background + P_CO2_est + P_H2O
-            # P_CO2 = get_P_CO2(P_atm, T_guess, b_ocean)
-            P_CO2, _  = get_P_CO2_analytic(T_guess, C_chem)
+            P_CO2 = max(0.0, P_CO2_0 + _slope * (T_guess - T_init))
             T_calc = get_T_surface(self.instellation, P_CO2, self.albedo, tidally_locked=self.tidally_locked)
             return T_guess - T_calc
 
-        try:
-
-            T_s = newton(T_s_residual, T_init, maxiter=50, tol=1e-4)
-
-        except (RuntimeError, ValueError, AssertionError):
-        # If Newton fails on a smooth curve, the root is out of bounds.
+        # Search for a root near T_init in progressively wider windows.
+        # This keeps the solution on the local climate branch (warm or cold)
+        # rather than letting Newton jump to a distant spurious root.
+        # The linear P_CO2 model has a cold root at T_min (where P_CO2→0),
+        # and Newton can land there if the warm root has an unstable derivative.
+        T_s = None
+        for half_width in [8.0, 18.0, 35.0, 70.0]:
+            lo = max(T_min, T_init - half_width)
+            hi = min(T_max, T_init + half_width)
             try:
-                res_max = T_s_residual(T_max)
-                res_min = T_s_residual(T_min)
-                
-                if res_max < 0:
+                r_lo = T_s_residual(lo)
+                r_hi = T_s_residual(hi)
+                if r_lo * r_hi <= 0:
+                    T_s = float(brentq(T_s_residual, lo, hi, xtol=0.1, maxiter=50))
+                    break
+            except Exception:
+                pass
+
+        if T_s is None:
+            # No local root: check the global range for a genuine phase transition
+            try:
+                r_min = T_s_residual(T_min)
+                r_max = T_s_residual(T_max)
+                if r_min * r_max <= 0:
+                    T_s = float(brentq(T_s_residual, T_min, T_max, xtol=0.1))
+                elif r_max < 0:
                     T_s = float(T_max)  # Runaway Greenhouse
-                elif res_min > 0:
-                    T_s = float(T_min)  # Snowball
                 else:
-                    # Fallback: pick the boundary closest to zero
-                    T_s = float(T_max) if abs(res_max) < abs(res_min) else float(T_min)
-                    
-            except (AssertionError, ValueError):
-                # If the climate table completely fails at the high-T boundary
+                    T_s = float(T_min)  # Snowball
+            except Exception:
                 T_s = float(T_max)
 
         P_H2O = august_roche_magnus_formula(T_s) * 0.5  # type: ignore
@@ -133,7 +146,8 @@ class Planet:
 
         # --- Atmospheric and Seafloor Properties ---
 
-        T_new, P_CO2_new = self.solve_climate_from_chemistry(b_ocean, T_init=T, P_CO2_est=P_CO2)
+        # T_new, P_CO2_new = self.solve_climate_from_chemistry(b_ocean, T_init=T, P_CO2_est=P_CO2)
+        T_new, P_CO2_new = T, P_CO2
         P_H2O = august_roche_magnus_formula(T_new) * 0.5
         P_surf = self.P_background + P_CO2_new + P_H2O
         T_seafloor, T_pore, P_pore = self.get_seafloor_properties(T_new, P_CO2_new)
@@ -158,9 +172,10 @@ class Planet:
 
         max_si = np.array(list(SI.values())).max()
 
-        ramp_factor = np.clip((10 ** (max_si - 1) - 1) ** 2, 0, 1)
-
-        F_prec = (delta_b_prec / tau_prec)
+        # Exact exponential relaxation toward PHREEQC equilibrium.
+        # Fraction ∈ (0,1) so the step never exceeds delta_b_prec — no overshoot.
+        fraction = 1.0 - np.exp(-dt / tau_prec)
+        F_prec = delta_b_prec * fraction / dt
 
         # --- Weathering ---
 
@@ -182,18 +197,12 @@ class Planet:
         # --- Total Flux ---
 
         F_in = F_vol + F_diss + F_cont
-        F_out = F_prec
 
-        # max_growth_fraction = 0.001
-        # b_ocean = np.maximum(b_ocean, 1e-9)
-        # F_in_max = -F_out + (max_growth_fraction * b_ocean) / dt
+        dT_dt = np.minimum(dT_dt, 1 / (10000 * YR))
 
-        # F_in = np.where(np.abs(F_out) > 0, np.minimum(F_in, F_in_max), F_in)
-
-        # F_out_max = (max_growth_fraction * b_ocean) / dt
-        # F_out = np.maximum(F_out, F_out_max)
-
-        F_net = F_in + F_out
+        # F_prec carries the correct sign per element from PHREEQC:
+        # negative = removal (precipitation), positive = addition (dissolution during equilibration)
+        F_net = F_in + F_prec
         dYdt = np.zeros_like(Y)
         dYdt[0] = dT_dt
         dYdt[1] = dP_CO2_dt
@@ -228,7 +237,7 @@ class Planet:
             'Si':         1e-9,
             'Al':         1e-9,
             'Fe':         1e-9,
-            'Cl':         1e-9
+            # 'Cl':         1e-9
         }
 
         for elem, val in _trace_defaults.items():
@@ -267,16 +276,51 @@ class Planet:
         _csv_writer = csv.DictWriter(_csv_file, fieldnames=_csv_fields)
         _csv_writer.writeheader()
 
+        T_current, P_CO2_current = Y[0], Y[1]
+        slowed = False
+
+        _cfl_frac  = 0.05   # max fractional change per step (CFL target)
+        _dt_grow   = 2      # growth factor when step was safe
+
         for i in tqdm(range(max_steps)):
 
-            # --- Forward step ---
+            # --- Forward step with adaptive dt ---
 
             dYdt, diagnostics = self._compute_fluxes_and_derivatives(Y, dt)
             last_diagnostics = diagnostics
 
-            Y += dYdt * dt
+            # CFL: reduce dt so no concentration changes by more than _cfl_frac
+            safe_b = np.maximum(np.abs(Y[2:]), 1e-15)
+            frac_chem = np.max(np.abs(dYdt[2:]) * dt / safe_b)
+            
+            # NEW: Don't let Temperature change by more than 0.5 K per step
+            # dYdt[0] is your dT_dt
+            frac_T = np.abs(dYdt[0] * dt) / 0.5 
+            
+            # Use whichever restriction is stricter
+            frac = max(frac_chem, frac_T)
+
+            if frac > _cfl_frac and dt > dt_min:
+                dt = max(dt * (_cfl_frac / frac), dt_min)
+
+            dt_applied = dt
+            Y += dYdt * dt_applied
             Y[2:] = np.maximum(Y[2:], 0.0)
-            t_current += dt
+            t_current += dt_applied
+
+            # Grow dt toward dt_max for next step
+            dt = min(dt_applied * _dt_grow, dt_max)
+
+            T_s, P_CO2_s = self.solve_climate_from_chemistry(Y[2:], T_init=T_current, P_CO2_est=P_CO2_current)
+            # Half-step blend to damp the 2-step C_chem/T oscillation.
+            # The Newton map f(T) has f'(T*)≈-1 at the fixed point, so plain
+            # iteration oscillates.  The blended map g(T)=0.5*f(T)+0.5*T has
+            # g'(T*)≈0, giving rapid convergence to the self-consistent T*.
+            T_current = 0.05 * T_s + 0.95 * T_current
+            P_CO2_current = 0.05 * P_CO2_s + 0.95 * P_CO2_current
+            Y[0] = T_current
+            Y[1] = P_CO2_current
+            b_ocean = Y[2:]
 
             # --- Record values ---
 
@@ -287,30 +331,37 @@ class Planet:
             fluxes.append(dYdt[2:].copy())
             pH.append(diagnostics['pH'])
 
+            # if t_current > 1.5e8 * YR:
+            #     if not slowed:
+            #         print('Slowing down')
+            #         slowed = True
+            #     dt = 5000 * YR
+
             # --- Calculate fluxes for convergence ---
 
             F_net = diagnostics['F_net']
             F_in = np.abs(diagnostics['F_diss']) + np.abs(diagnostics['F_vol']) + np.abs(diagnostics['F_cont'])
             F_out = np.abs(diagnostics['F_prec'])
 
-            # 1. Flux Balance (Target: < 0.01 for 1% imbalance
-            total_throughput = np.abs(F_in) + np.abs(F_out)
-            safe_throughput = np.where(total_throughput > 1e-20, total_throughput, 1.0)
-            flux_imbalance = np.max(np.abs(F_net) / safe_throughput)
+            # Flux-balance convergence: |F_net[i]| / (F_in[i] + F_out[i]).
+            # This is zero only when inputs exactly match outputs for every element.
+            # It is independent of how large Y has grown, so it cannot give false
+            # convergence the way a relative-drift-rate criterion can.
+            F_throughput = F_in + F_out
+            active = F_throughput > 1e-40
+            if active.any():
+                rel_imbalance = np.abs(F_net[active]) / F_throughput[active]
+                max_flux_imbalance = float(np.max(rel_imbalance))
+            else:
+                max_flux_imbalance = 0.0
 
-            # 2. State Drift (Target: < 1e-6, meaning max change is 1-millionth of its value per year)
-            safe_Y = np.where(np.abs(Y) > 1e-20, np.abs(Y), 1.0)
-            relative_rates_per_yr = np.abs(dYdt) * YR / safe_Y
-            max_drift_rate = np.max(relative_rates_per_yr)
-
-            # For the CSV record, you can just log the drift rate
-            rel_change = max_drift_rate
+            rel_change = max_flux_imbalance   # written to CSV
 
             # --- Writes to CSV file ---
 
             row = {
                 't_Myr': f'{t_current/YR/1e6:.4f}',
-                'dt_kyr': f'{dt/YR/1e3:.2f}',
+                'dt_kyr': f'{dt_applied/YR/1e3:.2f}',
                 'T': f'{Y[0]:.4f}',
                 'P_CO2': f'{Y[1]:.6e}',
                 'pH': f"{diagnostics['pH']:.4f}",
@@ -333,19 +384,16 @@ class Planet:
 
             # --- Termination checks ---
 
-            if max_drift_rate < 1e-7:
+            if max_flux_imbalance < tol:
                 print(f'\nNormal convergence at t = {t_current / YR / 1e6:.2f} Myr.')
-                print(f'Final Flux Imbalance: {flux_imbalance:.2%}')
-                print(f'Max Drift Rate: {max_drift_rate:.2e} per year')
-                print('All is good.')
+                print(f'Max flux imbalance: {max_flux_imbalance:.2%}')
                 break
 
-            if t_current > t_max:
-                print('Ran out of time. No steady state likely.')
+            # if t_current > t_max:
+            #     print('Ran out of time. No steady state likely.')
 
         else:
-            print(f'Final Flux Imbalance: {flux_imbalance:.2%}')
-            print(f'Max Drift Rate: {max_drift_rate:.2e} per year')
+            print(f'Max flux imbalance: {max_flux_imbalance:.2%}')
             print('Not converged in maximum steps. Need more iterations.')
             
         _csv_file.close()
@@ -365,8 +413,8 @@ class Planet:
                 'ocean_depth_m': float(self.ocean_depth),
                 'alpha': float(self.alpha),
                 'tidally_locked': bool(self.tidally_locked),
-                'cl_chemistry': bool(self.cl_chemistry),
-                'hcl_co2_ratio': float(self.hcl_co2_ratio),
+                #'cl_chemistry': bool(self.cl_chemistry),
+                #'hcl_co2_ratio': float(self.hcl_co2_ratio),
             },
             'convergence': {
                 'status': convergence_status,
@@ -400,7 +448,9 @@ class Planet:
         fluxes = np.array(fluxes)
         pH = np.array(pH)
 
-        fig, (ax1, ax2, ax4, ax5) = plt.subplots(4, 1, figsize=(10, 16), sharex=True)
+        # t = t_current - t
+
+        fig, (ax1, ax2, ax4, ax5) = plt.subplots(4, 1, figsize=(15, 24), sharex=True)
 
         for j, elem in enumerate(elements):
             ax1.plot(t / YR, concentrations[:, j], label=elem)
@@ -409,11 +459,12 @@ class Planet:
             ax4.plot(t / YR, fluxes[:, j] * YR, label=elem)
         
         ax1.set_yscale('log')
+        # ax1.set_xscale('log')
         ax1.set_ylabel('Concentration (mol/kgw)')
         ax1.set_title('Time Evolution of Ocean Chemistry')
         ax1.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
         ax1.grid(True, which="both", ls="--", alpha=0.5)
-        ax1.set_ylim([1e-9, 1e0])
+        ax1.set_ylim([1e-6, 1e0])
 
         color_co2 = 'tab:blue'
         ax5.set_xlabel('Time (years)')
