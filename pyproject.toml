@@ -36,15 +36,5 @@ dependencies = [
     "astropy"
 ]
 
-[project.optional-dependencies]
-helios = [
-    "pycuda",
-    "h5py",
-    "numba"
-]
-
 [tool.setuptools.packages.find]
 where = ["src"]
-
-[tool.setuptools.package-data]
-kamino = ["speedy_climate/data/emulators/*.pkl"]

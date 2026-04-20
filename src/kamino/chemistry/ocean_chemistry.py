@@ -26,7 +26,6 @@ elements = np.array([
     #'F',
 ])
 
-#cl_idx  = int(np.where(elements == 'Cl')[0][0])
 alk_idx = int(np.where(elements == 'Alkalinity')[0][0])
 ca_idx  = int(np.where(elements == 'Ca')[0][0])
 mg_idx  = int(np.where(elements == 'Mg')[0][0])
@@ -153,40 +152,7 @@ if p_LT.load_database("ocean_chem.dat") == 1:
 p_HT = Phreeqc()
 p_HT.load_database("hydrothermal.dat")
 
-def solve_solution(P: float, T: float, b: npt.NDArray[np.float64], pH: float | None=None, P_CO2: float | None=None, precipitating_minerals: list[str]=[], equilibriating_minerals: list[str]=[], high_temperature: bool=False, fO2: float=0, trace_approximation: bool=True, verbose: bool=False, enforce_charge_balance: bool=False):
-
-    if enforce_charge_balance:
-
-        b_modified = False
-
-        alk = b[alk_idx]
-        cl_conc = b[cl_idx]
-        alk_effective = alk + cl_conc
-        divalent = 2 * b[ca_idx] + 2 * b[mg_idx]
-        
-        # Trigger with a margin: PHREEQC's internal speciation (CaHCO3+, CaCO3(aq), etc.)
-        # reduces free Ca2+/Mg2+ from their totals, shifting the effective non-carbonate
-        # alkalinity. The 2% theoretical limit isn't enough — in practice PHREEQC's Newton
-        # iteration overshoots into unphysical states when divalent/Alk > 0.95, so we
-        # use a 5% margin. Floored at 1e-8; capped at 50% so (alk - margin) stays +ve.
-        margin = min(max(alk_effective * 0.05, 1e-8), alk_effective * 0.5)
-        if divalent > 0 and divalent >= alk_effective - margin:
-            if not b_modified:
-                b = b.copy()
-                b_modified = True
-            scale = (alk_effective - margin) / divalent
-            b[ca_idx] *= scale
-            b[mg_idx] *= scale
-
-        # Minimum C floor: pure-zero DIC leaves PHREEQC with ~5 nmol/kgw dissolved
-        # carbon, which is at the edge of its numerical stability. Clamping prevents
-        # H(1) convergence failures when the carbonate system is nearly empty.
-        # C_FLOOR = 1e-8  # mol/kgw
-        # if b[c_idx] < C_FLOOR:
-        #     if not b_modified:
-        #         b = b.copy()
-        #         b_modified = True
-        #     b[c_idx] = C_FLOOR
+def solve_solution(P: float, T: float, b: npt.NDArray[np.float64], pH: float | None=None, P_CO2: float | None=None, precipitating_minerals: list[str]=[], equilibriating_minerals: list[str]=[], high_temperature: bool=False, fO2: float=0, trace_approximation: bool=True, verbose: bool=False):
 
     solution_lines: list[str] = [
         #'KNOBS',
@@ -327,8 +293,7 @@ def get_precipitation_flux(P: float, T: float, b: npt.NDArray[np.float64], preci
     for min_name in precipitating_minerals:
         si_key = f'si_{min_name}'
         if si_key in output:
-            # Index 0 is the initial state of the solution BEFORE precipitation occurs
-            si_dict[min_name] = float(output[si_key][0])
+            si_dict[min_name] = float(output[si_key][0]) # Index 0 is the initial state of the solution BEFORE precipitation occurs
 
     return aqueous_fluxes, pH, si_dict
 
@@ -389,33 +354,22 @@ def get_weathering_flux(P: float, T: float, P_CO2: float, b_input: npt.NDArray[n
     if precipitating_minerals is None:
         precipitating_minerals = default_precipitating
 
-    # Pass b_input to get_b_eq so PHREEQC equilibrates starting from the input
-    # ocean composition, not dilute water.  b_eq - b_input then gives the net
-    # compositional change due to rock-water interaction.
-    b_eq_primary, pH = get_b_eq(P, T, P_CO2, composition, b_input=b_input,
-                                 precipitating_minerals=precipitating_minerals,
-                                 high_temperature=high_temperature, fO2=fO2)
+    b_eq_primary, pH = get_b_eq(P, T, P_CO2, composition, b_input=b_input, precipitating_minerals=precipitating_minerals, high_temperature=high_temperature, fO2=fO2)
     k_primary = get_k(P, T, pH, composition)
+    k_primary = np.where(k_primary != 0, k_primary, np.inf)
 
     A_reactive = reactive_area(T, pH, rate, alpha, clog, cover, sedimentation_rate=sedimentation_rate)
 
     # Flux formula: F = A*(b_eq - b_in) / (b_eq/k + A/J)
-    # Correct first-order kinetics box-model generalisation for non-zero b_input.
-    # Equivalent to A/(1/k + A/(J*b_eq)) when b_input=0 (existing behaviour unchanged),
-    # but the denominator uses b_eq (not delta_b), so it stays positive and gives the
-    # correct sign when b_eq[i] < b_input[i] (e.g. Mg removal by Chrysotile/Talc).
-    safe_k = np.where(k_primary != 0, k_primary, np.inf)
-    F_primary = np.where(k_primary != 0,
-                         A_reactive * (b_eq_primary - b_input) / (b_eq_primary / safe_k + A_reactive / J),
-                         0.0)
+    F_primary = A_reactive * (b_eq_primary - b_input) / (b_eq_primary / k_primary + A_reactive / J)
+    F_primary = np.where(k_primary != 0, F_primary, 0.0)
 
     Da_primary = (k_primary * A_reactive * molar_mass) / J
     b_pore = b_input + (b_eq_primary - b_input) * (1 - np.exp(-Da_primary))
 
     # C has zero stoichiometry in all basalt minerals, so Da[C]=0 and b_pore[C]=0.
     # Use the equilibrium C concentration so PHREEQC has a consistent carbonate system.
-    C_idx = int(np.where(elements == 'C')[0][0])
-    b_pore[C_idx] = b_eq_primary[C_idx]
+    b_pore[c_idx] = b_eq_primary[c_idx]
 
     flux = F_primary
 
@@ -468,15 +422,12 @@ def get_continental_weathering_flux(
     F_alk = F_alk_ref * f   # mol_eq / m² / s
 
     flux = np.zeros(len(elements))
-    _alk_idx = int(np.where(elements == 'Alkalinity')[0][0])
-    _C_idx   = int(np.where(elements == 'C')[0][0])
-    _Ca_idx  = int(np.where(elements == 'Ca')[0][0])
 
     # Per mol CaSiO3 dissolved: 1 mol Ca2+, 2 mol HCO3-
     # => 2 eq Alk, 2 mol C, 1 mol Ca per mol CaSiO3
-    flux[_alk_idx] = F_alk        # eq / m² / s
-    flux[_C_idx]   = F_alk        # mol C / m² / s  (1 HCO3- = 1 C = 1 eq Alk)
-    flux[_Ca_idx]  = F_alk / 2    # mol Ca / m² / s (2 eq per mol Ca2+)
+    flux[alk_idx] = F_alk        # eq / m² / s
+    flux[c_idx]   = F_alk        # mol C / m² / s  (1 HCO3- = 1 C = 1 eq Alk)
+    flux[ca_idx]  = F_alk / 2    # mol Ca / m² / s (2 eq per mol Ca2+)
 
     return flux
 

@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../src'))
 os.environ['JAX_PLATFORMS'] = 'cpu'
 
 import numpy as np
-from kamino.planet2 import Planet, T_min, T_max
+from kamino.planet import Planet, T_min, T_max
 from kamino.kamino_chem.ocean_chemistry import elements
 from kamino.constants import M_EARTH, R_EARTH, YR
 

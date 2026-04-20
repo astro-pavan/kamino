@@ -32,7 +32,7 @@ import numpy as np
 from tqdm import tqdm
 
 from kamino.constants import M_EARTH, R_EARTH, YR
-from kamino.planet2 import Planet
+from kamino.planet import Planet
 
 # ---------------------------------------------------------------------------
 # Configuration

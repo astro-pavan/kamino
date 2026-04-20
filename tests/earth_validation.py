@@ -1,7 +1,7 @@
 import sys
 sys.path.insert(0, 'src')
 
-from kamino.planet2 import Planet
+from kamino.planet import Planet
 from kamino.constants import *
 
 # In this model there are no Cl/SO4, so all cation charge must be balanced

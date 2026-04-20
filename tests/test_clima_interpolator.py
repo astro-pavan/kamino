@@ -2,7 +2,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../src'))
 
-from kamino.speedy_climate.clima_interpolator import get_T_surface
+from kamino.climate.clima_interpolator import get_T_surface
 from kamino.constants import *
 
 import numpy as np

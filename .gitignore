@@ -10,6 +10,7 @@ tests/phreeqc.log
 tests/*.csv
 *.png
 *.pdf
+error.inp
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

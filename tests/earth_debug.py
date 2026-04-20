@@ -14,7 +14,7 @@ from kamino.kamino_chem.ocean_chemistry import (
     get_continental_weathering_flux, carbonate_minerals, secondary_sink_minerals,
     EARTH_CONTINENTAL_WEATHERING_REF, solve_solution,
 )
-from kamino.speedy_climate.clima_interpolator import get_T_surface
+from kamino.climate.clima_interpolator import get_T_surface
 from kamino.utils import august_roche_magnus_formula
 from kamino.constants import *
 
