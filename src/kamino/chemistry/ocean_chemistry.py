@@ -1,6 +1,8 @@
+import os
+
 from kamino.constants import *
-from kamino.kamino_chem.mineral_rates import K_FUNCTIONS
-from kamino.kamino_chem.mineral_info import *
+from kamino.chemistry.mineral_rates import K_FUNCTIONS
+from kamino.chemistry.mineral_info import *
 
 from phreeqc import Phreeqc
 import numpy as np
@@ -8,7 +10,9 @@ import numpy.typing as npt
 import re
 import pandas as pd
 
-database_path = 'ocean_chem.dat'
+_data_dir = os.path.join(os.path.dirname(__file__), 'data')
+database_path = os.path.join(_data_dir, 'ocean_chem.dat')
+_hydrothermal_path = os.path.join(_data_dir, 'hydrothermal.dat')
 
 elements = np.array([
     'Alkalinity',
@@ -143,14 +147,14 @@ def parse_stoichiometry(filepath: str) -> dict[str, npt.NDArray[np.float64]]:
 
 stoichiometry: dict[str, npt.NDArray[np.float64]] = {}
 stoichiometry.update(parse_stoichiometry(database_path))
-stoichiometry.update(parse_stoichiometry('hydrothermal.dat'))
+stoichiometry.update(parse_stoichiometry(_hydrothermal_path))
 
 p_LT = Phreeqc()
-if p_LT.load_database("ocean_chem.dat") == 1:
+if p_LT.LoadDatabase(database_path) == 1:
     print(p_LT.get_error_string())
 
 p_HT = Phreeqc()
-p_HT.load_database("hydrothermal.dat")
+p_HT.LoadDatabase(_hydrothermal_path)
 
 def solve_solution(P: float, T: float, b: npt.NDArray[np.float64], pH: float | None=None, P_CO2: float | None=None, precipitating_minerals: list[str]=[], equilibriating_minerals: list[str]=[], high_temperature: bool=False, fO2: float=0, trace_approximation: bool=True, verbose: bool=False):
 
@@ -218,12 +222,12 @@ def solve_solution(P: float, T: float, b: npt.NDArray[np.float64], pH: float | N
 
     p = p_HT if high_temperature else p_LT 
 
-    if p.run_string(input_string) == 1:
+    if p.RunString(input_string) == 1:
         print(input_string)
-        print(p.get_error_string())
+        print(p.GetErrorString())
         raise ChemistryError
 
-    output_dict = p.get_selected_output()
+    output_dict = p.GetSelectedOutput()
     if output_dict and verbose:
         df = pd.DataFrame(output_dict)
         df = df.loc[:, (df != -999.999).any()]

@@ -1,6 +1,4 @@
-import sys
 import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../src'))
 
 os.environ['JAX_PLATFORMS'] = 'cpu'
 
@@ -76,8 +74,7 @@ def run_single_planet(params, rerun=False):
     )
 
     try:
-        # Suppress standard print statements inside the worker to avoid 
-        # mangling the progress bar in the terminal
+        # Suppress standard print statements inside the worker to avoid mangling the progress bar in the terminal
         p.time_evolve_to_steady_state(output_dir=run_dir)
         return f"Success: {run_name}"
     except Exception as e:
@@ -280,6 +277,7 @@ def plot_steady_states(
     plt.show()
 
 if __name__ == "__main__":
+    
 
     test_sweep()
 

@@ -1,3 +1,4 @@
+import os
 import pandas as pd
 import numpy as np
 from scipy.interpolate import RegularGridInterpolator
@@ -5,15 +6,10 @@ from scipy.interpolate import RegularGridInterpolator
 from kamino.utils import *
 from kamino.constants import*
 
-data_path_rapid = 'src/kamino/speedy_climate/data/climate_runs/clima_data_grid_rapid.csv'
-data_path_tidal = 'src/kamino/speedy_climate/data/climate_runs/clima_data_grid_tidal.csv'
+_data_dir = os.path.join(os.path.dirname(__file__), 'data', 'climate_runs')
 
-try:
-    df_rapid = pd.read_csv(data_path_rapid)
-    df_tidal = pd.read_csv(data_path_tidal)
-except FileNotFoundError:
-    df_rapid = pd.read_csv('../' + data_path_rapid)
-    df_tidal = pd.read_csv('../' + data_path_tidal)
+df_rapid = pd.read_csv(os.path.join(_data_dir, 'clima_data_grid_rapid.csv'))
+df_tidal = pd.read_csv(os.path.join(_data_dir, 'clima_data_grid_tidal.csv'))
 
 # 1. Define your grid axes
 dims = ['Instellation (S0)', 'P_CO2 (bar)', 'Albedo']
