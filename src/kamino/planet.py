@@ -8,14 +8,16 @@ import json
 import os
 
 from kamino.constants import *
-from kamino.kamino_chem.ocean_chemistry import *
+from kamino.chemistry.ocean_chemistry import *
 from kamino.climate.clima_interpolator import get_T_surface
 from kamino.utils import *
+
+output_path = os.path.join(os.path.dirname(__file__), '../../output/')
 
 T_min = 200   # climate table lower bound ~184 K; 200 K is safely inside
 T_max = 350
 
-tau_prec = 1e6 * YR
+tau_prec = 1e3 * YR
 max_precipitation_frac = 0.0002
 tau_atm = 1000 * YR
 drain_fraction = 0.01
@@ -202,13 +204,32 @@ class Planet:
 
         dT_dt = np.minimum(dT_dt, 1 / (10000 * YR))
         
-        # F_prec = delta_b_prec
+        # F_prec = delta_b_prec / dt
         
         F_net = F_in + F_prec
         dYdt = np.zeros_like(Y)
         dYdt[0] = dT_dt
         dYdt[1] = dP_CO2_dt
         dYdt[2:] = F_net
+
+        dYdt_raw = np.zeros_like(Y)
+        dYdt_raw[0] = dT_dt
+        dYdt_raw[1] = dP_CO2_dt
+        dYdt_raw[2:] = F_in + F_prec
+
+        if not hasattr(self, 'dYdt_ema'):
+            self.dYdt_ema = dYdt_raw.copy()
+            
+        # Apply EMA only to the chemical fluxes (index 2+) to kill the diode limit-cycles.
+        # 0.1 means we trust 10% of the new flux and retain 90% of the historical smoothed flux.
+        alpha_ema = 0.1 
+        self.dYdt_ema[2:] = alpha_ema * dYdt_raw[2:] + (1 - alpha_ema) * self.dYdt_ema[2:]
+        self.dYdt_ema[:2] = dYdt_raw[:2]  # Do not smooth T and P_CO2
+
+        # Floor check: explicitly prevent the smoothed flux from ever driving concentrations below 0
+        for j in range(2, len(Y)):
+            if Y[j] + self.dYdt_ema[j] * dt < 0:
+                self.dYdt_ema[j] = -Y[j] / dt
 
         diagnostics = {
             'T_new': T_new, 'P_CO2_new': P_CO2_new, 'pH': pH,
@@ -220,9 +241,11 @@ class Planet:
             'supply_efficiency': w_diag['supply_efficiency']
         }
 
-        return dYdt, diagnostics
+        diagnostics['F_net'] = self.dYdt_ema[2:].copy()
+
+        return self.dYdt_ema, diagnostics
     
-    def time_evolve_to_steady_state(self, dt=1e5 * YR, tol=5e-3, check_every=100, max_steps=30000, dt_max=1e7 * YR, dt_min=100*YR, output_dir='.', b_ocean_init: dict | None = None, verbose: bool=False, write_csv: bool=False):
+    def time_evolve_to_steady_state(self, dt=1e5 * YR, tol=5e-3, check_every=100, max_steps=30000, dt_max=1e7 * YR, dt_min=100*YR, output_dir=output_path, b_ocean_init: dict | None = None, verbose: bool=False, write_csv: bool=False):
 
         output_csv = os.path.join(output_dir, f'{self.name}_timeseries.csv')
         summary_file = os.path.join(output_dir, f'{self.name}_summary.json')
@@ -308,6 +331,34 @@ class Planet:
             Y += dYdt * dt_applied
             Y[2:] = np.maximum(Y[2:], 0.0)
             t_current += dt_applied
+
+            # if Y[2 + c_idx] > 2.0:  # 2.0 mol/kgw threshold
+            #     print(f'\nTerminated at t = {t_current / YR / 1e6:.2f} Myr.')
+            #     print('Reason: Carbon concentration exceeded physical solubility limit (Clathrate/Liquid CO2 formation).')
+            #     convergence_status = 'snowball'
+            #     convergence_reason = 'Carbon saturation limit reached (Snowball state)'
+            #     last_diagnostics = diagnostics # Preserve state for JSON
+            #     break
+
+            P_CO2_max_threshold = 1e5
+            T_snowball_threshold = 260
+            T_moist_greenhouse_threshold = 350
+            
+            if Y[1] >= P_CO2_max_threshold and Y[0] < T_snowball_threshold:
+                print(f'\nTerminated at t = {t_current / YR / 1e6:.2f} Myr.')
+                print(f'Reason: Max CO2 greenhouse limit ({P_CO2_max_threshold/1e5:.1f} bar) reached without escaping Snowball state.')
+                convergence_status = 'snowball'
+                convergence_reason = 'Maximum CO2 greenhouse limit reached'
+                last_diagnostics = diagnostics 
+                break
+
+            if  Y[0] > T_moist_greenhouse_threshold:
+                print(f'\nTerminated at t = {t_current / YR / 1e6:.2f} Myr.')
+                print(f'Temperature reached moist greenhouse state.')
+                convergence_status = 'runaway'
+                convergence_reason = 'Temperature reached moist greenhouse state'
+                last_diagnostics = diagnostics 
+                break
 
             # Grow dt toward dt_max for next step
             dt = min(dt_applied * _dt_grow, dt_max)
@@ -459,7 +510,7 @@ class Planet:
         ax1.set_title('Time Evolution of Ocean Chemistry')
         ax1.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
         ax1.grid(True, which="both", ls="--", alpha=0.5)
-        ax1.set_ylim([1e-6, 1e0])
+        ax1.set_ylim([1e-6, 2.1])
 
         color_co2 = 'tab:blue'
         ax5.set_xlabel('Time (years)')
@@ -488,3 +539,4 @@ class Planet:
         fig.tight_layout()  
         plt.savefig(os.path.join(output_dir, f'{self.name}_plot.pdf'))
         plt.savefig(os.path.join(output_dir, f'{self.name}_plot.png'))
+        plt.close()
