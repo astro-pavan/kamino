@@ -11,6 +11,8 @@ tests/*.csv
 *.png
 *.pdf
 error.inp
+.claude
+output/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
