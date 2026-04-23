@@ -22,7 +22,7 @@ max_precipitation_frac = 0.0002
 tau_atm = 1000 * YR
 drain_fraction = 0.01
 
-t_max = 5e8 * YR
+t_max = 1e9 * YR
 
 class Planet:
 
@@ -124,7 +124,7 @@ class Planet:
             except Exception:
                 T_s = float(T_max)
 
-        P_H2O = august_roche_magnus_formula(T_s) * 0.5  # type: ignore
+        P_H2O = august_roche_magnus_formula(T_s) * self.relative_humidity  # type: ignore
         P_atm = self.P_background + P_CO2_est + P_H2O
         P_CO2 = get_P_CO2(P_atm, T_s, b_ocean) # type: ignore
 
@@ -170,11 +170,11 @@ class Planet:
         # --- Precipitation ---
 
         # Deep burial
-        delta_b_prec, pH, SI = get_precipitation_flux(P_pore, T_seafloor, b_ocean, precipitating_minerals=carbonate_minerals + secondary_sink_minerals)
+        delta_b_prec, pH, SI = get_precipitation(P_pore, T_seafloor, b_ocean, precipitating_minerals=carbonate_minerals + secondary_sink_minerals)
 
         # Shallow burial
         if self.land_fraction > 0:
-            delta_b_shallow, _, _ = get_precipitation_flux(P_surf, T_new, b_ocean, precipitating_minerals=carbonate_minerals)
+            delta_b_shallow, _, _ = get_precipitation(P_surf, T_new, b_ocean, precipitating_minerals=carbonate_minerals)
             delta_b_prec += self.land_fraction * delta_b_shallow
 
         # Exact exponential relaxation toward PHREEQC equilibrium.
@@ -203,8 +203,6 @@ class Planet:
         F_in = F_vol + F_diss + F_cont
 
         dT_dt = np.minimum(dT_dt, 1 / (10000 * YR))
-        
-        # F_prec = delta_b_prec / dt
         
         F_net = F_in + F_prec
         dYdt = np.zeros_like(Y)

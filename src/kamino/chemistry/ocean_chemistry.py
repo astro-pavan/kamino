@@ -281,7 +281,7 @@ def aqueous_flux(P: float, T: float, P_CO2: float, J: float, A_reactive: float, 
     
     return A_reactive / ((1 / k) + (A_reactive / (J * b_eq)))
 
-def get_precipitation_flux(P: float, T: float, b: npt.NDArray[np.float64], precipitating_minerals: list[str], equilibrium_minerals: list[str]=[], fO2: float=0) -> tuple[npt.NDArray[np.float64], float, dict[str, float]]:
+def get_precipitation(P: float, T: float, b: npt.NDArray[np.float64], precipitating_minerals: list[str], equilibrium_minerals: list[str]=[], fO2: float=0, precipitation_timescale: float=0) -> tuple[npt.NDArray[np.float64], float, dict[str, float]]:
 
     output = solve_solution(P, T, b, precipitating_minerals=precipitating_minerals, equilibriating_minerals=equilibrium_minerals, fO2=fO2)
 
@@ -298,6 +298,16 @@ def get_precipitation_flux(P: float, T: float, b: npt.NDArray[np.float64], preci
         si_key = f'si_{min_name}'
         if si_key in output:
             si_dict[min_name] = float(output[si_key][0]) # Index 0 is the initial state of the solution BEFORE precipitation occurs
+
+    if precipitation_timescale > 0:
+
+        assert np.all(aqueous_fluxes <= 0)
+
+        k_sharp = 1e6
+        smooth_function = lambda x: -(np.sqrt(1+(k_sharp * x**2)) - 1) / k_sharp
+        # smooth_flux = np.where(k_sharp * aqueous_fluxes < 100, np.log1p(np.exp(k_sharp * aqueous_fluxes)) / k_sharp, aqueous_fluxes)
+        smooth_flux = smooth_function(aqueous_fluxes)
+        aqueous_fluxes = smooth_flux / precipitation_timescale
 
     return aqueous_fluxes, pH, si_dict
 
@@ -377,7 +387,7 @@ def get_weathering_flux(P: float, T: float, P_CO2: float, b_input: npt.NDArray[n
 
     flux = F_primary
 
-    d_b_carb, _, _ = get_precipitation_flux(P, T, b_pore, carbonate_minerals, [])
+    d_b_carb, _, _ = get_precipitation(P, T, b_pore, carbonate_minerals, [])
     flux += J * d_b_carb
 
     supply_efficiency = 1 - np.exp(-Da_primary[0])
