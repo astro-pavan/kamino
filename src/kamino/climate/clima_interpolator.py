@@ -43,7 +43,7 @@ rgi_tidal = RegularGridInterpolator(unique_vals, grid_values, bounds_error=False
 
 def get_T_surface(S, P_CO2, albedo, tidally_locked=False):
     
-    P_CO2 = smooth_max(1e-2, P_CO2) # 0.01 Pa minimum
+    P_CO2 = np.clip(P_CO2, 1e-2, 1e6) # 0.01 Pa minimum
     albedo = np.clip(albedo, 0.0, 0.5) # the interpolator only goes to 0.5
     point = [S / SOLAR_CONSTANT, float(P_CO2) * 1e-5, albedo]
 

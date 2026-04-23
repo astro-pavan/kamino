@@ -186,6 +186,7 @@ def solve_solution(P: float, T: float, b: npt.NDArray[np.float64], pH: float | N
         equilibrium_lines.append('EQUILIBRIUM_PHASES 1')
 
         if P_CO2 is not None:
+            P_CO2 = np.maximum(P_CO2, 1e-2)
             equilibrium_lines.append(f'    CO2(g)  {np.log10(P_CO2 / EARTH_ATM):.4f}  {1e6}')
 
         if fO2 > 0:
@@ -299,11 +300,11 @@ def get_precipitation(P: float, T: float, b: npt.NDArray[np.float64], precipitat
 
         assert np.all(aqueous_fluxes <= 0)
 
-        k_sharp = 1e6
-        smooth_function = lambda x: -(np.sqrt(1+(k_sharp * x**2)) - 1) / k_sharp
+        k_sharp = 1e-4
+        smooth_function = lambda x: -(np.sqrt(1+(k_sharp * x)**2) - 1) / k_sharp
         # smooth_flux = np.where(k_sharp * aqueous_fluxes < 100, np.log1p(np.exp(k_sharp * aqueous_fluxes)) / k_sharp, aqueous_fluxes)
-        smooth_flux = smooth_function(aqueous_fluxes)
-        aqueous_fluxes = smooth_flux / precipitation_timescale
+        aqueous_fluxes = smooth_function(aqueous_fluxes)
+        aqueous_fluxes = aqueous_fluxes / precipitation_timescale
 
     return aqueous_fluxes, pH, si_dict
 
@@ -366,13 +367,14 @@ def get_weathering_flux(P: float, T: float, P_CO2: float, b_input: npt.NDArray[n
 
     b_eq_primary, pH = get_b_eq(P, T, P_CO2, composition, b_input=b_input, precipitating_minerals=precipitating_minerals, high_temperature=high_temperature, fO2=fO2)
     k_primary = get_k(P, T, pH, composition)
-    k_primary = np.where(k_primary != 0, k_primary, np.inf)
+    k_nonzero = k_primary != 0  # save before replacing zeros with inf
+    k_primary = np.where(k_nonzero, k_primary, np.inf)
 
     A_reactive = reactive_area(T, pH, rate, alpha, clog, cover, sedimentation_rate=sedimentation_rate)
 
     # Flux formula: F = A*(b_eq - b_in) / (b_eq/k + A/J)
     F_primary = A_reactive * (b_eq_primary - b_input) / (b_eq_primary / k_primary + A_reactive / J)
-    F_primary = np.where(k_primary != 0, F_primary, 0.0)
+    F_primary = np.where(k_nonzero, F_primary, 0.0)  # zero out elements with no basalt stoichiometry (e.g. C)
 
     Da_primary = (k_primary * A_reactive * molar_mass) / J
     b_pore = b_input + (b_eq_primary - b_input) * (1 - np.exp(-Da_primary))
@@ -465,7 +467,7 @@ def get_P_CO2_analytic(T_kelvin: float, C_chem: float) -> tuple[float, float]:
 
 def get_P_CO2(P: float, T: float, b: npt.NDArray[np.float64]):
 
-    output = solve_solution(P, T, b, precipitating_minerals=['CO2(g)'])
+    output = solve_solution(P, T, b)
 
     si_CO2 = float(output['si_CO2(g)'][-1])
     P_CO2 = EARTH_ATM * 10 ** si_CO2

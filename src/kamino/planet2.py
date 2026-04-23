@@ -1,0 +1,183 @@
+import numpy as np
+np.set_printoptions(precision=1)
+from scipy.integrate import solve_ivp
+import matplotlib.pyplot as plt
+
+from kamino.constants import *
+from kamino.chemistry.ocean_chemistry import *
+from kamino.climate.clima_interpolator import get_T_surface
+from kamino.utils import august_roche_magnus_formula
+
+tau_prec = 1e4 * YR
+tau_atm = 1e4 * YR
+
+class Planet:
+
+    def __init__(self, mass: float, radius: float, background_pressure: float, instellation : float, tectonics: float, ocean_depth: float, land_fraction: float=0.0, name: str='planet'):        
+
+        self.name = name
+        self.mass = mass
+        self.radius = radius
+        self.gravity = (G * self.mass) / (self.radius ** 2)
+        self.surface_area = 4 * np.pi * self.radius ** 2
+        self.P_background = background_pressure
+
+        self.ocean_depth = ocean_depth
+        self.ocean_water_mass = self.ocean_depth * self.surface_area * 1000
+
+        self.crust_production_rate = EARTH_CRUST_PRODUCTION_RATE_PER_AREA * tectonics
+        self.hydrothermal_flux = EARTH_HYDROTHERMAL_FLUX_PER_AREA * tectonics
+        self.outgassing_flux = np.zeros(elements.shape)
+        self.outgassing_flux[1] = (EARTH_OUTGASSING / YR) * self.surface_area * tectonics
+
+        self.alpha = 2
+
+        self.tidally_locked = False
+
+        self._input_instellation = instellation  # in units of solar constant
+        self._input_tectonics = tectonics
+
+        self.land_fraction = land_fraction
+        self.land_area = land_fraction * self.surface_area
+
+        ocean_albedo = 0.3
+        land_albedo = 0.3
+
+        self.relative_humidity = 0.5
+
+        self.instellation = instellation * SOLAR_CONSTANT
+        self.albedo = land_albedo * land_fraction + ocean_albedo * (1 - land_fraction)
+
+    def dY_dt(self, t, Y):
+
+        P_CO2 = Y[0]
+        P_H2O = Y[1]
+        b_ocean = Y[2:]
+
+        # input safety
+
+        P_CO2 = np.clip(P_CO2, 0, 1e6)
+        P_H2O = np.maximum(0, P_H2O)
+        b_ocean = np.maximum(b_ocean, 1e-9)
+
+        # atmosphere properties
+
+        P_surface = self.P_background + P_CO2 + P_H2O
+        T_surface = get_T_surface(self.instellation, P_CO2, self.albedo, self.tidally_locked)
+        P_H2O_new = august_roche_magnus_formula(T_surface)
+        P_CO2_new = get_P_CO2(P_surface, T_surface, b_ocean)
+
+        assert P_CO2_new > 0
+
+        # seafloor properties
+
+        T_seafloor = 1.02 * T_surface - 16.7
+        P_pore = (self.P_background + P_CO2 + P_H2O) + 1000 * self.gravity * self.ocean_depth
+        T_seafloor = np.maximum(T_seafloor, 274)
+        T_pore = T_seafloor + 9
+
+        # ocean fluxes
+
+        F_vol = self.outgassing_flux / self.ocean_water_mass
+
+        F_prec, pH, SI = get_precipitation(P_pore, T_seafloor, b_ocean, precipitating_minerals=carbonate_minerals + secondary_sink_minerals, precipitation_timescale=tau_prec)
+
+        ocean_water_per_area = self.ocean_depth * 1000.0
+        F_carb, F_sil = max(0.0, -F_prec[c_idx]), max(0.0, -F_prec[si_idx])
+
+        S_sed = (F_carb * 0.100 / 2710.0 + F_sil * 0.060 / 2650.0) * ocean_water_per_area
+        weathering_flux, w_diag = get_weathering_flux(P_pore, T_pore, P_CO2, b_ocean, self.alpha, self.crust_production_rate, clog=False, sedimentation_rate=S_sed)
+
+        F_diss = (weathering_flux * self.surface_area) / self.ocean_water_mass
+
+        F_net = F_vol + F_prec + F_diss
+
+        # return derivatives
+
+        dYdt = np.zeros_like(Y)
+
+        dYdt[0] = (P_CO2_new - P_CO2) / tau_atm
+        dYdt[1] = (P_H2O_new - P_H2O) / tau_atm
+
+        dYdt[2:] = F_net
+
+        carbon_flux = dYdt[3]
+
+        # print(f't = {t/YR:.4e} yr', end='\r')
+        print(f't = {t/YR:.4e} yr  T = {T_surface:.1f}  P_CO2 = {P_CO2 / 1e5:.1e} bar  C flux = {carbon_flux:.1e} mol/kgw/s', end='\r')
+        # print(Y[2:])
+        # print(dYdt[2:])
+
+        return dYdt
+
+    def time_evolve(self, t_end=1e9 * YR):
+
+        Y0 = np.zeros(elements.shape[0] + 2)
+
+        Y0[0] = 1000
+        Y0[1] = 1000
+
+        P_CO2_max = 1e5
+        T_runaway = 350
+        T_snowball = 260
+
+        def event_runaway(t, Y):
+            return Y[0] - P_CO2_max
+        event_runaway.terminal = True
+
+        def event_snowball(t, Y):
+            T = get_T_surface(self.instellation, max(Y[0], 1e-2), self.albedo, self.tidally_locked)
+            return T - T_snowball
+        event_snowball.terminal = True
+
+        def event_hothouse(t, Y):
+            T = get_T_surface(self.instellation, max(Y[0], 1e-2), self.albedo, self.tidally_locked)
+            return T - T_runaway
+        event_hothouse.terminal = True
+
+        atol = np.ones_like(Y0) * 1e-6
+        atol[0] = 1.0   # P_CO2 in Pa
+        atol[1] = 1.0   # P_H2O in Pa
+
+        sol = solve_ivp(
+            self.dY_dt,
+            (0, t_end),
+            Y0,
+            method='Radau',
+            max_step=1e7 * YR,
+            rtol=1e-3,
+            atol=atol,
+            # events=[event_runaway, event_snowball, event_hothouse],
+        )
+
+        print()
+        print(sol.y[2:, -1])
+
+        C = sol.y[3, :]
+        t = sol.t
+
+        plt.plot(t, C)
+        plt.yscale('log')
+        plt.show()
+
+        dC = np.gradient(C)
+        dt = np.gradient(t)
+
+        plt.plot(t, (dC / dt) / C)
+        plt.show()
+
+
+
+
+if __name__ == '__main__':
+
+    BACKGROUND_PRESSURE = 1e5   # Pa (~1 bar)
+    OCEAN_DEPTH = 3000          # m
+    TECTONICS = 1.0
+
+    s = 0.7
+
+    print(f's = {s}')
+    p1 = Planet(M_EARTH, R_EARTH, BACKGROUND_PRESSURE, s, 1.0, 3000, name=f'test_s_{s}')
+    p1.time_evolve()
+    print('')
