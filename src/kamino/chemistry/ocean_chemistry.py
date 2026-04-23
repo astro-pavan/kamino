@@ -151,12 +151,12 @@ stoichiometry.update(parse_stoichiometry(_hydrothermal_path))
 
 p_LT = Phreeqc()
 if p_LT.LoadDatabase(database_path) == 1:
-    print(p_LT.get_error_string())
+    print(p_LT.GetErrorString())
 
 p_HT = Phreeqc()
 p_HT.LoadDatabase(_hydrothermal_path)
 
-def solve_solution(P: float, T: float, b: npt.NDArray[np.float64], pH: float | None=None, P_CO2: float | None=None, precipitating_minerals: list[str]=[], equilibriating_minerals: list[str]=[], high_temperature: bool=False, fO2: float=0, trace_approximation: bool=True, verbose: bool=False):
+def solve_solution(P: float, T: float, b: npt.NDArray[np.float64], pH: float | None=None, P_CO2: float | None=None, precipitating_minerals: list[str]=[], equilibriating_minerals: list[str]=[], high_temperature: bool=False, fO2: float=0, trace_approximation: bool=True, precipitation_SI: float=0, verbose: bool=False):
 
     solution_lines: list[str] = [
         #'KNOBS',
@@ -197,7 +197,7 @@ def solve_solution(P: float, T: float, b: npt.NDArray[np.float64], pH: float | N
         equilibrium_lines.append('')
 
         for phase in precipitating_minerals:
-            equilibrium_lines.append(f'    {phase}  {0.0}  {0.0}')
+            equilibrium_lines.append(f'    {phase}  {precipitation_SI:.4f}  {0.0}')
 
         equilibrium_lines.append('')
 
@@ -274,13 +274,6 @@ def get_b_eq(P: float, T: float, P_CO2: float, composition: dict[str, float], b_
 
     return b_eq, pH
 
-def aqueous_flux(P: float, T: float, P_CO2: float, J: float, A_reactive: float, composition: dict[str, float]) -> npt.NDArray[np.float64]:
-
-    b_eq, pH = get_b_eq(P, T, P_CO2, composition)
-    k = get_k(P, T, pH, composition)
-    
-    return A_reactive / ((1 / k) + (A_reactive / (J * b_eq)))
-
 def get_precipitation(P: float, T: float, b: npt.NDArray[np.float64], precipitating_minerals: list[str], equilibrium_minerals: list[str]=[], fO2: float=0, precipitation_timescale: float=0) -> tuple[npt.NDArray[np.float64], float, dict[str, float]]:
 
     output = solve_solution(P, T, b, precipitating_minerals=precipitating_minerals, equilibriating_minerals=equilibrium_minerals, fO2=fO2)
@@ -298,6 +291,9 @@ def get_precipitation(P: float, T: float, b: npt.NDArray[np.float64], precipitat
         si_key = f'si_{min_name}'
         if si_key in output:
             si_dict[min_name] = float(output[si_key][0]) # Index 0 is the initial state of the solution BEFORE precipitation occurs
+
+    # enforce always negative flux
+    aqueous_fluxes = np.minimum(aqueous_fluxes, 0)
 
     if precipitation_timescale > 0:
 

@@ -14,8 +14,9 @@ from kamino.utils import *
 
 output_path = os.path.join(os.path.dirname(__file__), '../../output/')
 
-T_min = 200   # climate table lower bound ~184 K; 200 K is safely inside
-T_max = 350
+# these define the valid range in which T and P_CO2 can fall for calculations 
+T_min, T_max = 200, 350
+P_CO2_min, P_CO2_max = 1e-6 * 1e5, 1 * 1e5
 
 tau_prec = 1e3 * YR
 max_precipitation_frac = 0.0002
@@ -42,13 +43,6 @@ class Planet:
         self.hydrothermal_flux = EARTH_HYDROTHERMAL_FLUX_PER_AREA * tectonics
         self.outgassing_flux = np.zeros(elements.shape)
         self.outgassing_flux[1] = (EARTH_OUTGASSING / YR) * self.surface_area * tectonics
-
-        # self.cl_chemistry = cl_chemistry
-        # self.hcl_co2_ratio = hcl_co2_ratio
-        # if cl_chemistry:
-        #     F_HCl = (EARTH_OUTGASSING / YR) * self.surface_area * tectonics * hcl_co2_ratio
-        #     self.outgassing_flux[cl_idx]  += F_HCl   # HCl → Cl⁻ added to ocean
-        #     self.outgassing_flux[alk_idx] -= F_HCl   # H⁺ released consumes alkalinity
 
         self.alpha = 2
 
@@ -220,7 +214,7 @@ class Planet:
             
         # Apply EMA only to the chemical fluxes (index 2+) to kill the diode limit-cycles.
         # 0.1 means we trust 10% of the new flux and retain 90% of the historical smoothed flux.
-        alpha_ema = 0.1 
+        alpha_ema = 0.5
         self.dYdt_ema[2:] = alpha_ema * dYdt_raw[2:] + (1 - alpha_ema) * self.dYdt_ema[2:]
         self.dYdt_ema[:2] = dYdt_raw[:2]  # Do not smooth T and P_CO2
 
@@ -330,14 +324,6 @@ class Planet:
             Y[2:] = np.maximum(Y[2:], 0.0)
             t_current += dt_applied
 
-            # if Y[2 + c_idx] > 2.0:  # 2.0 mol/kgw threshold
-            #     print(f'\nTerminated at t = {t_current / YR / 1e6:.2f} Myr.')
-            #     print('Reason: Carbon concentration exceeded physical solubility limit (Clathrate/Liquid CO2 formation).')
-            #     convergence_status = 'snowball'
-            #     convergence_reason = 'Carbon saturation limit reached (Snowball state)'
-            #     last_diagnostics = diagnostics # Preserve state for JSON
-            #     break
-
             P_CO2_max_threshold = 1e5
             T_snowball_threshold = 260
             T_moist_greenhouse_threshold = 350
@@ -434,8 +420,9 @@ class Planet:
                 print(f'Max flux imbalance: {max_flux_imbalance:.2%}')
                 break
 
-            # if t_current > t_max:
-            #     print('Ran out of time. No steady state likely.')
+            if t_current > t_max:
+                print('Ran out of time.')
+                break
 
         else:
             print(f'Max flux imbalance: {max_flux_imbalance:.2%}')
@@ -459,8 +446,6 @@ class Planet:
                 'ocean_depth_m': float(self.ocean_depth),
                 'alpha': float(self.alpha),
                 'tidally_locked': bool(self.tidally_locked),
-                #'cl_chemistry': bool(self.cl_chemistry),
-                #'hcl_co2_ratio': float(self.hcl_co2_ratio),
             },
             'convergence': {
                 'status': convergence_status,
@@ -517,7 +502,7 @@ class Planet:
         ax2.tick_params(axis='y', labelcolor=color_co2)
         ax2.set_yscale('log')
         ax2.grid(True, alpha=0.5)
-        ax2.set_ylim([1e-7, 1])
+        ax2.set_ylim([1e-7, 10])
 
         ax3 = ax2.twinx()  
         color_t = 'tab:red'
