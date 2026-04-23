@@ -29,11 +29,11 @@ molecules = ['H2O', 'CO2']
 k_db = xk.Kdatabase(molecules, search_path=k_data_path+'corrk/R70_homogeneous_from_R500', remove_zeros=True)
 
 cia_db = xk.CIAdatabase(molecule_pairs=[['CO2','CO2']], search_path=k_data_path+'cia')
-cia_db.sample(k_db)
+cia_db.sample(k_db.wns)
 cia_db.convert_to_mks()
-print(cia_db)
+# print(cia_db)
 
-def run_exo_k_atmosphere(instellation, P_background, P_H2O, P_CO2, surface_albedo, bond_albedo=0.3, recirculation_factor=0.25):
+def run_exo_k_atmosphere(instellation, P_background, P_H2O, P_CO2, surface_albedo, bond_albedo=0.3, recirculation_factor=0.25, T_star=5700):
 
     grav_earth = 9.81
     mean_insolation = recirculation_factor * instellation * SOLAR_CONSTANT
@@ -45,19 +45,35 @@ def run_exo_k_atmosphere(instellation, P_background, P_H2O, P_CO2, surface_albed
 
     P_surface = P_background_Pa + P_H2O_Pa + P_CO2_Pa
 
-    H2O_vmr = P_H2O_Pa / P_surface
     CO2_vmr = P_CO2_Pa / P_surface
+    H2O_vmr_surface = P_H2O_Pa / P_surface
+
+    # Cold trap: compute a pressure-weighted column-average H2O VMR.
+    # The dry adiabat + isothermal stratosphere gives a temperature profile.
+    # H2O at each layer is capped at its saturation value, then averaged
+    # weighted by pressure (proportional to column mass). This prevents the
+    # constant-VMR assumption from filling the upper atmosphere with water vapour.
+    Nlay = 50
+    ptop_Pa = 10.0
+    Tstrat = 200.0
+    rcp_val = 0.28
+    p_layers = np.geomspace(P_surface, ptop_Pa, Nlay)
+    T_layers = np.maximum(288.0 * (p_layers / P_surface) ** rcp_val, Tstrat)
+    P_sat_layers = august_roche_magnus_formula(T_layers)  # Pa
+    H2O_vmr_profile = np.minimum(H2O_vmr_surface, P_sat_layers / p_layers)
+    H2O_vmr = float(np.average(H2O_vmr_profile, weights=p_layers))
 
     composition = {'N2': 'background', 'H2O': H2O_vmr, 'CO2': CO2_vmr}
 
     atm = xk.Atm_evolution(
-        Nlay=50,                  # Number of vertical layers
+        Nlay=Nlay,
         Tsurf=288.0,              # Initial surface temperature guess
-        Tstrat=200.0,             # Initial stratosphere temperature guess
+        Tstrat=Tstrat,
         psurf=P_surface,          # Surface pressure in Pa
-        ptop=10.0,                # Top of atmosphere pressure (0.1 mbar)
+        ptop=ptop_Pa,
         grav=grav_earth,          # Surface gravity
         albedo_surf=surface_albedo,
+        Tstar=T_star,
         rcp=0.28,                 # R/Cp for the gas mixture
         bg_vmr=composition,
         k_database=k_db,
