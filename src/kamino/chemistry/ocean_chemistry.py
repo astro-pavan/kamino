@@ -223,8 +223,8 @@ def solve_solution(P: float, T: float, b: npt.NDArray[np.float64], pH: float | N
     p = p_HT if high_temperature else p_LT 
 
     if p.RunString(input_string) == 1:
-        print(input_string)
-        print(p.GetErrorString())
+        # print(input_string)
+        # print(p.GetErrorString())
         raise ChemistryError
 
     output_dict = p.GetSelectedOutput()
@@ -301,13 +301,14 @@ def get_precipitation(P: float, T: float, b: npt.NDArray[np.float64], precipitat
 
     if precipitation_timescale > 0:
 
-        assert np.all(aqueous_fluxes <= 0)
-
         k_sharp = 1e6
-        smooth_function = lambda x: -(np.sqrt(1+(k_sharp * x**2)) - 1) / k_sharp
+        smooth_function = lambda x: np.sign(x) * (np.sqrt(1+(k_sharp * x**2)) - 1) / k_sharp
         # smooth_flux = np.where(k_sharp * aqueous_fluxes < 100, np.log1p(np.exp(k_sharp * aqueous_fluxes)) / k_sharp, aqueous_fluxes)
         smooth_flux = smooth_function(aqueous_fluxes)
+        smooth_flux = np.minimum(0, smooth_flux)
         aqueous_fluxes = smooth_flux / precipitation_timescale
+
+        # print(aqueous_fluxes)
 
     return aqueous_fluxes, pH, si_dict
 
