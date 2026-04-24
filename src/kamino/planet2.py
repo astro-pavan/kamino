@@ -58,7 +58,7 @@ class Planet:
 
         P_CO2 = np.clip(P_CO2, 0, 1e6)
         P_H2O = np.maximum(0, P_H2O)
-        b_ocean = np.maximum(b_ocean, 1e-9)
+        b_ocean = np.maximum(b_ocean, 0.0)
 
         # atmosphere properties
 
@@ -102,15 +102,16 @@ class Planet:
         dYdt[2:] = F_net
 
         carbon_flux = dYdt[3]
+        carbon = Y[3]
 
         # print(f't = {t/YR:.4e} yr', end='\r')
-        print(f't = {t/YR:.4e} yr  T = {T_surface:.1f}  P_CO2 = {P_CO2 / 1e5:.1e} bar  C flux = {carbon_flux:.1e} mol/kgw/s', end='\r')
+        print(f't = {t/YR:.4e} yr  T = {T_surface:.1f}  P_CO2 = {P_CO2 / 1e5:.1e} bar  C flux = {(carbon_flux / carbon) * 1e9 * YR:.1e}/Gyr ', end='\r')
         # print(Y[2:])
         # print(dYdt[2:])
 
         return dYdt
 
-    def time_evolve(self, t_end=1e9 * YR):
+    def time_evolve(self, t_end=2e9 * YR):
 
         Y0 = np.zeros(elements.shape[0] + 2)
 
@@ -139,31 +140,85 @@ class Planet:
         atol[0] = 1.0   # P_CO2 in Pa
         atol[1] = 1.0   # P_H2O in Pa
 
+        def macro_jacobian(t, y):
+            # print('Using custom jacobian                                                                                ')
+            N = len(y)
+            jac = np.zeros((N, N))
+
+            f0 = self.dY_dt(t, y)
+
+            rel_rates = np.abs(f0 / (np.abs(y) + 1e-7))
+            v_max = np.max(rel_rates[2:])
+            
+            # 3. Apply the inverse function
+            eps_max = 0.5
+            eps_min = 1e-3
+            
+            # Tuning knob: Because your dy/dt is per second over geologic time, 
+            # v_max will be tiny. We need a massive k to scale it up. 
+            # You will need to tune this! Start with 1e10 or 1e12.
+            k = 1e9 * YR 
+            
+            dynamic_eps = eps_max / (1.0 + k * v_max)
+            
+            # Clamp to safety limits
+            dynamic_eps = np.clip(dynamic_eps, eps_min, eps_max)
+            
+            # Choose a "macro" step size. 
+            eps = dynamic_eps
+            min_delta = 1e-5
+            delta = min_delta + eps * np.abs(y)
+
+            
+            for j in range(N):
+                # Create perturbed states
+                y_plus = np.copy(y)
+                y_minus = np.copy(y)
+                
+                y_plus[j] += delta[j]
+                y_minus[j] -= delta[j]
+                
+                # Evaluate ODE at perturbed states
+                f_plus = self.dY_dt(t, y_plus)
+                f_minus = self.dY_dt(t, y_minus)
+                
+                # Calculate the macro-derivative for column j
+                jac[:, j] = (f_plus - f_minus) / (2 * delta[j])
+                
+            return jac
+
         sol = solve_ivp(
             self.dY_dt,
             (0, t_end),
             Y0,
-            method='Radau',
+            method='LSODA',
             max_step=1e7 * YR,
             rtol=1e-3,
             atol=atol,
+            jac=macro_jacobian
             # events=[event_runaway, event_snowball, event_hothouse],
         )
 
         print()
         print(sol.y[2:, -1])
 
+        Alk = sol.y[2, :]
         C = sol.y[3, :]
-        t = sol.t
+        t = sol.t / YR
 
         plt.plot(t, C)
         plt.yscale('log')
         plt.show()
 
         dC = np.gradient(C)
+        dAlk = np.gradient(Alk)
         dt = np.gradient(t)
 
-        plt.plot(t, (dC / dt) / C)
+        plt.plot(t, ((dC / dt) / C) * 1e9)
+        plt.plot(t, ((dAlk / dt) / Alk) * 1e9)
+        plt.axhline(0, color='black', linestyle='--')
+        # plt.yscale('log')
+        plt.yscale('symlog', linthresh=1e-3)
         plt.show()
 
 
@@ -171,7 +226,7 @@ class Planet:
 
 if __name__ == '__main__':
 
-    BACKGROUND_PRESSURE = 1e5   # Pa (~1 bar)
+    BACKGROUND_PRESSURE = 1e5   # Pa (1 bar)
     OCEAN_DEPTH = 3000          # m
     TECTONICS = 1.0
 

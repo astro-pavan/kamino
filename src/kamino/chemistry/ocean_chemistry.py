@@ -224,6 +224,7 @@ def solve_solution(P: float, T: float, b: npt.NDArray[np.float64], pH: float | N
     p = p_HT if high_temperature else p_LT 
 
     if p.RunString(input_string) == 1:
+        print()
         print(input_string)
         print(p.GetErrorString())
         raise ChemistryError
@@ -298,12 +299,34 @@ def get_precipitation(P: float, T: float, b: npt.NDArray[np.float64], precipitat
 
     if precipitation_timescale > 0:
 
-        assert np.all(aqueous_fluxes <= 0)
+        # SI_scale = 0.5  # log10 units
 
-        k_sharp = 1e-4
-        smooth_function = lambda x: -(np.sqrt(1+(k_sharp * x)**2) - 1) / k_sharp
-        # smooth_flux = np.where(k_sharp * aqueous_fluxes < 100, np.log1p(np.exp(k_sharp * aqueous_fluxes)) / k_sharp, aqueous_fluxes)
-        aqueous_fluxes = smooth_function(aqueous_fluxes)
+        # # Per-mineral SI weighting: decompose flux by mineral contribution, weight each by its own SI.
+        # # tanh(SI / SI_scale) → 0 near equilibrium (removes fast eigenvalue), → 1 when far supersaturated.
+        # weighted_fluxes = np.zeros(elements.shape)
+        # decomposition_ok = False
+
+        # for min_name in precipitating_minerals:
+        #     if min_name not in stoichiometry:
+        #         continue
+        #     si = si_dict.get(min_name, 0.0)
+        #     weight = float(np.tanh(max(0.0, si) / SI_scale))
+
+        #     # PHREEQC equilibrium phase output: moles of mineral phase (starts at 0, increases on precipitation)
+        #     if min_name in output:
+        #         moles_precip = float(output[min_name][-1])
+        #         mineral_flux = np.minimum(-moles_precip * stoichiometry[min_name], 0.0)
+        #         weighted_fluxes += mineral_flux * weight
+        #         decomposition_ok = True
+
+        # if decomposition_ok:
+        #     aqueous_fluxes = weighted_fluxes / precipitation_timescale
+        # else:
+        #     # Fallback: global weight using max SI across all minerals
+        #     max_si = max(si_dict.values(), default=0.0)
+        #     weight = float(np.tanh(max(0.0, max_si) / SI_scale))
+        #     aqueous_fluxes = aqueous_fluxes * weight / precipitation_timescale
+
         aqueous_fluxes = aqueous_fluxes / precipitation_timescale
 
     return aqueous_fluxes, pH, si_dict
@@ -507,4 +530,4 @@ W_REF, _ = get_weathering_flux(
 )
 
 # print(f"Calibration complete: ALPHA_REF = {ALPHA_REF:.2e}")
-print(f'Weathering flux: {W_REF[0] * YR * A_seafloor / 1e12:.2e} Tmol/yr')
+# print(f'Weathering flux: {W_REF[0] * YR * A_seafloor / 1e12:.2e} Tmol/yr')
