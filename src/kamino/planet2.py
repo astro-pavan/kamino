@@ -2,6 +2,7 @@ import numpy as np
 np.set_printoptions(precision=1)
 from scipy.integrate import solve_ivp
 import matplotlib.pyplot as plt
+import time
 
 from kamino.constants import *
 from kamino.chemistry.ocean_chemistry import *
@@ -81,6 +82,8 @@ class Planet:
         F_vol = self.outgassing_flux / self.ocean_water_mass
 
         F_prec, pH, SI = get_precipitation(P_pore, T_seafloor, b_ocean, precipitating_minerals=carbonate_minerals + secondary_sink_minerals, precipitation_timescale=tau_prec)
+        self._pH = pH
+        self._SI = SI
 
         ocean_water_per_area = self.ocean_depth * 1000.0
         F_carb, F_sil = max(0.0, -F_prec[c_idx]), max(0.0, -F_prec[si_idx])
@@ -103,18 +106,20 @@ class Planet:
         dYdt[1] = (P_H2O_new - P_H2O) / tau_atm
 
         dYdt[2:] = F_net
+        self._F_net = F_net
 
         carbon_flux = dYdt[3]
         carbon = Y[3]
+        calcite_SI = SI['Calcite']
 
         # print(f't = {t/YR:.4e} yr', end='\r')
-        # print(f't = {t/YR:.4e} yr  T = {T_surface:.1f}  P_CO2 = {P_CO2 / 1e5:.1e} bar  C flux = {(carbon_flux / carbon) * 1e9 * YR:.1e}/Gyr ', end='\r')
+        print(f't = {t/YR:.4e} yr  T = {T_surface:.1f}  P_CO2 = {P_CO2 / 1e5:.1e} bar  pH = {pH:.1f}  Calcite SI = {calcite_SI:.1f}  C flux = {(carbon_flux / carbon) * 1e9 * YR:.1e} / Gyr  ', end='\r')
         # print(Y[2:])
         # print(dYdt[2:])
 
         return dYdt
 
-    def time_evolve(self, t_end=1e9 * YR):
+    def time_evolve(self, t_end=2e9 * YR, jac_epsilon=0.01, convergence_rate = 0.01 / (1e9 * YR)):
 
         Y0 = np.zeros(elements.shape[0] + 2)
 
@@ -124,12 +129,11 @@ class Planet:
         P_CO2_max = 1e5
         T_runaway = 350
         T_snowball = 260
-
-        def event_runaway(t, Y):
-            return Y[0] - P_CO2_max
-        event_runaway.terminal = True
+        SI_acid_threshold = -2.5   # calcite SI below which the ocean can't buffer CO2
 
         def event_snowball(t, Y):
+            if Y[0] < P_CO2_max:
+                return 1.0
             T = get_T_surface(self.instellation, max(Y[0], 1e-2), self.albedo, self.tidally_locked)
             return T - T_snowball
         event_snowball.terminal = True
@@ -139,48 +143,63 @@ class Planet:
             return T - T_runaway
         event_hothouse.terminal = True
 
+        def event_acid_ocean(t, Y):
+            if Y[0] < P_CO2_max:
+                return 1.0
+            return getattr(self, '_SI', {}).get('Calcite', 0.0) - SI_acid_threshold
+        event_acid_ocean.terminal = True
+
         atol = np.ones_like(Y0) * 1e-6
         atol[0] = 1.0   # P_CO2 in Pa
         atol[1] = 1.0   # P_H2O in Pa
-        
+
+        def event_converged(t, Y):
+            F_net = getattr(self, '_F_net', None)
+            if F_net is None:
+                return 1.0
+            b = np.maximum(Y[2:], atol[2:])
+            max_fractional_rate = np.max(np.abs(F_net) / b)
+            return max_fractional_rate - convergence_rate
+        event_converged.terminal = True
+
         N = len(Y0)
 
         def macro_jacobian(t, y):
 
             jac = np.zeros((N, N))
 
-            f0 = self.dY_dt(t, y)
+            # Per-variable absolute floors, set to roughly the solver atol / 10 for
+            # pressures and just above the trace_approximation threshold (1e-9 mol/kgw)
+            # for ocean concentrations.  A uniform floor of 1e-5 was far too large
+            # for trace elements (Al, Fe ~ 1e-8): it caused y_minus to go negative and
+            # get clipped to 1e-9, making the finite difference wildly inaccurate.
+            eps_abs = np.empty(N)
+            eps_abs[0] = 0.1      # P_CO2  [Pa]   (atol=1 Pa)
+            eps_abs[1] = 0.1      # P_H2O  [Pa]
+            eps_abs[2:] = 1e-9   # b_ocean [mol/kgw]  (trace_approx threshold)
 
-            rel_rates = np.abs(f0 / (np.abs(y) + 1e-7))
-            v = np.mean(rel_rates[2:])
-            
-            eps_max = 0.5
-            eps_min = 1e-2
-            
-            k = 1e9 * YR 
-            
-            dynamic_eps = eps_max / (k * v)
-            dynamic_eps = np.clip(dynamic_eps, eps_min, eps_max)
-             
-            eps = 0.001
-            min_delta = 1e-5
-            delta = min_delta + eps * np.abs(y) ** 2
-            
+            delta = np.maximum(jac_epsilon * np.abs(y), eps_abs)
+
             for j in range(N):
+                
+                if j == 1:
+                    jac[1, 1] = -1.0 / tau_atm
+                    continue
+
                 y_plus = np.copy(y)
                 y_minus = np.copy(y)
-                
+
                 y_plus[j] += delta[j]
                 y_minus[j] -= delta[j]
-                
+
                 f_plus = self.dY_dt(t, y_plus)
                 f_minus = self.dY_dt(t, y_minus)
-                
+
                 jac[:, j] = (f_plus - f_minus) / (2 * delta[j])
 
-            print(f't = {t/YR:.2e} yr  eps = {eps:.1e}  v_max = {v * 1e9 * YR:.1e}', end='\r')
-                
             return jac
+        
+        start = time.time()
 
         sol = solve_ivp(
             self.dY_dt,
@@ -190,28 +209,36 @@ class Planet:
             max_step=1e7 * YR,
             rtol=1e-3,
             atol=atol,
-            jac=macro_jacobian
-            # events=[event_runaway, event_snowball, event_hothouse],
+            jac=macro_jacobian,
+            events=[event_snowball, event_hothouse, event_acid_ocean],
         )
 
-        print()
-        print(sol.y[2:, -1])
+        end = time.time()
 
-        Alk = sol.y[2, :]
-        C = sol.y[3, :]
+        print()
+
+        event_names = ['snowball', 'hothouse', 'acid_ocean']
+        for name, t_ev in zip(event_names, sol.t_events):
+            if len(t_ev) > 0:
+                print(f'Terminated: {name} at t = {t_ev[0]/YR:.3e} yr')
+
+        print(f'Simulation time: {end - start:.0f} s')
+        print(f'Y: {sol.y[2:, -1]} mol/kgw')
+
         t = sol.t / YR
 
-        plt.plot(t, C)
-        plt.yscale('log')
-        plt.show()
-
-        dC = np.gradient(C)
-        dAlk = np.gradient(Alk)
         dt = np.gradient(t)
 
+        print('FLUXES (fractonal change per Gyr)')
+
         for i in range(len(sol.y[2:, 0])):
-            db = np.gradient(sol.y[i+2, :])
-            plt.plot(t, ((db / dt) / C) * 1e9)
+            b = sol.y[i+2, :]
+            db = np.gradient(b)
+            flux = ((db / dt) / b) * 1e9
+
+            print(flux[-20:-1])
+            
+            plt.plot(t, flux)
 
         plt.axhline(0, color='black', linestyle='--')
         plt.axhspan(-1e-2, 1e-2, color='blue', alpha=0.2)
@@ -220,17 +247,16 @@ class Planet:
         plt.show()
 
 
-
-
 if __name__ == '__main__':
 
     BACKGROUND_PRESSURE = 1e5   # Pa (1 bar)
     OCEAN_DEPTH = 3000          # m
     TECTONICS = 1.0
 
-    s = 0.7
+    instellation = [0.8, 1.0, 1.2]
 
-    print(f's = {s}')
-    p1 = Planet(M_EARTH, R_EARTH, BACKGROUND_PRESSURE, s, 1.0, 3000, name=f'test_s_{s}')
-    p1.time_evolve()
-    print('')
+    for s in instellation:
+        print(f's = {s}')
+        p1 = Planet(M_EARTH, R_EARTH, BACKGROUND_PRESSURE, s, 1.0, 3000, name=f'test_s_{s}')
+        p1.time_evolve()
+        print('')
