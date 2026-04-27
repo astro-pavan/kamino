@@ -3,18 +3,35 @@ np.set_printoptions(precision=1)
 from scipy.integrate import solve_ivp
 import matplotlib.pyplot as plt
 import time
+import json
+import os
 
 from kamino.constants import *
 from kamino.chemistry.ocean_chemistry import *
+from kamino.chemistry.mineral_info import *
 from kamino.climate.clima_interpolator import get_T_surface
 from kamino.utils import august_roche_magnus_formula
+
+output_path = os.path.join(os.path.dirname(__file__), '../../output/')
 
 tau_prec = 1e4 * YR
 tau_atm = 1e4 * YR
 
 class Planet:
 
-    def __init__(self, mass: float, radius: float, background_pressure: float, instellation : float, crust_production_rate: float, outgassing: float, ocean_depth: float, land_fraction: float=0.0, name: str='planet'):        
+    def __init__(
+            self,
+            mass: float,
+            radius: float,
+            background_pressure: float,
+            instellation : float,
+            crust_production_rate: float,
+            outgassing: float,
+            ocean_depth: float,
+            land_fraction: float=0.0,
+            crust_carbonate_content: float=0.0,
+            reverse_weathering: bool=False,
+            name: str='planet'):        
 
         self.name = name
         self.mass = mass
@@ -29,15 +46,27 @@ class Planet:
         self.crust_production_rate = EARTH_CRUST_PRODUCTION_RATE_PER_AREA * crust_production_rate
         self.hydrothermal_flux = EARTH_HYDROTHERMAL_FLUX_PER_AREA * crust_production_rate
 
+        self.crust_composition = basalt_composition
+
+        if crust_carbonate_content > 0:
+            for mineral, fraction in self.crust_composition.items():
+                self.crust_composition[mineral] *= (1 - crust_carbonate_content) * fraction
+            self.crust_composition['Calcite'] = crust_carbonate_content
+
+        self.precipitating_minerals = carbonate_minerals + secondary_sink_minerals
+        if reverse_weathering:
+            self.precipitating_minerals += reverse_weathering_minerals
+
         self.outgassing_flux = np.zeros(elements.shape)
         self.outgassing_flux[1] = (EARTH_OUTGASSING / YR) * self.surface_area * outgassing
 
-        self.alpha = 2
-
         self.tidally_locked = False
 
-        self._input_instellation = instellation  # in units of solar constant
-        self._input_tectonics = crust_production_rate
+        self._input_instellation = instellation
+        self._input_crust_production_rate = crust_production_rate
+        self._input_outgassing = outgassing
+        self._input_crust_carbonate_content = crust_carbonate_content
+        self._input_reverse_Weathering = reverse_weathering
 
         self.land_fraction = land_fraction
         self.land_area = land_fraction * self.surface_area
@@ -49,6 +78,24 @@ class Planet:
 
         self.instellation = instellation * SOLAR_CONSTANT
         self.albedo = land_albedo * land_fraction + ocean_albedo * (1 - land_fraction)
+
+        planet_config = {
+            "name": self.name,
+            "mass": self.mass,
+            "radius": self.radius,
+            "background_pressure": self.P_background,
+            "ocean_depth": self.ocean_depth,
+            "land_fraction": self.land_fraction,
+            "instellation": self._input_instellation,
+            "crust_production_rate": self._input_crust_production_rate,
+            "outgassing": self._input_outgassing,
+            "crust_carbonate_content": self._input_crust_carbonate_content,
+            "reverse_weathering": self._input_reverse_Weathering
+        }
+
+        filename = f"{output_path}{self.name}_config.json"
+        with open(filename, 'w') as f:
+            json.dump(planet_config, f, indent=4)
 
     def dY_dt(self, t, Y):
 
@@ -91,7 +138,7 @@ class Planet:
             F_carb, F_sil = max(0.0, -F_prec[c_idx]), max(0.0, -F_prec[si_idx])
 
             S_sed = (F_carb * 0.100 / 2710.0 + F_sil * 0.060 / 2650.0) * ocean_water_per_area
-            weathering_flux, w_diag = get_weathering_flux(P_pore, T_pore, P_CO2, b_ocean, self.alpha, self.crust_production_rate, clog=False, sedimentation_rate=S_sed)
+            weathering_flux, _ = get_weathering_flux(P_pore, T_pore, P_CO2, b_ocean, None, self.crust_production_rate, crust_composition=self.crust_composition, clog=False, sedimentation_rate=S_sed)
 
             F_diss = (weathering_flux * self.surface_area) / self.ocean_water_mass
             F_net = F_vol + F_prec + F_diss
@@ -117,6 +164,9 @@ class Planet:
 
         print(f't = {t/YR:.4e} yr  T = {T_surface:.1f}  P_CO2 = {P_CO2 / 1e5:.1e} bar  pH = {pH:.1f}  Calcite SI = {calcite_SI:.1f}  C flux = {(carbon_flux / carbon) * 1e9 * YR:.1e} / Gyr  ', end='\r')
 
+        self._T = T_surface
+        self._pH = pH
+
         return dYdt
 
     def time_evolve(self, t_end=2e9 * YR, jac_epsilon=0.01, convergence_rate = 0.01 / (1e9 * YR)):
@@ -126,7 +176,7 @@ class Planet:
         Y0[0] = 1000
         Y0[1] = 1000
 
-        P_CO2_max = 1e5
+        P_CO2_max = 1e6
         T_runaway = 350
         T_snowball = 260
         P_CO2_acid_threshold = 5e5   # Pa (5 bar)
@@ -234,25 +284,34 @@ class Planet:
         print(f'Simulation time: {end - start:.0f} s')
         print(f'Y: {sol.y[2:, -1]} mol/kgw')
 
-        t = sol.t / YR
+        time_steps = sol.t.tolist()
+        state_variables = sol.y.tolist()
+        
+        events_dict = {}
+        event_names = ['snowball', 'hothouse', 'acid_ocean', 'converged']
+        for name, t_ev in zip(event_names, sol.t_events):
+            events_dict[name] = t_ev.tolist()
 
-        dt = np.gradient(t)
+        results_data = {
+            "simulation_time_seconds": end - start,
+            "status": sol.status,
+            "message": sol.message,
+            "events_triggered": events_dict,
+            "T": self._T,
+            "P_CO2": sol.y[0, -1] / 1e5,
+            "pH": self._pH,
+            "data": {
+                "time": time_steps,
+                "y": state_variables
+            }
+        }
 
-        print('FLUXES (fractonal change per Gyr)')
+        results_filename = f"{output_path}{self.name}_results.json"
+        with open(results_filename, 'w') as f:
+            json.dump(results_data, f, indent=4)
+            
+        print(f"Results successfully saved to {results_filename}")
 
-        for i in range(len(sol.y[2:, 0])):
-            b = sol.y[i+2, :]
-            db = np.gradient(b)
-            b_safe = np.where(np.abs(b) > 1e-30, b, np.nan)
-            flux = ((db / dt) / b_safe) * 1e9
-
-            plt.plot(t, flux)
-
-        plt.axhline(0, color='black', linestyle='--')
-        plt.axhspan(-1e-2, 1e-2, color='blue', alpha=0.2)
-        # plt.yscale('log')
-        plt.yscale('symlog', linthresh=1e-3)
-        plt.show()
 
 
 if __name__ == '__main__':

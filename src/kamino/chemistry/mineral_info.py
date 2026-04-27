@@ -16,11 +16,6 @@ secondary_composition = {
     'Magnesite': 0.05,
 }
 
-secondary_sinks = [
-    'Calcite', 'Magnesite', 'Siderite', 'Dolomite', 'Gypsum', 
-    'Kaolinite', 'Goethite', 'Smectite-high-Fe-Mg', 'Sepiolite'
-]
-
 hydrothermal_minerals = [
     'Albite', 'Anorthite', 'Enstatite', 'Forsterite',
     'Fayalite', 'Wollastonite', 'K-Feldspar', 'Diopside',

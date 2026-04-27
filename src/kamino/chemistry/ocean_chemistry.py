@@ -334,7 +334,7 @@ J_ref = 1.4e15 / YR # kg / yr
 A_seafloor = 0.7 * 4 * np.pi * R_EARTH ** 2
 J_ref_normalised = J_ref / A_seafloor
 
-def get_weathering_flux(P: float, T: float, P_CO2: float, b_input: npt.NDArray[np.float64], alpha: float | None=None, rate: float | None=None, J: float | None=None, cover: bool=True, clog: bool=False, high_temperature: bool=False, precipitating_minerals: list[str] | None=None, fO2: float=0, sedimentation_rate: float | None=None) -> tuple[npt.NDArray[np.float64], dict[str, float]]:
+def get_weathering_flux(P: float, T: float, P_CO2: float, b_input: npt.NDArray[np.float64], alpha: float | None=None, rate: float | None=None, J: float | None=None, cover: bool=True, clog: bool=False, high_temperature: bool=False, crust_composition: dict[str, float]=basalt_composition, precipitating_minerals: list[str] | None=None, fO2: float=0, sedimentation_rate: float | None=None) -> tuple[npt.NDArray[np.float64], dict[str, float]]:
 
     molar_mass = 0.216 # kg / mol
 
@@ -351,17 +351,16 @@ def get_weathering_flux(P: float, T: float, P_CO2: float, b_input: npt.NDArray[n
         b_input = np.zeros(elements.shape)
 
     if high_temperature:
-        composition = hydrothermal_composition
+        crust_composition = hydrothermal_composition
         default_precipitating = []          # Kaolinite not in hydrothermal.dat
     else:
-        composition = basalt_composition
         default_precipitating = ['Kaolinite', 'Goethite']
 
     if precipitating_minerals is None:
         precipitating_minerals = default_precipitating
 
-    b_eq_primary, pH = get_b_eq(P, T, P_CO2, composition, b_input=b_input, precipitating_minerals=precipitating_minerals, high_temperature=high_temperature, fO2=fO2)
-    k_primary = get_k(P, T, pH, composition)
+    b_eq_primary, pH = get_b_eq(P, T, P_CO2, crust_composition, b_input=b_input, precipitating_minerals=precipitating_minerals, high_temperature=high_temperature, fO2=fO2)
+    k_primary = get_k(P, T, pH, crust_composition)
     k_nonzero = k_primary != 0  # save before replacing zeros with inf
     k_primary = np.where(k_nonzero, k_primary, np.inf)
 
@@ -374,13 +373,8 @@ def get_weathering_flux(P: float, T: float, P_CO2: float, b_input: npt.NDArray[n
     Da_primary = (k_primary * A_reactive * molar_mass) / J
     b_pore = b_input + (b_eq_primary - b_input) * (1 - np.exp(-Da_primary))
 
-    # C has zero stoichiometry in all basalt minerals, so the Da formula already
-    # gives b_pore[C] = b_input[C] (no change).  Explicitly enforce this: the pore
-    # water carries in the ocean DIC; weathering reactions shift Alkalinity via
-    # speciation but do not alter total DIC.  Using b_eq_primary[C] (equilibrium
-    # DIC at pore pressure) was physically wrong and caused PHREEQC failures at
-    # high P_CO2 where that equilibrium DIC can exceed ~8 mol/kgw.
-    b_pore[c_idx] = b_input[c_idx]
+    if 'Calcite' not in crust_composition:
+        b_pore[c_idx] = b_input[c_idx]
 
     flux = F_primary
 
