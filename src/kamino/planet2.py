@@ -92,6 +92,9 @@ class Planet:
 
         F_net = F_vol + F_prec + F_diss
 
+        # F_max_negative = - Y[2:] / (1e7 * YR)
+        # F_net = np.maximum(F_net, F_max_negative)
+
         # return derivatives
 
         dYdt = np.zeros_like(Y)
@@ -105,13 +108,13 @@ class Planet:
         carbon = Y[3]
 
         # print(f't = {t/YR:.4e} yr', end='\r')
-        print(f't = {t/YR:.4e} yr  T = {T_surface:.1f}  P_CO2 = {P_CO2 / 1e5:.1e} bar  C flux = {(carbon_flux / carbon) * 1e9 * YR:.1e}/Gyr ', end='\r')
+        # print(f't = {t/YR:.4e} yr  T = {T_surface:.1f}  P_CO2 = {P_CO2 / 1e5:.1e} bar  C flux = {(carbon_flux / carbon) * 1e9 * YR:.1e}/Gyr ', end='\r')
         # print(Y[2:])
         # print(dYdt[2:])
 
         return dYdt
 
-    def time_evolve(self, t_end=2e9 * YR):
+    def time_evolve(self, t_end=1e9 * YR):
 
         Y0 = np.zeros(elements.shape[0] + 2)
 
@@ -139,51 +142,43 @@ class Planet:
         atol = np.ones_like(Y0) * 1e-6
         atol[0] = 1.0   # P_CO2 in Pa
         atol[1] = 1.0   # P_H2O in Pa
+        
+        N = len(Y0)
 
         def macro_jacobian(t, y):
-            # print('Using custom jacobian                                                                                ')
-            N = len(y)
+
             jac = np.zeros((N, N))
 
             f0 = self.dY_dt(t, y)
 
             rel_rates = np.abs(f0 / (np.abs(y) + 1e-7))
-            v_max = np.max(rel_rates[2:])
+            v = np.mean(rel_rates[2:])
             
-            # 3. Apply the inverse function
             eps_max = 0.5
-            eps_min = 1e-3
+            eps_min = 1e-2
             
-            # Tuning knob: Because your dy/dt is per second over geologic time, 
-            # v_max will be tiny. We need a massive k to scale it up. 
-            # You will need to tune this! Start with 1e10 or 1e12.
             k = 1e9 * YR 
             
-            dynamic_eps = eps_max / (1.0 + k * v_max)
-            
-            # Clamp to safety limits
+            dynamic_eps = eps_max / (k * v)
             dynamic_eps = np.clip(dynamic_eps, eps_min, eps_max)
-            
-            # Choose a "macro" step size. 
-            eps = dynamic_eps
+             
+            eps = 0.001
             min_delta = 1e-5
-            delta = min_delta + eps * np.abs(y)
-
+            delta = min_delta + eps * np.abs(y) ** 2
             
             for j in range(N):
-                # Create perturbed states
                 y_plus = np.copy(y)
                 y_minus = np.copy(y)
                 
                 y_plus[j] += delta[j]
                 y_minus[j] -= delta[j]
                 
-                # Evaluate ODE at perturbed states
                 f_plus = self.dY_dt(t, y_plus)
                 f_minus = self.dY_dt(t, y_minus)
                 
-                # Calculate the macro-derivative for column j
                 jac[:, j] = (f_plus - f_minus) / (2 * delta[j])
+
+            print(f't = {t/YR:.2e} yr  eps = {eps:.1e}  v_max = {v * 1e9 * YR:.1e}', end='\r')
                 
             return jac
 
@@ -214,9 +209,12 @@ class Planet:
         dAlk = np.gradient(Alk)
         dt = np.gradient(t)
 
-        plt.plot(t, ((dC / dt) / C) * 1e9)
-        plt.plot(t, ((dAlk / dt) / Alk) * 1e9)
+        for i in range(len(sol.y[2:, 0])):
+            db = np.gradient(sol.y[i+2, :])
+            plt.plot(t, ((db / dt) / C) * 1e9)
+
         plt.axhline(0, color='black', linestyle='--')
+        plt.axhspan(-1e-2, 1e-2, color='blue', alpha=0.2)
         # plt.yscale('log')
         plt.yscale('symlog', linthresh=1e-3)
         plt.show()
