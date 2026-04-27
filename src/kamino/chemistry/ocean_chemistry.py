@@ -299,34 +299,6 @@ def get_precipitation(P: float, T: float, b: npt.NDArray[np.float64], precipitat
 
     if precipitation_timescale > 0:
 
-        # SI_scale = 0.5  # log10 units
-
-        # # Per-mineral SI weighting: decompose flux by mineral contribution, weight each by its own SI.
-        # # tanh(SI / SI_scale) → 0 near equilibrium (removes fast eigenvalue), → 1 when far supersaturated.
-        # weighted_fluxes = np.zeros(elements.shape)
-        # decomposition_ok = False
-
-        # for min_name in precipitating_minerals:
-        #     if min_name not in stoichiometry:
-        #         continue
-        #     si = si_dict.get(min_name, 0.0)
-        #     weight = float(np.tanh(max(0.0, si) / SI_scale))
-
-        #     # PHREEQC equilibrium phase output: moles of mineral phase (starts at 0, increases on precipitation)
-        #     if min_name in output:
-        #         moles_precip = float(output[min_name][-1])
-        #         mineral_flux = np.minimum(-moles_precip * stoichiometry[min_name], 0.0)
-        #         weighted_fluxes += mineral_flux * weight
-        #         decomposition_ok = True
-
-        # if decomposition_ok:
-        #     aqueous_fluxes = weighted_fluxes / precipitation_timescale
-        # else:
-        #     # Fallback: global weight using max SI across all minerals
-        #     max_si = max(si_dict.values(), default=0.0)
-        #     weight = float(np.tanh(max(0.0, max_si) / SI_scale))
-        #     aqueous_fluxes = aqueous_fluxes * weight / precipitation_timescale
-
         aqueous_fluxes = aqueous_fluxes / precipitation_timescale
 
     return aqueous_fluxes, pH, si_dict
