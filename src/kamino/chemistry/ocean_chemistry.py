@@ -374,9 +374,13 @@ def get_weathering_flux(P: float, T: float, P_CO2: float, b_input: npt.NDArray[n
     Da_primary = (k_primary * A_reactive * molar_mass) / J
     b_pore = b_input + (b_eq_primary - b_input) * (1 - np.exp(-Da_primary))
 
-    # C has zero stoichiometry in all basalt minerals, so Da[C]=0 and b_pore[C]=0.
-    # Use the equilibrium C concentration so PHREEQC has a consistent carbonate system.
-    b_pore[c_idx] = b_eq_primary[c_idx]
+    # C has zero stoichiometry in all basalt minerals, so the Da formula already
+    # gives b_pore[C] = b_input[C] (no change).  Explicitly enforce this: the pore
+    # water carries in the ocean DIC; weathering reactions shift Alkalinity via
+    # speciation but do not alter total DIC.  Using b_eq_primary[C] (equilibrium
+    # DIC at pore pressure) was physically wrong and caused PHREEQC failures at
+    # high P_CO2 where that equilibrium DIC can exceed ~8 mol/kgw.
+    b_pore[c_idx] = b_input[c_idx]
 
     flux = F_primary
 

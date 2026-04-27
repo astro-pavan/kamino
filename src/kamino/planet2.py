@@ -14,7 +14,7 @@ tau_atm = 1e4 * YR
 
 class Planet:
 
-    def __init__(self, mass: float, radius: float, background_pressure: float, instellation : float, tectonics: float, ocean_depth: float, land_fraction: float=0.0, name: str='planet'):        
+    def __init__(self, mass: float, radius: float, background_pressure: float, instellation : float, crust_production_rate: float, outgassing: float, ocean_depth: float, land_fraction: float=0.0, name: str='planet'):        
 
         self.name = name
         self.mass = mass
@@ -26,17 +26,18 @@ class Planet:
         self.ocean_depth = ocean_depth
         self.ocean_water_mass = self.ocean_depth * self.surface_area * 1000
 
-        self.crust_production_rate = EARTH_CRUST_PRODUCTION_RATE_PER_AREA * tectonics
-        self.hydrothermal_flux = EARTH_HYDROTHERMAL_FLUX_PER_AREA * tectonics
+        self.crust_production_rate = EARTH_CRUST_PRODUCTION_RATE_PER_AREA * crust_production_rate
+        self.hydrothermal_flux = EARTH_HYDROTHERMAL_FLUX_PER_AREA * crust_production_rate
+
         self.outgassing_flux = np.zeros(elements.shape)
-        self.outgassing_flux[1] = (EARTH_OUTGASSING / YR) * self.surface_area * tectonics
+        self.outgassing_flux[1] = (EARTH_OUTGASSING / YR) * self.surface_area * outgassing
 
         self.alpha = 2
 
         self.tidally_locked = False
 
         self._input_instellation = instellation  # in units of solar constant
-        self._input_tectonics = tectonics
+        self._input_tectonics = crust_production_rate
 
         self.land_fraction = land_fraction
         self.land_area = land_fraction * self.surface_area
@@ -81,24 +82,26 @@ class Planet:
 
         F_vol = self.outgassing_flux / self.ocean_water_mass
 
-        F_prec, pH, SI = get_precipitation(P_pore, T_seafloor, b_ocean, precipitating_minerals=carbonate_minerals + secondary_sink_minerals, precipitation_timescale=tau_prec)
-        self._pH = pH
-        self._SI = SI
+        try:
+            F_prec, pH, SI = get_precipitation(P_pore, T_seafloor, b_ocean, precipitating_minerals=carbonate_minerals + secondary_sink_minerals, precipitation_timescale=tau_prec)
+            self._pH = pH
+            self._SI = SI
 
-        ocean_water_per_area = self.ocean_depth * 1000.0
-        F_carb, F_sil = max(0.0, -F_prec[c_idx]), max(0.0, -F_prec[si_idx])
+            ocean_water_per_area = self.ocean_depth * 1000.0
+            F_carb, F_sil = max(0.0, -F_prec[c_idx]), max(0.0, -F_prec[si_idx])
 
-        S_sed = (F_carb * 0.100 / 2710.0 + F_sil * 0.060 / 2650.0) * ocean_water_per_area
-        weathering_flux, w_diag = get_weathering_flux(P_pore, T_pore, P_CO2, b_ocean, self.alpha, self.crust_production_rate, clog=False, sedimentation_rate=S_sed)
+            S_sed = (F_carb * 0.100 / 2710.0 + F_sil * 0.060 / 2650.0) * ocean_water_per_area
+            weathering_flux, w_diag = get_weathering_flux(P_pore, T_pore, P_CO2, b_ocean, self.alpha, self.crust_production_rate, clog=False, sedimentation_rate=S_sed)
 
-        F_diss = (weathering_flux * self.surface_area) / self.ocean_water_mass
-
-        F_net = F_vol + F_prec + F_diss
-
-        # F_max_negative = - Y[2:] / (1e7 * YR)
-        # F_net = np.maximum(F_net, F_max_negative)
-
-        # return derivatives
+            F_diss = (weathering_flux * self.surface_area) / self.ocean_water_mass
+            F_net = F_vol + F_prec + F_diss
+        except ChemistryError:
+            # Chemistry has left the valid domain (typically high P_CO2 where PHREEQC cannot converge). 
+            # Return pure outgassing so LSODA gets a finite derivative and the acid_ocean event can terminate cleanly.
+            dYdt = np.zeros_like(Y)
+            dYdt[2:] = F_vol
+            self._F_net = dYdt[2:]
+            return dYdt
 
         dYdt = np.zeros_like(Y)
 
@@ -112,10 +115,7 @@ class Planet:
         carbon = Y[3]
         calcite_SI = SI['Calcite']
 
-        # print(f't = {t/YR:.4e} yr', end='\r')
         print(f't = {t/YR:.4e} yr  T = {T_surface:.1f}  P_CO2 = {P_CO2 / 1e5:.1e} bar  pH = {pH:.1f}  Calcite SI = {calcite_SI:.1f}  C flux = {(carbon_flux / carbon) * 1e9 * YR:.1e} / Gyr  ', end='\r')
-        # print(Y[2:])
-        # print(dYdt[2:])
 
         return dYdt
 
@@ -129,7 +129,7 @@ class Planet:
         P_CO2_max = 1e5
         T_runaway = 350
         T_snowball = 260
-        SI_acid_threshold = -2.5   # calcite SI below which the ocean can't buffer CO2
+        P_CO2_acid_threshold = 5e5   # Pa (5 bar)
 
         def event_snowball(t, Y):
             if Y[0] < P_CO2_max:
@@ -142,25 +142,33 @@ class Planet:
             T = get_T_surface(self.instellation, max(Y[0], 1e-2), self.albedo, self.tidally_locked)
             return T - T_runaway
         event_hothouse.terminal = True
+        event_hothouse.direction = 1  # only fire when T crosses upward through T_runaway
 
         def event_acid_ocean(t, Y):
-            if Y[0] < P_CO2_max:
-                return 1.0
-            return getattr(self, '_SI', {}).get('Calcite', 0.0) - SI_acid_threshold
+            return P_CO2_acid_threshold - Y[0]
         event_acid_ocean.terminal = True
+        event_acid_ocean.direction = -1  # only fire when P_CO2 crosses upward through threshold
 
         atol = np.ones_like(Y0) * 1e-6
         atol[0] = 1.0   # P_CO2 in Pa
         atol[1] = 1.0   # P_H2O in Pa
 
+        chem_significant = 1e-7  # mol/kgw
+
         def event_converged(t, Y):
-            F_net = getattr(self, '_F_net', None)
-            if F_net is None:
+            b = Y[2:]
+            mask = b > chem_significant
+            if not np.any(mask):
                 return 1.0
-            b = np.maximum(Y[2:], atol[2:])
-            max_fractional_rate = np.max(np.abs(F_net) / b)
+            try:
+                dYdt = self.dY_dt(t, Y)
+            except ChemistryError:
+                return 1.0
+            F_net = dYdt[2:]
+            max_fractional_rate = np.max(np.abs(F_net[mask]) / b[mask])
             return max_fractional_rate - convergence_rate
         event_converged.terminal = True
+        event_converged.direction = -1
 
         N = len(Y0)
 
@@ -168,11 +176,6 @@ class Planet:
 
             jac = np.zeros((N, N))
 
-            # Per-variable absolute floors, set to roughly the solver atol / 10 for
-            # pressures and just above the trace_approximation threshold (1e-9 mol/kgw)
-            # for ocean concentrations.  A uniform floor of 1e-5 was far too large
-            # for trace elements (Al, Fe ~ 1e-8): it caused y_minus to go negative and
-            # get clipped to 1e-9, making the finite difference wildly inaccurate.
             eps_abs = np.empty(N)
             eps_abs[0] = 0.1      # P_CO2  [Pa]   (atol=1 Pa)
             eps_abs[1] = 0.1      # P_H2O  [Pa]
@@ -192,8 +195,11 @@ class Planet:
                 y_plus[j] += delta[j]
                 y_minus[j] -= delta[j]
 
-                f_plus = self.dY_dt(t, y_plus)
-                f_minus = self.dY_dt(t, y_minus)
+                try:
+                    f_plus = self.dY_dt(t, y_plus)
+                    f_minus = self.dY_dt(t, y_minus)
+                except ChemistryError:
+                    continue
 
                 jac[:, j] = (f_plus - f_minus) / (2 * delta[j])
 
@@ -210,17 +216,20 @@ class Planet:
             rtol=1e-3,
             atol=atol,
             jac=macro_jacobian,
-            events=[event_snowball, event_hothouse, event_acid_ocean],
+            events=[event_snowball, event_hothouse, event_acid_ocean, event_converged],
         )
 
         end = time.time()
 
         print()
 
-        event_names = ['snowball', 'hothouse', 'acid_ocean']
+        event_names = ['snowball', 'hothouse', 'acid_ocean', 'converged']
         for name, t_ev in zip(event_names, sol.t_events):
             if len(t_ev) > 0:
                 print(f'Terminated: {name} at t = {t_ev[0]/YR:.3e} yr')
+
+        if sol.t[-1] == t_end:
+            print(f'Simulation time out at t = {t_end/YR:.3e} yr')
 
         print(f'Simulation time: {end - start:.0f} s')
         print(f'Y: {sol.y[2:, -1]} mol/kgw')
@@ -234,10 +243,9 @@ class Planet:
         for i in range(len(sol.y[2:, 0])):
             b = sol.y[i+2, :]
             db = np.gradient(b)
-            flux = ((db / dt) / b) * 1e9
+            b_safe = np.where(np.abs(b) > 1e-30, b, np.nan)
+            flux = ((db / dt) / b_safe) * 1e9
 
-            print(flux[-20:-1])
-            
             plt.plot(t, flux)
 
         plt.axhline(0, color='black', linestyle='--')
@@ -253,10 +261,10 @@ if __name__ == '__main__':
     OCEAN_DEPTH = 3000          # m
     TECTONICS = 1.0
 
-    instellation = [0.8, 1.0, 1.2]
+    instellation = [0.4, 0.6, 0.8, 1.0, 1.2]
 
     for s in instellation:
         print(f's = {s}')
-        p1 = Planet(M_EARTH, R_EARTH, BACKGROUND_PRESSURE, s, 1.0, 3000, name=f'test_s_{s}')
+        p1 = Planet(M_EARTH, R_EARTH, BACKGROUND_PRESSURE, s, 1.0, 1.0, 3000, name=f'test_s_{s}')
         p1.time_evolve()
         print('')
