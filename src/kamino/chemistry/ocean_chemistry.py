@@ -224,9 +224,9 @@ def solve_solution(P: float, T: float, b: npt.NDArray[np.float64], pH: float | N
     p = p_HT if high_temperature else p_LT 
 
     if p.RunString(input_string) == 1:
-        print()
-        print(input_string)
-        print(p.GetErrorString())
+        # print()
+        # print(input_string)
+        # print(p.GetErrorString())
         raise ChemistryError
 
     output_dict = p.GetSelectedOutput()
