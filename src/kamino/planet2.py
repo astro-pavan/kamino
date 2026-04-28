@@ -97,6 +97,8 @@ class Planet:
         with open(filename, 'w') as f:
             json.dump(planet_config, f, indent=4)
 
+        self._calcite_SI = -10
+
     def dY_dt(self, t, Y):
 
         P_CO2 = Y[0]
@@ -166,6 +168,9 @@ class Planet:
 
         self._T = T_surface
         self._pH = pH
+        self._calcite_SI = calcite_SI
+        if calcite_SI >= 0:
+            self._calcite_first_precipitated_time = min(self._calcite_first_precipitated_time, t)
 
         return dYdt
 
@@ -180,22 +185,64 @@ class Planet:
         T_runaway = 350
         T_snowball = 260
         P_CO2_acid_threshold = 5e5   # Pa (5 bar)
+        min_time = 1e6 * YR
+
+        self._calcite_first_precipitated_time = np.inf
 
         def event_snowball(t, Y):
-            if Y[0] < P_CO2_max:
+            if t < min_time:
                 return 1.0
-            T = get_T_surface(self.instellation, max(Y[0], 1e-2), self.albedo, self.tidally_locked)
-            return T - T_snowball
+            P_CO2 = np.clip(Y[0], 0, 1e6)
+            T_surface = get_T_surface(self.instellation, max(P_CO2, 1e-2), self.albedo, self.tidally_locked)
+            if T_surface >= T_snowball:
+                return T_surface - T_snowball  # warm — return early without chemistry
+            # T is below snowball threshold: only fire if carbonate cycle is active
+            P_H2O = np.maximum(Y[1], 0)
+            b_ocean = np.maximum(Y[2:], 0.0)
+            P_surface = self.P_background + P_CO2 + P_H2O
+            T_seafloor = np.maximum(1.02 * T_surface - 16.7, 274)
+            P_pore = P_surface + 1000 * self.gravity * self.ocean_depth
+            try:
+                _, _, SI = get_precipitation(P_pore, T_seafloor, b_ocean,
+                                             precipitating_minerals=self.precipitating_minerals,
+                                             precipitation_timescale=tau_prec)
+                if SI['Calcite'] < 0:
+                    return 1.0  # calcite undersaturated — carbonate cycle not yet established
+            except ChemistryError:
+                return 1.0
+            return T_surface - T_snowball
         event_snowball.terminal = True
+        event_snowball.direction = -1  # only fire when T crosses downward through T_snowball
 
         def event_hothouse(t, Y):
+            if t < min_time:
+                return 1.0
             T = get_T_surface(self.instellation, max(Y[0], 1e-2), self.albedo, self.tidally_locked)
             return T - T_runaway
         event_hothouse.terminal = True
         event_hothouse.direction = 1  # only fire when T crosses upward through T_runaway
 
         def event_acid_ocean(t, Y):
-            return P_CO2_acid_threshold - Y[0]
+            if t < min_time:
+                return 1.0
+            P_CO2 = np.clip(Y[0], 0, 1e6)
+            if P_CO2 < P_CO2_acid_threshold:
+                return 1.0  # cheap early exit: P_CO2 too low to be acid ocean
+            P_H2O = np.maximum(Y[1], 0)
+            b_ocean = np.maximum(Y[2:], 0.0)
+            P_surface = self.P_background + P_CO2 + P_H2O
+            T_surface = get_T_surface(self.instellation, max(P_CO2, 1e-2), self.albedo, self.tidally_locked)
+            T_seafloor = np.maximum(1.02 * T_surface - 16.7, 274)
+            P_pore = P_surface + 1000 * self.gravity * self.ocean_depth
+            try:
+                _, _, SI = get_precipitation(P_pore, T_seafloor, b_ocean,
+                                             precipitating_minerals=self.precipitating_minerals,
+                                             precipitation_timescale=tau_prec)
+                if SI['Calcite'] >= 0:
+                    return 1.0  # calcite is saturated — ocean has carbonate buffer
+            except ChemistryError:
+                return 1.0
+            return P_CO2_acid_threshold - P_CO2
         event_acid_ocean.terminal = True
         event_acid_ocean.direction = -1  # only fire when P_CO2 crosses upward through threshold
 
@@ -204,11 +251,16 @@ class Planet:
         atol[1] = 1.0   # P_H2O in Pa
 
         chem_significant = 1e-7  # mol/kgw
+        min_time_frozen = 1e8 * YR  # 100 Myr: if no carbonate cycle by here, ocean is frozen
 
         def event_converged(t, Y):
+            if t < min_time:
+                return 1.0
             b = Y[2:]
             mask = b > chem_significant
             if not np.any(mask):
+                if t > min_time_frozen and t < self._calcite_first_precipitated_time:
+                    return -1.0  # frozen: carbonate cycle never established after 100 Myr
                 return 1.0
             try:
                 dYdt = self.dY_dt(t, Y)
