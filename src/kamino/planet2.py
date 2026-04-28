@@ -31,7 +31,9 @@ class Planet:
             land_fraction: float=0.0,
             crust_carbonate_content: float=0.0,
             reverse_weathering: bool=False,
-            name: str='planet'):        
+            verbose: bool=False,
+            name: str='planet'
+            ):
 
         self.name = name
         self.mass = mass
@@ -93,9 +95,11 @@ class Planet:
             "reverse_weathering": self._input_reverse_Weathering
         }
 
-        filename = f"{output_path}{self.name}_config.json"
-        with open(filename, 'w') as f:
+        self._output_filename = f"{output_path}{self.name}.json"
+        with open(self._output_filename, 'w') as f:
             json.dump(planet_config, f, indent=4)
+
+        self.verbose = verbose
 
         self._calcite_SI = -10
 
@@ -145,7 +149,7 @@ class Planet:
             F_diss = (weathering_flux * self.surface_area) / self.ocean_water_mass
             F_net = F_vol + F_prec + F_diss
         except ChemistryError:
-            # Chemistry has left the valid domain (typically high P_CO2 where PHREEQC cannot converge). 
+            # Chemistry has left the valid domain (typically high P_CO2 where PHREEQC cannot converge).
             # Return pure outgassing so LSODA gets a finite derivative and the acid_ocean event can terminate cleanly.
             dYdt = np.zeros_like(Y)
             dYdt[2:] = F_vol
@@ -157,6 +161,8 @@ class Planet:
         dYdt[0] = (P_CO2_new - P_CO2) / tau_atm
         dYdt[1] = (P_H2O_new - P_H2O) / tau_atm
 
+        F_net[b_ocean <= 0.0] = np.maximum(F_net[b_ocean <= 0.0], 0.0)
+
         dYdt[2:] = F_net
         self._F_net = F_net
 
@@ -164,7 +170,8 @@ class Planet:
         carbon = Y[3]
         calcite_SI = SI['Calcite']
 
-        print(f't = {t/YR:.4e} yr  T = {T_surface:.1f}  P_CO2 = {P_CO2 / 1e5:.1e} bar  pH = {pH:.1f}  Calcite SI = {calcite_SI:.1f}  C flux = {(carbon_flux / carbon) * 1e9 * YR:.1e} / Gyr  ', end='\r')
+        if self.verbose:
+            print(f't = {t/YR:.4e} yr  T = {T_surface:.1f}  P_CO2 = {P_CO2 / 1e5:.1e} bar  pH = {pH:.1f}  Calcite SI = {calcite_SI:.1f}  C flux = {(carbon_flux / carbon) * 1e9 * YR:.1e} / Gyr  ', end='\r')
 
         self._T = T_surface
         self._pH = pH
@@ -174,7 +181,7 @@ class Planet:
 
         return dYdt
 
-    def time_evolve(self, t_end=2e9 * YR, jac_epsilon=0.01, convergence_rate = 0.01 / (1e9 * YR)):
+    def time_evolve(self, t_end=2e9 * YR, jac_epsilon=0.01):
 
         Y0 = np.zeros(elements.shape[0] + 2)
 
@@ -186,6 +193,7 @@ class Planet:
         T_snowball = 260
         P_CO2_acid_threshold = 5e5   # Pa (5 bar)
         min_time = 1e6 * YR
+        convergence_rate = 0.1 / (1e9 * YR)
 
         self._calcite_first_precipitated_time = np.inf
 
@@ -194,25 +202,9 @@ class Planet:
                 return 1.0
             P_CO2 = np.clip(Y[0], 0, 1e6)
             T_surface = get_T_surface(self.instellation, max(P_CO2, 1e-2), self.albedo, self.tidally_locked)
-            if T_surface >= T_snowball:
-                return T_surface - T_snowball  # warm — return early without chemistry
-            # T is below snowball threshold: only fire if carbonate cycle is active
-            P_H2O = np.maximum(Y[1], 0)
-            b_ocean = np.maximum(Y[2:], 0.0)
-            P_surface = self.P_background + P_CO2 + P_H2O
-            T_seafloor = np.maximum(1.02 * T_surface - 16.7, 274)
-            P_pore = P_surface + 1000 * self.gravity * self.ocean_depth
-            try:
-                _, _, SI = get_precipitation(P_pore, T_seafloor, b_ocean,
-                                             precipitating_minerals=self.precipitating_minerals,
-                                             precipitation_timescale=tau_prec)
-                if SI['Calcite'] < 0:
-                    return 1.0  # calcite undersaturated — carbonate cycle not yet established
-            except ChemistryError:
-                return 1.0
             return T_surface - T_snowball
         event_snowball.terminal = True
-        event_snowball.direction = -1  # only fire when T crosses downward through T_snowball
+        event_snowball.direction = -1
 
         def event_hothouse(t, Y):
             if t < min_time:
@@ -220,31 +212,14 @@ class Planet:
             T = get_T_surface(self.instellation, max(Y[0], 1e-2), self.albedo, self.tidally_locked)
             return T - T_runaway
         event_hothouse.terminal = True
-        event_hothouse.direction = 1  # only fire when T crosses upward through T_runaway
+        event_hothouse.direction = 1
 
         def event_acid_ocean(t, Y):
             if t < min_time:
                 return 1.0
-            P_CO2 = np.clip(Y[0], 0, 1e6)
-            if P_CO2 < P_CO2_acid_threshold:
-                return 1.0  # cheap early exit: P_CO2 too low to be acid ocean
-            P_H2O = np.maximum(Y[1], 0)
-            b_ocean = np.maximum(Y[2:], 0.0)
-            P_surface = self.P_background + P_CO2 + P_H2O
-            T_surface = get_T_surface(self.instellation, max(P_CO2, 1e-2), self.albedo, self.tidally_locked)
-            T_seafloor = np.maximum(1.02 * T_surface - 16.7, 274)
-            P_pore = P_surface + 1000 * self.gravity * self.ocean_depth
-            try:
-                _, _, SI = get_precipitation(P_pore, T_seafloor, b_ocean,
-                                             precipitating_minerals=self.precipitating_minerals,
-                                             precipitation_timescale=tau_prec)
-                if SI['Calcite'] >= 0:
-                    return 1.0  # calcite is saturated — ocean has carbonate buffer
-            except ChemistryError:
-                return 1.0
-            return P_CO2_acid_threshold - P_CO2
+            return P_CO2_acid_threshold - np.clip(Y[0], 0, None)
         event_acid_ocean.terminal = True
-        event_acid_ocean.direction = -1  # only fire when P_CO2 crosses upward through threshold
+        event_acid_ocean.direction = -1
 
         atol = np.ones_like(Y0) * 1e-6
         atol[0] = 1.0   # P_CO2 in Pa
@@ -256,18 +231,22 @@ class Planet:
         def event_converged(t, Y):
             if t < min_time:
                 return 1.0
+            P_CO2 = np.clip(Y[0], 0, 1e6)
+            T_surface = get_T_surface(self.instellation, max(P_CO2, 1e-2), self.albedo, self.tidally_locked)
+            if T_surface < T_snowball:
+                return 1.0  # snowball conditions — defer to event_snowball
             b = Y[2:]
             mask = b > chem_significant
             if not np.any(mask):
-                if t > min_time_frozen and t < self._calcite_first_precipitated_time:
-                    return -1.0  # frozen: carbonate cycle never established after 100 Myr
-                return 1.0
+                # No mutable-state guard here: purely a function of (t, Y)
+                return min_time_frozen - t
             try:
                 dYdt = self.dY_dt(t, Y)
             except ChemistryError:
                 return 1.0
             F_net = dYdt[2:]
-            max_fractional_rate = np.max(np.abs(F_net[mask]) / b[mask])
+            denom = np.maximum(b[mask], 1e-6)
+            max_fractional_rate = np.max(np.abs(F_net[mask]) / denom)
             return max_fractional_rate - convergence_rate
         event_converged.terminal = True
         event_converged.direction = -1
@@ -286,7 +265,7 @@ class Planet:
             delta = np.maximum(jac_epsilon * np.abs(y), eps_abs)
 
             for j in range(N):
-                
+
                 if j == 1:
                     jac[1, 1] = -1.0 / tau_atm
                     continue
@@ -306,7 +285,7 @@ class Planet:
                 jac[:, j] = (f_plus - f_minus) / (2 * delta[j])
 
             return jac
-        
+
         start = time.time()
 
         sol = solve_ivp(
@@ -323,32 +302,32 @@ class Planet:
 
         end = time.time()
 
-        print()
-
         event_names = ['snowball', 'hothouse', 'acid_ocean', 'converged']
-        for name, t_ev in zip(event_names, sol.t_events):
-            if len(t_ev) > 0:
-                print(f'Terminated: {name} at t = {t_ev[0]/YR:.3e} yr')
 
-        if sol.t[-1] == t_end:
-            print(f'Simulation time out at t = {t_end/YR:.3e} yr')
-
-        print(f'Simulation time: {end - start:.0f} s')
-        print(f'Y: {sol.y[2:, -1]} mol/kgw')
-
+        sol.y = np.maximum(sol.y, 0.0)
         time_steps = sol.t.tolist()
         state_variables = sol.y.tolist()
-        
-        events_dict = {}
-        event_names = ['snowball', 'hothouse', 'acid_ocean', 'converged']
-        for name, t_ev in zip(event_names, sol.t_events):
-            events_dict[name] = t_ev.tolist()
 
-        results_data = {
+        if sol.t[-1] >= t_end:
+            termination = "timeout"
+        elif sol.status == 1:
+            termination = next(name for name, t_ev in zip(event_names, sol.t_events) if len(t_ev) > 0)
+        else:
+            termination = "solver_failure"
+
+        if self.verbose:
+            print()
+            print(f'Terminated: {termination} at t = {sol.t[-1]/YR:.3e} yr')
+            print(f'Simulation time: {end - start:.0f} s')
+            print(f'Y: {sol.y[2:, -1]} mol/kgw')
+
+        with open(self._output_filename, 'r') as f:
+            output_data = json.load(f)
+
+        output_data.update({
             "simulation_time_seconds": end - start,
-            "status": sol.status,
-            "message": sol.message,
-            "events_triggered": events_dict,
+            "termination": termination,
+            "end_time_yr": sol.t[-1] / YR,
             "T": self._T,
             "P_CO2": sol.y[0, -1] / 1e5,
             "pH": self._pH,
@@ -356,13 +335,13 @@ class Planet:
                 "time": time_steps,
                 "y": state_variables
             }
-        }
+        })
 
-        results_filename = f"{output_path}{self.name}_results.json"
-        with open(results_filename, 'w') as f:
-            json.dump(results_data, f, indent=4)
-            
-        print(f"Results successfully saved to {results_filename}")
+        with open(self._output_filename, 'w') as f:
+            json.dump(output_data, f, indent=4)
+
+        if self.verbose:
+            print(f"Results successfully saved to {self._output_filename}")
 
 
 
