@@ -31,19 +31,21 @@ def main():
     instellation = [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4]
     outgassing = [0.01, 0.03, 0.1, 0.3, 1, 3, 10]
     crust_production_rate = [0.01, 0.03, 0.1, 0.3, 1, 3, 10]
+    ocean_depth = [3000]
 
     # Iterate through all combinations of the parameters
-    for s, o, c in itertools.product(instellation, outgassing, crust_production_rate):
+    for s, o, c, d in itertools.product(instellation, outgassing, crust_production_rate, ocean_depth):
         
         # Construct a unique name for each simulation
-        run_name = f'planet_s_{s}_out_{o}_crust_{c}'
+        run_name = f'planet_s_{s}_out_{o}_crust_{c}_depth_{d}'
         if args.reverse_weathering:
             run_name += '_rw'
         if args.crust_carbonate_fraction > 0.0:
             run_name += f'_carb_{args.crust_carbonate_fraction}'
         
+        print()
         print(f"--- Starting: {run_name} ---")
-        print(f"Instellation: {s}, Outgassing: {o}, Crust Production: {c}")
+        print(f"Instellation: {s}, Outgassing: {o}, Crust Production: {c}, Ocean Depth {d}")
         print(f"Reverse Weathering: {args.reverse_weathering}, Crust Carbonate Content: {args.crust_carbonate_fraction}")
         
         try:
@@ -55,7 +57,7 @@ def main():
                 instellation=s,
                 crust_production_rate=c,
                 outgassing=o,
-                ocean_depth=OCEAN_DEPTH,
+                ocean_depth=d,
                 crust_carbonate_content=args.crust_carbonate_fraction,
                 reverse_weathering=args.reverse_weathering,
                 name=run_name
@@ -65,8 +67,10 @@ def main():
             p.time_evolve()
             
         except Exception as e:
+            print()
             print(f"Simulation failed for {run_name} with error: {e}")
-            
+        
+        print()
         print(f"--- Finished: {run_name} ---\n")
 
 
