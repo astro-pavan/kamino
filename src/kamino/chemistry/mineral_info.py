@@ -28,6 +28,6 @@ hydrothermal_composition = {m: v for m, v in basalt_composition.items()
 
 carbonate_minerals = ['Calcite', 'Magnesite', 'Siderite', 'Dolomite']
 secondary_sink_minerals = ['Kaolinite', 'Quartz', 'Goethite']
-reverse_weathering_minerals = ['Smectite-high-Fe-Mg', 'Sepiolite']
+reverse_weathering_minerals = ['Sepiolite']
 
 hydrothermal_mineral_string = ' '.join(hydrothermal_minerals)

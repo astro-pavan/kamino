@@ -255,14 +255,23 @@ def get_b_eq(P: float, T: float, P_CO2: float, composition: dict[str, float], b_
 
     b_eq = np.zeros(elements.shape)
 
-    # These minerals cause problems for the equilbrium calculations
-    _problematic = {'Anorthite'} if high_temperature else {'Anorthite', 'Forsterite'}
-    
+    # Carbonate minerals are excluded: CO2(g) already constrains carbonate chemistry,
+    # so adding them as equilibriating phases is redundant and causes PHREEQC to
+    # attempt dissolving 100 mol stocks, driving Si/ionic-strength out of convergence range.
+    # Their kinetic contribution is captured by get_k / k_primary.
+    _excluded = set(carbonate_minerals)
+
+    # These silicate minerals cause problems for the equilibrium calculations at low T
+    if not high_temperature:
+        _excluded |= {'Anorthite', 'Forsterite'}
+    else:
+        _excluded.add('Anorthite')
+
     # These minerals cause problems with oxic conditions
     if fO2 > 0:
-        _problematic.add('Fayalite')
+        _excluded.add('Fayalite')
 
-    equilibrium_minerals = [m for m in composition.keys() if m not in _problematic]
+    equilibrium_minerals = [m for m in composition.keys() if m not in _excluded]
 
     b = b_input if b_input is not None else np.array([])
 

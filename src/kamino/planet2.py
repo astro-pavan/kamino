@@ -48,11 +48,11 @@ class Planet:
         self.crust_production_rate = EARTH_CRUST_PRODUCTION_RATE_PER_AREA * crust_production_rate
         self.hydrothermal_flux = EARTH_HYDROTHERMAL_FLUX_PER_AREA * crust_production_rate
 
-        self.crust_composition = basalt_composition
+        self.crust_composition = basalt_composition.copy()
 
         if crust_carbonate_content > 0:
-            for mineral, fraction in self.crust_composition.items():
-                self.crust_composition[mineral] *= (1 - crust_carbonate_content) * fraction
+            for mineral in self.crust_composition:
+                self.crust_composition[mineral] *= (1 - crust_carbonate_content)
             self.crust_composition['Calcite'] = crust_carbonate_content
 
         self.precipitating_minerals = carbonate_minerals + secondary_sink_minerals
@@ -135,8 +135,10 @@ class Planet:
 
         F_vol = self.outgassing_flux / self.ocean_water_mass
 
+        self._T = T_surface
+
         try:
-            F_prec, pH, SI = get_precipitation(P_pore, T_seafloor, b_ocean, precipitating_minerals=carbonate_minerals + secondary_sink_minerals, precipitation_timescale=tau_prec)
+            F_prec, pH, SI = get_precipitation(P_pore, T_seafloor, b_ocean, precipitating_minerals=self.precipitating_minerals, precipitation_timescale=tau_prec)
             self._pH = pH
             self._SI = SI
 
@@ -173,7 +175,6 @@ class Planet:
         if self.verbose:
             print(f't = {t/YR:.4e} yr  T = {T_surface:.1f}  P_CO2 = {P_CO2 / 1e5:.1e} bar  pH = {pH:.1f}  Calcite SI = {calcite_SI:.1f}  C flux = {(carbon_flux / carbon) * 1e9 * YR:.1e} / Gyr  ', end='\r')
 
-        self._T = T_surface
         self._pH = pH
         self._calcite_SI = calcite_SI
         if calcite_SI >= 0:
@@ -196,6 +197,8 @@ class Planet:
         convergence_rate = 0.1 / (1e9 * YR)
 
         self._calcite_first_precipitated_time = np.inf
+        self._T = np.nan
+        self._pH = np.nan
 
         def event_snowball(t, Y):
             if t < min_time:
@@ -355,6 +358,6 @@ if __name__ == '__main__':
 
     for s in instellation:
         print(f's = {s}')
-        p1 = Planet(M_EARTH, R_EARTH, BACKGROUND_PRESSURE, s, 1.0, 1.0, 3000, name=f'test_s_{s}')
+        p1 = Planet(M_EARTH, R_EARTH, BACKGROUND_PRESSURE, s, 1.0, 1.0, 3000, name=f'test_s_{s}', reverse_weathering=True, verbose=True)
         p1.time_evolve()
         print('')

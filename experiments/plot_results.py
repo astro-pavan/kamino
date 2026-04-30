@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import matplotlib.patches as mpatches
 
-DEFAULT_OUTPUT_PATH = '/home/pt426/kamino_experiments/'
+DEFAULT_OUTPUT_PATH = '/home/pavan/PhD/kamino_experiments/'
 
 TERM_COLORS = {
     'snowball':   '#5b9bd5',
@@ -45,6 +45,7 @@ def load_data(output_path):
             'crust_production': float(d['crust_production_rate']),
             'reverse_weathering': bool(d.get('reverse_weathering', False)),
             'crust_carbonate':  float(d.get('crust_carbonate_content', 0.0)),
+            'ocean_depth':      float(d["ocean_depth"]),
             'termination':      d['termination'],
             'end_time_yr':      d.get('end_time_yr', np.nan),
             'T':                d.get('T', np.nan),
@@ -57,7 +58,7 @@ def load_data(output_path):
 
 
 def _base(df):
-    return df[~df['reverse_weathering'] & (df['crust_carbonate'] == 0.0)]
+    return df[~df['reverse_weathering'] & (df['crust_carbonate'] == 0.0) & (df['ocean_depth'] == 3000) & (df['outgassing'] > 0)]
 
 
 def plot_termination_map(df, output_path):
@@ -264,6 +265,185 @@ def plot_heatmaps(df, output_path):
         print(f"Saved {path}")
 
 
+def plot_zero_outgassing_carb01(df, output_path):
+    """T, P_CO2, pH vs instellation for outgassing=0, crust_carbonate=0.1, coloured by crust rate."""
+    subset = df[
+        (df['outgassing'] == 0.0) &
+        (df['crust_carbonate'] == 0.1) &
+        (df['ocean_depth'] == 3000)
+    ]
+    if subset.empty:
+        print("No data for out=0, carb=0.1 — skipping.")
+        return
+
+    crust_rates = sorted(subset['crust_production'].unique())
+    norm = mcolors.LogNorm(vmin=min(crust_rates), vmax=max(crust_rates))
+    cmap = plt.get_cmap('viridis')
+    marker_map = {'snowball': 'v', 'hothouse': '^', 'acid_ocean': 's'}
+
+    fig, axes = plt.subplots(3, 1, figsize=(7, 9), sharex=True)
+    fig.subplots_adjust(hspace=0.05, right=0.84)
+
+    for c in crust_rates:
+        group = subset[subset['crust_production'] == c].sort_values('instellation')
+        if group.empty:
+            continue
+        color = cmap(norm(c))
+
+        hab = group[group['termination'].isin(HABITABLE)]
+        for ax, col in zip(axes, ['T', 'P_CO2', 'pH']):
+            if not hab.empty:
+                ax.plot(hab['instellation'], hab[col], color=color, linewidth=1.8, zorder=3)
+                ax.scatter(hab['instellation'], hab[col], color=color, s=28, zorder=4)
+
+        for _, row in group[~group['termination'].isin(HABITABLE)].iterrows():
+            marker = marker_map.get(row['termination'], 'x')
+            ec = TERM_COLORS.get(row['termination'], 'k')
+            for ax, col in zip(axes, ['T', 'P_CO2', 'pH']):
+                val = row[col]
+                if np.isfinite(val):
+                    ax.scatter(row['instellation'], val, marker=marker,
+                               s=55, color=ec, zorder=4, linewidths=1.2)
+
+    axes[0].set_ylabel('Temperature (K)')
+    axes[0].axhspan(T_SNOWBALL - 20, T_SNOWBALL, color=TERM_COLORS['snowball'], alpha=0.12)
+    axes[0].axhspan(T_RUNAWAY - 10,  T_RUNAWAY,  color=TERM_COLORS['hothouse'],  alpha=0.12)
+    axes[0].set_ylim(235, 360)
+
+    axes[1].set_ylabel('P_CO₂ (bar)')
+    axes[1].set_yscale('log')
+    axes[1].set_ylim(1e-8, 20)
+
+    axes[2].set_ylabel('Ocean pH')
+    axes[2].set_xlabel('Instellation (S/S₀)')
+    axes[2].set_ylim(4.5, 9.5)
+
+    for ax in axes:
+        ax.grid(True, linestyle='--', alpha=0.4)
+        ax.set_xlim(0.2, 1.5)
+
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])
+    cbar_ax = fig.add_axes([0.86, 0.12, 0.03, 0.76])
+    cbar = fig.colorbar(sm, cax=cbar_ax)
+    cbar.set_label('Crust production rate (×Earth)')
+    cbar.set_ticks(crust_rates)
+    cbar.set_ticklabels([f'{v}×' for v in crust_rates])
+
+    for term, marker in marker_map.items():
+        axes[0].scatter([], [], marker=marker, color=TERM_COLORS[term],
+                        s=50, label=TERM_LABELS[term])
+    axes[0].legend(fontsize=7, loc='upper left')
+
+    fig.suptitle('Zero Outgassing, 10% Carbonate Crust (ocean depth 3000 m)',
+                 fontsize=13, fontweight='bold')
+    path = os.path.join(output_path, 'lines_out0_carb01.png')
+    fig.savefig(path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f"Saved {path}")
+
+def plot_ocean_depth_effect(df, output_path):
+    """T, P_CO2, pH vs instellation for Earth-like tectonics, coloured by ocean depth."""
+    # Filter for standard outgassing and crust production to isolate the ocean depth effect
+    subset = df[
+        (df['outgassing'] == 1.0) &
+        (df['crust_production'] == 1.0) &
+        (~df['reverse_weathering']) &
+        (df['crust_carbonate'] == 0.0)
+    ]
+    
+    if subset.empty:
+        print("No standard Earth-like runs found to plot the ocean depth effect — skipping.")
+        return
+
+    depths = sorted(subset['ocean_depth'].unique())
+    
+    # Use LogNorm if there's a wide range of depths, otherwise use linear Normalize
+    if len(depths) > 1 and (max(depths) / max(1, min(depths))) >= 10:
+        norm = mcolors.LogNorm(vmin=min(depths), vmax=max(depths))
+    else:
+        norm = mcolors.Normalize(vmin=min(depths), vmax=max(depths))
+        
+    cmap = plt.get_cmap('viridis')
+    marker_map = {'snowball': 'v', 'hothouse': '^', 'acid_ocean': 's'}
+
+    fig, axes = plt.subplots(3, 1, figsize=(7, 9), sharex=True)
+    fig.subplots_adjust(hspace=0.05, right=0.84)
+
+    for d in depths:
+        group = subset[subset['ocean_depth'] == d].sort_values('instellation')
+        if group.empty:
+            continue
+        color = cmap(norm(d))
+
+        # Plot habitable continuous lines
+        hab = group[group['termination'].isin(HABITABLE)]
+        for ax, col in zip(axes, ['T', 'P_CO2', 'pH']):
+            if not hab.empty:
+                ax.plot(hab['instellation'], hab[col], color=color, linewidth=1.8, zorder=3)
+                ax.scatter(hab['instellation'], hab[col], color=color, s=28, zorder=4)
+
+        # Plot non-habitable specific markers
+        for _, row in group[~group['termination'].isin(HABITABLE)].iterrows():
+            marker = marker_map.get(row['termination'], 'x')
+            ec = TERM_COLORS.get(row['termination'], 'k')
+            for ax, col in zip(axes, ['T', 'P_CO2', 'pH']):
+                val = row[col]
+                if np.isfinite(val):
+                    ax.scatter(row['instellation'], val, marker=marker,
+                               s=55, color=ec, zorder=4, linewidths=1.2)
+
+    # Styling Axes (Mirroring existing structure)
+    axes[0].set_ylabel('Temperature (K)')
+    axes[0].axhspan(T_SNOWBALL - 20, T_SNOWBALL, color=TERM_COLORS['snowball'], alpha=0.12)
+    axes[0].axhspan(T_RUNAWAY - 10,  T_RUNAWAY,  color=TERM_COLORS['hothouse'],  alpha=0.12)
+    axes[0].set_ylim(235, 360)
+
+    axes[1].set_ylabel('P_CO₂ (bar)')
+    axes[1].set_yscale('log')
+    axes[1].set_ylim(1e-8, 20)
+
+    axes[2].set_ylabel('Ocean pH')
+    axes[2].set_xlabel('Instellation (S/S₀)')
+    axes[2].set_ylim(4.5, 9.5)
+
+    # Dynamic X-axis depending on the subset range
+    min_x = subset['instellation'].min()
+    max_x = subset['instellation'].max()
+    margin = (max_x - min_x) * 0.05 if not pd.isna(min_x) and max_x != min_x else 0.1
+    x_lims = (min_x - margin, max_x + margin) if not pd.isna(min_x) else (0.2, 1.5)
+
+    for ax in axes:
+        ax.grid(True, linestyle='--', alpha=0.4)
+        ax.set_xlim(*x_lims)
+
+    # Colorbar
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])
+    cbar_ax = fig.add_axes([0.86, 0.12, 0.03, 0.76])
+    cbar = fig.colorbar(sm, cax=cbar_ax)
+    cbar.set_label('Ocean Depth (m)')
+    
+    # If there are only a few depths being swept, show them explicitly on the colorbar
+    if len(depths) <= 10:
+        cbar.set_ticks(depths)
+        cbar.set_ticklabels([f'{v:g}' for v in depths])
+
+    # Legend for termination markers
+    for term, marker in marker_map.items():
+        axes[0].scatter([], [], marker=marker, color=TERM_COLORS[term],
+                        s=50, label=TERM_LABELS[term])
+    axes[0].legend(fontsize=7, loc='upper left')
+
+    fig.suptitle('Effect of Ocean Depth (Earth Tectonics Baseline)',
+                 fontsize=13, fontweight='bold')
+    
+    path = os.path.join(output_path, 'lines_ocean_depth.png')
+    fig.savefig(path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f"Saved {path}")
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Plot kamino parameter sweep results.')
     parser.add_argument('--path', default=DEFAULT_OUTPUT_PATH,
@@ -277,4 +457,6 @@ if __name__ == '__main__':
         plot_termination_map(df, args.path)
         plot_faceted_lines(df, args.path)
         plot_heatmaps(df, args.path)
+        plot_zero_outgassing_carb01(df, args.path)
+        plot_ocean_depth_effect(df, args.path)
         print("Done.")
