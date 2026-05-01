@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import matplotlib.patches as mpatches
 
-DEFAULT_OUTPUT_PATH = '/home/pavan/PhD/kamino_experiments/'
+DEFAULT_OUTPUT_PATH = '/data/pt426/kamino_experiments/'
 
 TERM_COLORS = {
     'snowball':   '#5b9bd5',
@@ -162,7 +162,7 @@ def plot_faceted_lines(df, output_path):
 
         axes[2].set_ylabel('Ocean pH')
         axes[2].set_xlabel('Instellation (S/S₀)')
-        axes[2].set_ylim(4.5, 9.5)
+        axes[2].set_ylim(6, 12)
 
         for ax in axes:
             ax.grid(True, linestyle='--', alpha=0.4)
@@ -316,7 +316,7 @@ def plot_zero_outgassing_carb01(df, output_path):
 
     axes[2].set_ylabel('Ocean pH')
     axes[2].set_xlabel('Instellation (S/S₀)')
-    axes[2].set_ylim(4.5, 9.5)
+    axes[2].set_ylim(6, 12)
 
     for ax in axes:
         ax.grid(True, linestyle='--', alpha=0.4)

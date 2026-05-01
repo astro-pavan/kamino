@@ -14,8 +14,8 @@ from kamino.utils import august_roche_magnus_formula
 
 output_path = os.path.join(os.path.dirname(__file__), '../../output/')
 
-tau_prec = 1e4 * YR
-tau_atm = 1e4 * YR
+tau_prec = 1e5 * YR
+tau_atm = 1e5 * YR
 
 class Planet:
 
@@ -97,7 +97,7 @@ class Planet:
 
         self._output_filename = f"{output_path}{self.name}.json"
         with open(self._output_filename, 'w') as f:
-            json.dump(planet_config, f, indent=4)
+            json.dump(planet_config, f, indent=0)
 
         self.verbose = verbose
 
@@ -341,7 +341,7 @@ class Planet:
         })
 
         with open(self._output_filename, 'w') as f:
-            json.dump(output_data, f, indent=4)
+            json.dump(output_data, f, indent=0)
 
         if self.verbose:
             print(f"Results successfully saved to {self._output_filename}")
