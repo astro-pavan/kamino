@@ -1,33 +1,39 @@
 import numpy as np
-import numpy.typing as npt
-from scipy.optimize import newton, bisect, brentq
-from tqdm import tqdm
+np.set_printoptions(precision=1)
+from scipy.integrate import solve_ivp
 import matplotlib.pyplot as plt
-import csv
+import time
 import json
 import os
 
 from kamino.constants import *
 from kamino.chemistry.ocean_chemistry import *
+from kamino.chemistry.mineral_info import *
 from kamino.climate.clima_interpolator import get_T_surface
-from kamino.utils import *
+from kamino.utils import august_roche_magnus_formula
 
 output_path = os.path.join(os.path.dirname(__file__), '../../output/')
 
-# these define the valid range in which T and P_CO2 can fall for calculations 
-T_min, T_max = 200, 350
-P_CO2_min, P_CO2_max = 1e-6 * 1e5, 1 * 1e5
-
-tau_prec = 1e3 * YR
-max_precipitation_frac = 0.0002
-tau_atm = 1000 * YR
-drain_fraction = 0.01
-
-t_max = 1e9 * YR
+tau_prec = 1e5 * YR
+tau_atm = 1e5 * YR
 
 class Planet:
 
-    def __init__(self, mass: float, radius: float, background_pressure: float, instellation : float, tectonics: float, ocean_depth: float, land_fraction: float=0.0, name: str='planet', use_precipitation_surrogate: bool=False, cl_chemistry: bool = False, hcl_co2_ratio: float = 0.02):        
+    def __init__(
+            self,
+            mass: float,
+            radius: float,
+            background_pressure: float,
+            instellation : float,
+            crust_production_rate: float,
+            outgassing: float,
+            ocean_depth: float,
+            land_fraction: float=0.0,
+            crust_carbonate_content: float=0.0,
+            reverse_weathering: bool=False,
+            verbose: bool=False,
+            name: str='planet'
+            ):
 
         self.name = name
         self.mass = mass
@@ -39,17 +45,30 @@ class Planet:
         self.ocean_depth = ocean_depth
         self.ocean_water_mass = self.ocean_depth * self.surface_area * 1000
 
-        self.crust_production_rate = EARTH_CRUST_PRODUCTION_RATE_PER_AREA * tectonics
-        self.hydrothermal_flux = EARTH_HYDROTHERMAL_FLUX_PER_AREA * tectonics
-        self.outgassing_flux = np.zeros(elements.shape)
-        self.outgassing_flux[1] = (EARTH_OUTGASSING / YR) * self.surface_area * tectonics
+        self.crust_production_rate = EARTH_CRUST_PRODUCTION_RATE_PER_AREA * crust_production_rate
+        self.hydrothermal_flux = EARTH_HYDROTHERMAL_FLUX_PER_AREA * crust_production_rate
 
-        self.alpha = 2
+        self.crust_composition = basalt_composition.copy()
+
+        if crust_carbonate_content > 0:
+            for mineral in self.crust_composition:
+                self.crust_composition[mineral] *= (1 - crust_carbonate_content)
+            self.crust_composition['Calcite'] = crust_carbonate_content
+
+        self.precipitating_minerals = carbonate_minerals + secondary_sink_minerals
+        if reverse_weathering:
+            self.precipitating_minerals += reverse_weathering_minerals
+
+        self.outgassing_flux = np.zeros(elements.shape)
+        self.outgassing_flux[1] = (EARTH_OUTGASSING / YR) * self.surface_area * outgassing
 
         self.tidally_locked = False
 
-        self._input_instellation = instellation  # in units of solar constant
-        self._input_tectonics = tectonics
+        self._input_instellation = instellation
+        self._input_crust_production_rate = crust_production_rate
+        self._input_outgassing = outgassing
+        self._input_crust_carbonate_content = crust_carbonate_content
+        self._input_reverse_Weathering = reverse_weathering
 
         self.land_fraction = land_fraction
         self.land_area = land_fraction * self.surface_area
@@ -62,464 +81,283 @@ class Planet:
         self.instellation = instellation * SOLAR_CONSTANT
         self.albedo = land_albedo * land_fraction + ocean_albedo * (1 - land_fraction)
 
-        self.use_precipitation_surrogate = use_precipitation_surrogate
+        planet_config = {
+            "name": self.name,
+            "mass": self.mass,
+            "radius": self.radius,
+            "background_pressure": self.P_background,
+            "ocean_depth": self.ocean_depth,
+            "land_fraction": self.land_fraction,
+            "instellation": self._input_instellation,
+            "crust_production_rate": self._input_crust_production_rate,
+            "outgassing": self._input_outgassing,
+            "crust_carbonate_content": self._input_crust_carbonate_content,
+            "reverse_weathering": self._input_reverse_Weathering
+        }
 
-    def solve_climate_from_chemistry(self, b_ocean: npt.NDArray[np.float64], T_init: float=288, P_CO2_est: float=0.0) -> tuple[float, float]:
+        self._output_filename = f"{output_path}{self.name}.json"
+        with open(self._output_filename, 'w') as f:
+            json.dump(planet_config, f, indent=0)
 
-        # Anchor P_CO2 at T_init via PHREEQC, then build a linear P_CO2(T) model
-        # using the actual PHREEQC slope.  The analytic thermo-ratio formula
-        # over-estimates dP_CO2/dT by ~40%, which makes Newton overshoot and
-        # land on spurious high-T roots (~350 K).
-        P_atm_0 = self.P_background + P_CO2_est + august_roche_magnus_formula(T_init) * self.relative_humidity
-        P_CO2_0 = get_P_CO2(P_atm_0, T_init, b_ocean)
+        self.verbose = verbose
 
-        _dT_probe = 5.0
-        P_atm_p = self.P_background + P_CO2_est + august_roche_magnus_formula(T_init + _dT_probe) * self.relative_humidity
-        P_CO2_p = get_P_CO2(P_atm_p, T_init + _dT_probe, b_ocean)
-        _slope = (P_CO2_p - P_CO2_0) / _dT_probe   # Pa / K  (real PHREEQC sensitivity)
+        self._calcite_SI = -10
 
-        def T_s_residual(T_guess):
-            if not np.isfinite(T_guess):
-                raise ValueError("T_guess is not finite")
-            T_guess = np.clip(T_guess, T_min, 500)
-            P_CO2 = max(0.0, P_CO2_0 + _slope * (T_guess - T_init))
-            T_calc = get_T_surface(self.instellation, P_CO2, self.albedo, tidally_locked=self.tidally_locked)
-            return T_guess - T_calc
+    def dY_dt(self, t, Y):
 
-        # Search for a root near T_init in progressively wider windows.
-        # This keeps the solution on the local climate branch (warm or cold)
-        # rather than letting Newton jump to a distant spurious root.
-        # The linear P_CO2 model has a cold root at T_min (where P_CO2→0),
-        # and Newton can land there if the warm root has an unstable derivative.
-        T_s = None
-        for half_width in [8.0, 18.0, 35.0, 70.0]:
-            lo = max(T_min, T_init - half_width)
-            hi = min(T_max, T_init + half_width)
-            try:
-                r_lo = T_s_residual(lo)
-                r_hi = T_s_residual(hi)
-                if r_lo * r_hi <= 0:
-                    T_s = float(brentq(T_s_residual, lo, hi, xtol=0.1, maxiter=50))
-                    break
-            except Exception:
-                pass
+        P_CO2 = Y[0]
+        P_H2O = Y[1]
+        b_ocean = Y[2:]
 
-        if T_s is None:
-            # No local root: check the global range for a genuine phase transition
-            try:
-                r_min = T_s_residual(T_min)
-                r_max = T_s_residual(T_max)
-                if r_min * r_max <= 0:
-                    T_s = float(brentq(T_s_residual, T_min, T_max, xtol=0.1))
-                elif r_max < 0:
-                    T_s = float(T_max)  # Runaway Greenhouse
-                else:
-                    T_s = float(T_min)  # Snowball
-            except Exception:
-                T_s = float(T_max)
+        # input safety
 
-        P_H2O = august_roche_magnus_formula(T_s) * self.relative_humidity  # type: ignore
-        P_atm = self.P_background + P_CO2_est + P_H2O
-        P_CO2 = get_P_CO2(P_atm, T_s, b_ocean) # type: ignore
+        P_CO2 = np.clip(P_CO2, 0, 1e6)
+        P_H2O = np.maximum(0, P_H2O)
+        b_ocean = np.maximum(b_ocean, 0.0)
 
-        assert ~np.isnan(T_s)
+        # atmosphere properties
 
-        return float(T_s), P_CO2 # type: ignore
-    
-    def get_seafloor_properties(self, T_s: float, P_CO2: float) -> tuple[float, float, float]:
+        P_surface = self.P_background + P_CO2 + P_H2O
+        T_surface = get_T_surface(self.instellation, P_CO2, self.albedo, self.tidally_locked)
+        P_H2O_new = august_roche_magnus_formula(T_surface)
+        P_CO2_new = get_P_CO2(P_surface, T_surface, b_ocean)
 
-        T_seafloor = 1.02 * T_s - 16.7
+        assert P_CO2_new > 0
 
-        P_H2O = august_roche_magnus_formula(T_s) * self.relative_humidity
+        # seafloor properties
+
+        T_seafloor = 1.02 * T_surface - 16.7
         P_pore = (self.P_background + P_CO2 + P_H2O) + 1000 * self.gravity * self.ocean_depth
-
-        T_seafloor = smooth_max(T_seafloor, 274)
+        T_seafloor = np.maximum(T_seafloor, 274)
         T_pore = T_seafloor + 9
 
-        return T_seafloor, T_pore, P_pore
-    
-    def _compute_fluxes_and_derivatives(self, Y, dt):
-
-        T = Y[0]
-        P_CO2 = Y[1]
-        b_ocean = smooth_max(Y[2:], np.zeros_like(Y[2:]))
-
-        # --- Atmospheric and Seafloor Properties ---
-
-        # T_new, P_CO2_new = self.solve_climate_from_chemistry(b_ocean, T_init=T, P_CO2_est=P_CO2)
-        T_new, P_CO2_new = T, P_CO2
-
-        P_H2O = august_roche_magnus_formula(T_new) * self.relative_humidity
-        P_surf = self.P_background + P_CO2_new + P_H2O
-        T_seafloor, T_pore, P_pore = self.get_seafloor_properties(T_new, P_CO2_new)
-
-        decay = np.exp(-dt / tau_atm)
-        dT_dt = (T_new - T) * (1 - decay) / dt
-        dP_CO2_dt = (P_CO2_new - P_CO2) * (1 - decay) / dt
-
-        # --- Outgassing ---
+        # ocean fluxes
 
         F_vol = self.outgassing_flux / self.ocean_water_mass
 
-        # --- Precipitation ---
+        self._T = T_surface
 
-        # Deep burial
-        delta_b_prec, pH, SI = get_precipitation(P_pore, T_seafloor, b_ocean, precipitating_minerals=carbonate_minerals + secondary_sink_minerals)
+        try:
+            F_prec, pH, SI = get_precipitation(P_pore, T_seafloor, b_ocean, precipitating_minerals=self.precipitating_minerals, precipitation_timescale=tau_prec)
+            self._pH = pH
+            self._SI = SI
 
-        # Shallow burial
-        if self.land_fraction > 0:
-            delta_b_shallow, _, _ = get_precipitation(P_surf, T_new, b_ocean, precipitating_minerals=carbonate_minerals)
-            delta_b_prec += self.land_fraction * delta_b_shallow
+            ocean_water_per_area = self.ocean_depth * 1000.0
+            F_carb, F_sil = max(0.0, -F_prec[c_idx]), max(0.0, -F_prec[si_idx])
 
-        # Exact exponential relaxation toward PHREEQC equilibrium.
-        fraction = 1.0 - np.exp(-dt / tau_prec)
-        F_prec = delta_b_prec * fraction / dt # this is negative
+            S_sed = (F_carb * 0.100 / 2710.0 + F_sil * 0.060 / 2650.0) * ocean_water_per_area
+            weathering_flux, _ = get_weathering_flux(P_pore, T_pore, P_CO2, b_ocean, None, self.crust_production_rate, crust_composition=self.crust_composition, clog=False, sedimentation_rate=S_sed)
 
-        # --- Weathering ---
+            F_diss = (weathering_flux * self.surface_area) / self.ocean_water_mass
+            F_net = F_vol + F_prec + F_diss
+        except ChemistryError:
+            # Chemistry has left the valid domain (typically high P_CO2 where PHREEQC cannot converge).
+            # Return pure outgassing so LSODA gets a finite derivative and the acid_ocean event can terminate cleanly.
+            dYdt = np.zeros_like(Y)
+            dYdt[2:] = F_vol
+            self._F_net = dYdt[2:]
+            return dYdt
 
-        _ocean_water_per_area = self.ocean_depth * 1000.0  
-        
-        _F_carb = max(0.0, -F_prec[c_idx])   
-        _F_sil  = max(0.0, -F_prec[si_idx])  
-        
-        S_sed = (_F_carb * 0.100 / 2710.0 + _F_sil * 0.060 / 2650.0) * _ocean_water_per_area
-        weathering_flux, w_diag = get_weathering_flux(P_pore, T_pore, P_CO2_new, b_ocean, self.alpha, self.crust_production_rate, clog=False, sedimentation_rate=S_sed)
-        F_diss = (weathering_flux * self.surface_area) / self.ocean_water_mass
-
-        if self.land_area > 0:
-            F_cont_per_area = get_continental_weathering_flux(T_new, P_CO2_new)
-            F_cont = (F_cont_per_area * self.land_area) / self.ocean_water_mass
-        else:
-            F_cont = np.zeros(len(elements))
-
-        # --- Total Flux ---
-
-        F_in = F_vol + F_diss + F_cont
-
-        dT_dt = np.minimum(dT_dt, 1 / (10000 * YR))
-        
-        F_net = F_in + F_prec
         dYdt = np.zeros_like(Y)
-        dYdt[0] = dT_dt
-        dYdt[1] = dP_CO2_dt
+
+        dYdt[0] = (P_CO2_new - P_CO2) / tau_atm
+        dYdt[1] = (P_H2O_new - P_H2O) / tau_atm
+
+        F_net[b_ocean <= 0.0] = np.maximum(F_net[b_ocean <= 0.0], 0.0)
+
         dYdt[2:] = F_net
+        self._F_net = F_net
 
-        dYdt_raw = np.zeros_like(Y)
-        dYdt_raw[0] = dT_dt
-        dYdt_raw[1] = dP_CO2_dt
-        dYdt_raw[2:] = F_in + F_prec
+        carbon_flux = dYdt[3]
+        carbon = Y[3]
+        calcite_SI = SI['Calcite']
 
-        if not hasattr(self, 'dYdt_ema'):
-            self.dYdt_ema = dYdt_raw.copy()
-            
-        # Apply EMA only to the chemical fluxes (index 2+) to kill the diode limit-cycles.
-        # 0.1 means we trust 10% of the new flux and retain 90% of the historical smoothed flux.
-        alpha_ema = 0.5
-        self.dYdt_ema[2:] = alpha_ema * dYdt_raw[2:] + (1 - alpha_ema) * self.dYdt_ema[2:]
-        self.dYdt_ema[:2] = dYdt_raw[:2]  # Do not smooth T and P_CO2
+        if self.verbose:
+            print(f't = {t/YR:.4e} yr  T = {T_surface:.1f}  P_CO2 = {P_CO2 / 1e5:.1e} bar  pH = {pH:.1f}  Calcite SI = {calcite_SI:.1f}  C flux = {(carbon_flux / carbon) * 1e9 * YR:.1e} / Gyr  ', end='\r')
 
-        # Floor check: explicitly prevent the smoothed flux from ever driving concentrations below 0
-        for j in range(2, len(Y)):
-            if Y[j] + self.dYdt_ema[j] * dt < 0:
-                self.dYdt_ema[j] = -Y[j] / dt
+        self._pH = pH
+        self._calcite_SI = calcite_SI
+        if calcite_SI >= 0:
+            self._calcite_first_precipitated_time = min(self._calcite_first_precipitated_time, t)
 
-        diagnostics = {
-            'T_new': T_new, 'P_CO2_new': P_CO2_new, 'pH': pH,
-            'T_seafloor': T_seafloor, 'T_pore': T_pore, 'P_pore': P_pore,
-            'F_vol': F_vol, 'F_diss': F_diss, 'F_prec': F_prec, 'F_cont': F_cont,
-            'delta_b_prec': delta_b_prec, 'F_net': F_net,
-            'Da': w_diag['Da'],
-            'A_reactive': w_diag['A_reactive'],
-            'supply_efficiency': w_diag['supply_efficiency']
-        }
+        return dYdt
 
-        diagnostics['F_net'] = self.dYdt_ema[2:].copy()
+    def time_evolve(self, t_end=2e9 * YR, jac_epsilon=0.01):
 
-        return self.dYdt_ema, diagnostics
-    
-    def time_evolve_to_steady_state(self, dt=1e5 * YR, tol=5e-3, check_every=100, max_steps=30000, dt_max=1e7 * YR, dt_min=100*YR, output_dir=output_path, b_ocean_init: dict | None = None, verbose: bool=False, write_csv: bool=False):
+        Y0 = np.zeros(elements.shape[0] + 2)
 
-        output_csv = os.path.join(output_dir, f'{self.name}_timeseries.csv')
-        summary_file = os.path.join(output_dir, f'{self.name}_summary.json')
+        Y0[0] = 1000
+        Y0[1] = 1000
 
-        Y = np.zeros(2 + elements.shape[0])
-        Y[0] = 300
-        Y[1] = 280e-6 * self.P_background
+        P_CO2_max = 1e6
+        T_runaway = 350
+        T_snowball = 260
+        P_CO2_acid_threshold = 5e5   # Pa (5 bar)
+        min_time = 1e6 * YR
+        convergence_rate = 0.1 / (1e9 * YR)
 
-        _trace_defaults = {
-            'Alkalinity': 1e-9,   # mol eq/kgw  — sets a valid pH baseline
-            'C':          1e-9,   # mol/kgw
-            'Ca':         1e-9,
-            'Mg':         1e-9,
-            'Si':         1e-9,
-            'Al':         1e-9,
-            'Fe':         1e-9,
-            # 'Cl':         1e-9
-        }
+        self._calcite_first_precipitated_time = np.inf
+        self._T = np.nan
+        self._pH = np.nan
 
-        for elem, val in _trace_defaults.items():
-            idx = int(np.where(elements == elem)[0][0])
-            Y[2 + idx] = val
+        def event_snowball(t, Y):
+            if t < min_time:
+                return 1.0
+            P_CO2 = np.clip(Y[0], 0, 1e6)
+            T_surface = get_T_surface(self.instellation, max(P_CO2, 1e-2), self.albedo, self.tidally_locked)
+            return T_surface - T_snowball
+        event_snowball.terminal = True
+        event_snowball.direction = -1
 
-        if b_ocean_init is not None:
-            for elem, val in b_ocean_init.items():
-                idx = int(np.where(elements == elem)[0][0])
-                Y[2 + idx] = val
+        def event_hothouse(t, Y):
+            if t < min_time:
+                return 1.0
+            T = get_T_surface(self.instellation, max(Y[0], 1e-2), self.albedo, self.tidally_locked)
+            return T - T_runaway
+        event_hothouse.terminal = True
+        event_hothouse.direction = 1
 
-        t_current = 0
-        convergence_status = 'max_steps'
-        convergence_reason = f'Max steps ({max_steps}) reached without convergence'
-        last_diagnostics = None
+        def event_acid_ocean(t, Y):
+            if t < min_time:
+                return 1.0
+            return P_CO2_acid_threshold - np.clip(Y[0], 0, None)
+        event_acid_ocean.terminal = True
+        event_acid_ocean.direction = -1
 
-        # Setup lists before the loop
-        t = []
-        P_CO2 = []
-        T = []
-        concentrations = []
-        fluxes = []
-        pH = []
+        atol = np.ones_like(Y0) * 1e-6
+        atol[0] = 1.0   # P_CO2 in Pa
+        atol[1] = 1.0   # P_H2O in Pa
 
-        if write_csv:
-            _csv_fields = (
-                ['t_Myr', 'dt_kyr', 'T', 'P_CO2', 'pH', 'rel_change', 'slowest', 'Da', 'A_reactive', 'supply_efficiency']
-                + [f'Y_{e}' for e in elements]
-                + [f'F_vol_{e}' for e in elements]
-                + [f'F_diss_{e}' for e in elements]
-                + [f'F_prec_{e}' for e in elements]
-                + [f'F_cont_{e}' for e in elements]
-                + [f'F_net_{e}' for e in elements]
-            )
-            _csv_file = open(output_csv, 'w', newline='')
-            _csv_writer = csv.DictWriter(_csv_file, fieldnames=_csv_fields)
-            _csv_writer.writeheader()
+        chem_significant = 1e-7  # mol/kgw
+        min_time_frozen = 1e8 * YR  # 100 Myr: if no carbonate cycle by here, ocean is frozen
 
-        T_current, P_CO2_current = Y[0], Y[1]
+        def event_converged(t, Y):
+            if t < min_time:
+                return 1.0
+            P_CO2 = np.clip(Y[0], 0, 1e6)
+            T_surface = get_T_surface(self.instellation, max(P_CO2, 1e-2), self.albedo, self.tidally_locked)
+            if T_surface < T_snowball:
+                return 1.0  # snowball conditions — defer to event_snowball
+            b = Y[2:]
+            mask = b > chem_significant
+            if not np.any(mask):
+                # No mutable-state guard here: purely a function of (t, Y)
+                return min_time_frozen - t
+            try:
+                dYdt = self.dY_dt(t, Y)
+            except ChemistryError:
+                return 1.0
+            F_net = dYdt[2:]
+            denom = np.maximum(b[mask], 1e-6)
+            max_fractional_rate = np.max(np.abs(F_net[mask]) / denom)
+            return max_fractional_rate - convergence_rate
+        event_converged.terminal = True
+        event_converged.direction = -1
 
-        _cfl_frac  = 0.05   # max fractional change per step (CFL target)
-        _dt_grow   = 2      # growth factor when step was safe
+        N = len(Y0)
 
-        for i in tqdm(range(max_steps)):
+        def macro_jacobian(t, y):
 
-            # --- Forward step with adaptive dt ---
+            jac = np.zeros((N, N))
 
-            dYdt, diagnostics = self._compute_fluxes_and_derivatives(Y, dt)
-            last_diagnostics = diagnostics
+            eps_abs = np.empty(N)
+            eps_abs[0] = 0.1      # P_CO2  [Pa]   (atol=1 Pa)
+            eps_abs[1] = 0.1      # P_H2O  [Pa]
+            eps_abs[2:] = 1e-9   # b_ocean [mol/kgw]  (trace_approx threshold)
 
-            # CFL: reduce dt so no concentration changes by more than _cfl_frac
-            safe_b = np.maximum(np.abs(Y[2:]), 1e-15)
-            frac_chem = np.max(np.abs(dYdt[2:]) * dt / safe_b)
-            
-            # NEW: Don't let Temperature change by more than 0.5 K per step
-            # dYdt[0] is your dT_dt
-            frac_T = np.abs(dYdt[0] * dt) / 0.5 
-            
-            # Use whichever restriction is stricter
-            frac = max(frac_chem, frac_T)
+            delta = np.maximum(jac_epsilon * np.abs(y), eps_abs)
 
-            if frac > _cfl_frac and dt > dt_min:
-                dt = max(dt * (_cfl_frac / frac), dt_min)
+            for j in range(N):
 
-            dt_applied = dt
-            Y += dYdt * dt_applied
-            Y[2:] = np.maximum(Y[2:], 0.0)
-            t_current += dt_applied
+                if j == 1:
+                    jac[1, 1] = -1.0 / tau_atm
+                    continue
 
-            P_CO2_max_threshold = 1e5
-            T_snowball_threshold = 260
-            T_moist_greenhouse_threshold = 350
-            
-            if Y[1] >= P_CO2_max_threshold and Y[0] < T_snowball_threshold:
-                print(f'\nTerminated at t = {t_current / YR / 1e6:.2f} Myr.')
-                print(f'Reason: Max CO2 greenhouse limit ({P_CO2_max_threshold/1e5:.1f} bar) reached without escaping Snowball state.')
-                convergence_status = 'snowball'
-                convergence_reason = 'Maximum CO2 greenhouse limit reached'
-                last_diagnostics = diagnostics 
-                break
+                y_plus = np.copy(y)
+                y_minus = np.copy(y)
 
-            if  Y[0] > T_moist_greenhouse_threshold:
-                print(f'\nTerminated at t = {t_current / YR / 1e6:.2f} Myr.')
-                print(f'Temperature reached moist greenhouse state.')
-                convergence_status = 'runaway'
-                convergence_reason = 'Temperature reached moist greenhouse state'
-                last_diagnostics = diagnostics 
-                break
+                y_plus[j] += delta[j]
+                y_minus[j] -= delta[j]
 
-            # Grow dt toward dt_max for next step
-            dt = min(dt_applied * _dt_grow, dt_max)
+                try:
+                    f_plus = self.dY_dt(t, y_plus)
+                    f_minus = self.dY_dt(t, y_minus)
+                except ChemistryError:
+                    continue
 
-            T_s, P_CO2_s = self.solve_climate_from_chemistry(Y[2:], T_init=T_current, P_CO2_est=P_CO2_current)
-            # Half-step blend to damp the 2-step C_chem/T oscillation.
-            # The Newton map f(T) has f'(T*)≈-1 at the fixed point, so plain
-            # iteration oscillates.  The blended map g(T)=0.5*f(T)+0.5*T has
-            # g'(T*)≈0, giving rapid convergence to the self-consistent T*.
-            T_current = 0.05 * T_s + 0.95 * T_current
-            P_CO2_current = 0.05 * P_CO2_s + 0.95 * P_CO2_current
-            Y[0] = T_current
-            Y[1] = P_CO2_current
-            b_ocean = Y[2:]
+                jac[:, j] = (f_plus - f_minus) / (2 * delta[j])
 
-            # --- Record values ---
+            return jac
 
-            t.append(t_current)
-            T.append(Y[0])
-            P_CO2.append(Y[1])
-            concentrations.append(Y[2:].copy())
-            fluxes.append(dYdt[2:].copy())
-            pH.append(diagnostics['pH'])
+        start = time.time()
 
-            # --- Calculate fluxes for convergence ---
+        sol = solve_ivp(
+            self.dY_dt,
+            (0, t_end),
+            Y0,
+            method='LSODA',
+            max_step=1e7 * YR,
+            rtol=1e-3,
+            atol=atol,
+            jac=macro_jacobian,
+            events=[event_snowball, event_hothouse, event_acid_ocean, event_converged],
+        )
 
-            F_net = diagnostics['F_net']
-            F_in = np.abs(diagnostics['F_diss']) + np.abs(diagnostics['F_vol']) + np.abs(diagnostics['F_cont'])
-            F_out = np.abs(diagnostics['F_prec'])
+        end = time.time()
 
-            # Flux-balance convergence: |F_net[i]| / (F_in[i] + F_out[i]).
-            # This is zero only when inputs exactly match outputs for every element.
-            # It is independent of how large Y has grown, so it cannot give false
-            # convergence the way a relative-drift-rate criterion can.
-            F_throughput = F_in + F_out
-            active = F_throughput > 1e-40
-            if active.any():
-                rel_imbalance = np.abs(F_net[active]) / F_throughput[active]
-                max_flux_imbalance = float(np.max(rel_imbalance))
-            else:
-                max_flux_imbalance = 0.0
+        event_names = ['snowball', 'hothouse', 'acid_ocean', 'converged']
 
-            rel_change = max_flux_imbalance   # written to CSV
+        sol.y = np.maximum(sol.y, 0.0)
+        time_steps = sol.t.tolist()
+        state_variables = sol.y.tolist()
 
-            # --- Writes to CSV file ---
-
-            row = {
-                't_Myr': f'{t_current/YR/1e6:.4f}',
-                'dt_kyr': f'{dt_applied/YR/1e3:.2f}',
-                'T': f'{Y[0]:.4f}',
-                'P_CO2': f'{Y[1]:.6e}',
-                'pH': f"{diagnostics['pH']:.4f}",
-                'rel_change': f'{rel_change:.6e}',
-                # 'slowest': slowest_label,
-                'Da': f'{diagnostics["Da"]:.6e}',
-                'A_reactive': f'{diagnostics["A_reactive"]:.6e}',
-                'supply_efficiency': f'{diagnostics["supply_efficiency"]:.4%}' # Formatted as a percentage!
-            }
-            
-            if write_csv:
-                for j, e in enumerate(elements):
-                    row[f'Y_{e}']      = f'{Y[2+j]:.6e}'
-                    row[f'F_vol_{e}']  = f'{diagnostics["F_vol"][j]:.6e}'
-                    row[f'F_diss_{e}'] = f'{diagnostics["F_diss"][j]:.6e}'
-                    row[f'F_prec_{e}'] = f'{diagnostics["F_prec"][j]:.6e}'
-                    row[f'F_cont_{e}'] = f'{diagnostics["F_cont"][j]:.6e}'
-                    row[f'F_net_{e}']  = f'{diagnostics["F_net"][j]:.6e}'
-                _csv_writer.writerow(row)
-                _csv_file.flush()
-
-            # --- Termination checks ---
-
-            if max_flux_imbalance < tol:
-                print(f'\nNormal convergence at t = {t_current / YR / 1e6:.2f} Myr.')
-                print(f'Max flux imbalance: {max_flux_imbalance:.2%}')
-                break
-
-            if t_current > t_max:
-                print('Ran out of time.')
-                break
-
+        if sol.t[-1] >= t_end:
+            termination = "timeout"
+        elif sol.status == 1:
+            termination = next(name for name, t_ev in zip(event_names, sol.t_events) if len(t_ev) > 0)
         else:
-            print(f'Max flux imbalance: {max_flux_imbalance:.2%}')
-            print('Not converged in maximum steps. Need more iterations.')
-        
-        if write_csv:
-            _csv_file.close()
-            print(f"\nTimeseries written to: {os.path.abspath(output_csv)}")
+            termination = "solver_failure"
 
-        # --- Write summary JSON ---
-        final_ocean_chemistry = {str(e): float(Y[2 + j]) for j, e in enumerate(elements)}
-        summary = {
-            'input_parameters': {
-                'name': self.name,
-                'mass_kg': float(self.mass),
-                'radius_m': float(self.radius),
-                'surface_pressure_Pa': float(self.P_background),
-                'instellation_solar': float(self._input_instellation),
-                'tectonics': float(self._input_tectonics),
-                'land_fraction': float(self.land_fraction),
-                'ocean_depth_m': float(self.ocean_depth),
-                'alpha': float(self.alpha),
-                'tidally_locked': bool(self.tidally_locked),
-            },
-            'convergence': {
-                'status': convergence_status,
-                'reason': convergence_reason,
-                'time_to_converge_Myr': float(t_current / YR / 1e6),
-                'snowball': bool(convergence_status == 'snowball'),
-                'runaway': bool(convergence_status == 'stagnated' and abs(Y[0] - T_max) < 0.5),
-                'stagnated': bool(convergence_status == 'stagnated'),
-            },
-            'final_state': {
-                'T_K': float(Y[0]),
-                'P_CO2_Pa': float(Y[1]),
-                'pH': float(last_diagnostics['pH']) if last_diagnostics is not None else None,
-                'ocean_chemistry_mol_kgw': final_ocean_chemistry,
-            },
-            'final_diagnostics': {
-                'Da': float(last_diagnostics['Da']) if last_diagnostics is not None else None,
-                'A_reactive_m2': float(last_diagnostics['A_reactive']) if last_diagnostics is not None else None,
-                'supply_efficiency': float(last_diagnostics['supply_efficiency']) if last_diagnostics is not None else None,
-            },
-        }
-        with open(summary_file, 'w') as _sf:
-            json.dump(summary, _sf, indent=2)
-        print(f"Summary written to:    {os.path.abspath(summary_file)}")
+        if self.verbose:
+            print()
+            print(f'Terminated: {termination} at t = {sol.t[-1]/YR:.3e} yr')
+            print(f'Simulation time: {end - start:.0f} s')
+            print(f'Y: {sol.y[2:, -1]} mol/kgw')
 
-        # --- Plot results ---
-        t = np.array(t)
-        T = np.array(T)
-        P_CO2 = np.array(P_CO2)
-        concentrations = np.array(concentrations)
-        fluxes = np.array(fluxes)
-        pH = np.array(pH)
+        with open(self._output_filename, 'r') as f:
+            output_data = json.load(f)
 
-        fig, (ax1, ax2, ax4, ax5) = plt.subplots(4, 1, figsize=(15, 24), sharex=True)
+        output_data.update({
+            "simulation_time_seconds": end - start,
+            "termination": termination,
+            "end_time_yr": sol.t[-1] / YR,
+            "T": self._T,
+            "P_CO2": sol.y[0, -1] / 1e5,
+            "pH": self._pH,
+            "data": {
+                "time": time_steps,
+                "y": state_variables
+            }
+        })
 
-        for j, elem in enumerate(elements):
-            ax1.plot(t / YR, concentrations[:, j], label=elem)
+        with open(self._output_filename, 'w') as f:
+            json.dump(output_data, f, indent=0)
 
-        for j, elem in enumerate(elements):
-            ax4.plot(t / YR, fluxes[:, j] * YR, label=elem)
-        
-        ax1.set_yscale('log')
-        # ax1.set_xscale('log')
-        ax1.set_ylabel('Concentration (mol/kgw)')
-        ax1.set_title('Time Evolution of Ocean Chemistry')
-        ax1.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-        ax1.grid(True, which="both", ls="--", alpha=0.5)
-        ax1.set_ylim([1e-6, 2.1])
+        if self.verbose:
+            print(f"Results successfully saved to {self._output_filename}")
 
-        color_co2 = 'tab:blue'
-        ax5.set_xlabel('Time (years)')
-        ax2.set_ylabel('$P_{CO2}$ (bar)', color=color_co2)
-        ax2.plot(t / YR, P_CO2 / 1e5, color=color_co2, label='P_CO2')
-        ax2.tick_params(axis='y', labelcolor=color_co2)
-        ax2.set_yscale('log')
-        ax2.grid(True, alpha=0.5)
-        ax2.set_ylim([1e-7, 10])
 
-        ax3 = ax2.twinx()  
-        color_t = 'tab:red'
-        ax3.set_ylabel('Temperature (K)', color=color_t)
-        ax3.plot(t / YR, T, color=color_t, label='Temperature')
-        ax3.tick_params(axis='y', labelcolor=color_t)
-        ax3.set_ylim([T_min, T_max])
 
-        ax4.set_yscale('symlog', linthresh=1e-12)
-        ax4.set_ylabel('Fluxes (mol/kgw/yr)')
-        ax4.grid(True, which="both", ls="--", alpha=0.5)
+if __name__ == '__main__':
 
-        ax5.plot(t / YR, pH)
-        ax5.set_ylabel('pH')
-        ax5.grid(True, which="both", ls="--", alpha=0.5)
+    BACKGROUND_PRESSURE = 1e5   # Pa (1 bar)
+    OCEAN_DEPTH = 3000          # m
+    TECTONICS = 1.0
 
-        fig.tight_layout()  
-        plt.savefig(os.path.join(output_dir, f'{self.name}_plot.pdf'))
-        plt.savefig(os.path.join(output_dir, f'{self.name}_plot.png'))
-        plt.close()
+    instellation = [0.4, 0.6, 0.8, 1.0, 1.2]
+
+    for s in instellation:
+        print(f's = {s}')
+        p1 = Planet(M_EARTH, R_EARTH, BACKGROUND_PRESSURE, s, 1.0, 1.0, 3000, name=f'test_s_{s}', reverse_weathering=True, verbose=True)
+        p1.time_evolve()
+        print('')

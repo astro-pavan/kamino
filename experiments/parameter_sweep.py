@@ -5,8 +5,8 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 os.environ.setdefault('JAX_PLATFORMS', 'cpu')
 
-import kamino.planet2 as p2
-from kamino.planet2 import Planet
+import kamino.planet as p2
+from kamino.planet import Planet
 from kamino.constants import M_EARTH, R_EARTH
 
 
