@@ -80,7 +80,7 @@ def get_T_surface_v0(S, P_CO2, albedo, tidally_locked=False) -> float:
 
    return float(T_res)
 
-def get_T_surface(S, P_CO2, albedo, tidally_locked=False):
+def get_T_surface_analytic(S, P_CO2, albedo, tidally_locked=False):
     
     pCO2_bar = P_CO2 / 1e5
     

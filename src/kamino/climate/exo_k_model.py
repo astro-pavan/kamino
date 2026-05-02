@@ -158,6 +158,9 @@ def parameter_sweep(csv_path=runs_data_path, n_workers=None):
 
 def make_basic_interpolator(csv_path=runs_data_path):
 
+    if not os.path.exists(csv_path):                                                                                                                                                            
+        raise FileNotFoundError(f"Climate data not found at {csv_path}. Run parameter_sweep() first.")
+
     df = pd.read_csv(csv_path)
 
     instellation_vals = np.sort(df['Instellation'].unique())
@@ -203,8 +206,6 @@ def make_basic_interpolator(csv_path=runs_data_path):
 
     return interpolator
 
-if not os.path.exists(runs_data_path):
-    parameter_sweep(n_workers=16)
 
 basic_interpolator = make_basic_interpolator()
 

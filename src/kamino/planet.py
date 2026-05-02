@@ -7,8 +7,10 @@ import json
 import os
 
 from kamino.constants import *
-from kamino.chemistry.ocean_chemistry import *
-from kamino.chemistry.mineral_info import *
+from kamino.chemistry import elements, get_P_CO2, c_idx, si_idx, ChemistryError
+from kamino.weathering import get_weathering_flux
+from kamino.precipitation import get_precipitation
+from kamino.mineral_info import basalt_composition, carbonate_minerals, secondary_sink_minerals, reverse_weathering_minerals
 from kamino.climate.clima_interpolator import get_T_surface
 from kamino.utils import august_roche_magnus_formula
 
@@ -206,23 +208,20 @@ class Planet:
             P_CO2 = np.clip(Y[0], 0, 1e6)
             T_surface = get_T_surface(self.instellation, max(P_CO2, 1e-2), self.albedo, self.tidally_locked)
             return T_surface - T_snowball
-        event_snowball.terminal = True
-        event_snowball.direction = -1
+        event_snowball.terminal, event_snowball.direction = True, -1 # type: ignore
 
         def event_hothouse(t, Y):
             if t < min_time:
                 return 1.0
             T = get_T_surface(self.instellation, max(Y[0], 1e-2), self.albedo, self.tidally_locked)
             return T - T_runaway
-        event_hothouse.terminal = True
-        event_hothouse.direction = 1
+        event_hothouse.terminal, event_hothouse.direction = True, -1 # type: ignore
 
         def event_acid_ocean(t, Y):
             if t < min_time:
                 return 1.0
             return P_CO2_acid_threshold - np.clip(Y[0], 0, None)
-        event_acid_ocean.terminal = True
-        event_acid_ocean.direction = -1
+        event_acid_ocean.terminal, event_acid_ocean.direction = True, -1 # type: ignore
 
         atol = np.ones_like(Y0) * 1e-6
         atol[0] = 1.0   # P_CO2 in Pa
@@ -251,8 +250,7 @@ class Planet:
             denom = np.maximum(b[mask], 1e-6)
             max_fractional_rate = np.max(np.abs(F_net[mask]) / denom)
             return max_fractional_rate - convergence_rate
-        event_converged.terminal = True
-        event_converged.direction = -1
+        event_converged.terminal, event_converged.direction = True, -1 # type: ignore
 
         N = len(Y0)
 

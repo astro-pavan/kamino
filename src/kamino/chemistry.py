@@ -1,8 +1,8 @@
 import os
 
 from kamino.constants import *
-from kamino.chemistry.mineral_rates import K_FUNCTIONS
-from kamino.chemistry.mineral_info import *
+from kamino.mineral_rates import K_FUNCTIONS
+from kamino.mineral_info import *
 
 from phreeqc import Phreeqc
 import numpy as np
@@ -187,7 +187,7 @@ def solve_solution(P: float, T: float, b: npt.NDArray[np.float64], pH: float | N
 
         if P_CO2 is not None:
             P_CO2 = np.maximum(P_CO2, 1e-2)
-            equilibrium_lines.append(f'    CO2(g)  {np.log10(P_CO2 / EARTH_ATM):.4f}  {1e6}')
+            equilibrium_lines.append(f'    CO2(g)  {np.log10(P_CO2 / EARTH_ATM):.4f}  {1e6}') # type: ignore
 
         if fO2 > 0:
             equilibrium_lines.append(f'    O2(g)   {np.log10(fO2 / EARTH_ATM):.4f}  {1e6}')
@@ -255,10 +255,7 @@ def get_b_eq(P: float, T: float, P_CO2: float, composition: dict[str, float], b_
 
     b_eq = np.zeros(elements.shape)
 
-    # Carbonate minerals are excluded: CO2(g) already constrains carbonate chemistry,
-    # so adding them as equilibriating phases is redundant and causes PHREEQC to
-    # attempt dissolving 100 mol stocks, driving Si/ionic-strength out of convergence range.
-    # Their kinetic contribution is captured by get_k / k_primary.
+    # Carbonate minerals are excluded: CO2(g) already constrains carbonate chemistry
     _excluded = set(carbonate_minerals)
 
     # These silicate minerals cause problems for the equilibrium calculations at low T
@@ -285,228 +282,25 @@ def get_b_eq(P: float, T: float, P_CO2: float, composition: dict[str, float], b_
 
     return b_eq, pH
 
-def get_precipitation(P: float, T: float, b: npt.NDArray[np.float64], precipitating_minerals: list[str], equilibrium_minerals: list[str]=[], fO2: float=0, precipitation_timescale: float=0) -> tuple[npt.NDArray[np.float64], float, dict[str, float]]:
-
-    output = solve_solution(P, T, b, precipitating_minerals=precipitating_minerals, equilibriating_minerals=equilibrium_minerals, fO2=fO2)
-
-    aqueous_fluxes = np.zeros(elements.shape)
-
-    for i, element in enumerate(elements):
-        output_key = 'Alk(eq/kgw)' if element == 'Alkalinity' else f'{element}(mol/kgw)'
-        aqueous_fluxes[i] = (float(output[output_key][-1]) - float(output[output_key][0]))
-
-    pH = float(output['pH'][-1])
-
-    si_dict = {}
-    for min_name in precipitating_minerals:
-        si_key = f'si_{min_name}'
-        if si_key in output:
-            si_dict[min_name] = float(output[si_key][0]) # Index 0 is the initial state of the solution BEFORE precipitation occurs
-
-    # enforce always negative flux
-    aqueous_fluxes = np.minimum(aqueous_fluxes, 0)
-
-    if precipitation_timescale > 0:
-
-        aqueous_fluxes = aqueous_fluxes / precipitation_timescale
-
-    return aqueous_fluxes, pH, si_dict
-
-def reactive_area(T: float, pH: float, rate: float, alpha: float, clog: bool=True, cover: bool=True, sedimentation_rate: float | None = None) -> float:
-
-    T_ref = 280 # Pore space temperature
-    T_c = 7 # Activation energy 92 kJ
-    pH_ref = 8.1
-    t_clog_ref = 20e6 * YR # Coogan & Gillis (2018), Fig 6
-    beta = 0 # no pH dependence
-    h_cover = 100 # m
-    S_ref = 5 / (1e6 * YR) # 5 m / Myr
-    S_min = 0.3 / (1e6 * YR) # 0.3 m / Myr background (dust)
-
-    t_clog = t_clog_ref * np.exp(- (T - T_ref) / T_c) * (pH / pH_ref) ** beta
-    S = max(sedimentation_rate, S_min) if sedimentation_rate is not None else S_ref
-    t_cover = h_cover / S
-
-    if clog and cover:
-        t_reduce = (1 / t_clog + 1 / t_cover) ** -1
-    elif clog:
-        t_reduce = t_clog
-    elif cover:
-        t_reduce = t_cover
-    else:
-        return alpha
-
-    return alpha * rate * t_reduce * (1 - np.exp(- 1 / (rate * t_reduce)))
-
-rate_ref = 1 / (50e6 * YR)
-J_ref = 1.4e15 / YR # kg / yr
-A_seafloor = 0.7 * 4 * np.pi * R_EARTH ** 2
-J_ref_normalised = J_ref / A_seafloor
-
-def get_weathering_flux(P: float, T: float, P_CO2: float, b_input: npt.NDArray[np.float64], alpha: float | None=None, rate: float | None=None, J: float | None=None, cover: bool=True, clog: bool=False, high_temperature: bool=False, crust_composition: dict[str, float]=basalt_composition, precipitating_minerals: list[str] | None=None, fO2: float=0, sedimentation_rate: float | None=None) -> tuple[npt.NDArray[np.float64], dict[str, float]]:
-
-    molar_mass = 0.216 # kg / mol
-
-    if alpha is None:
-        alpha = ALPHA_REF
-
-    if rate is None:
-        rate = rate_ref
-
-    if J is None:
-        J = J_ref_normalised * (rate / rate_ref) # hydrothermal flux proportional to crust production rate
-
-    if len(b_input) == 0:
-        b_input = np.zeros(elements.shape)
-
-    if high_temperature:
-        crust_composition = hydrothermal_composition
-        default_precipitating = []          # Kaolinite not in hydrothermal.dat
-    else:
-        default_precipitating = ['Kaolinite', 'Goethite']
-
-    if precipitating_minerals is None:
-        precipitating_minerals = default_precipitating
-
-    b_eq_primary, pH = get_b_eq(P, T, P_CO2, crust_composition, b_input=b_input, precipitating_minerals=precipitating_minerals, high_temperature=high_temperature, fO2=fO2)
-    k_primary = get_k(P, T, pH, crust_composition)
-    k_nonzero = k_primary != 0  # save before replacing zeros with inf
-    k_primary = np.where(k_nonzero, k_primary, np.inf)
-
-    A_reactive = reactive_area(T, pH, rate, alpha, clog, cover, sedimentation_rate=sedimentation_rate)
-
-    # Flux formula: F = A*(b_eq - b_in) / (b_eq/k + A/J)
-    F_primary = A_reactive * (b_eq_primary - b_input) / (b_eq_primary / k_primary + A_reactive / J)
-    F_primary = np.where(k_nonzero, F_primary, 0.0)  # zero out elements with no basalt stoichiometry (e.g. C)
-
-    Da_primary = (k_primary * A_reactive * molar_mass) / J
-    b_pore = b_input + (b_eq_primary - b_input) * (1 - np.exp(-Da_primary))
-
-    if 'Calcite' not in crust_composition:
-        b_pore[c_idx] = b_input[c_idx]
-
-    flux = F_primary
-
-    d_b_carb, _, _ = get_precipitation(P, T, b_pore, carbonate_minerals, [])
-    flux += J * d_b_carb
-
-    supply_efficiency = 1 - np.exp(-Da_primary[0])
-
-    weathering_diagnostics = {
-        'Da': Da_primary[0],
-        'A_reactive': A_reactive,
-        'supply_efficiency': supply_efficiency
-    }
-
-    return flux, weathering_diagnostics
-
-# ---------------------------------------------------------------------------
-# Continental silicate weathering (Walker-Hays-Kasting parameterization)
-# ---------------------------------------------------------------------------
-
-# Reference alkalinity flux per unit land area at modern Earth conditions.
-# Calibrated so that 0.3 land fraction gives ~8 Tmol eq/yr total, which
-# balances modern volcanic outgassing after accounting for seafloor weathering.
-_CONT_LAND_AREA_EARTH = 0.3 * 4 * np.pi * R_EARTH ** 2   # m²
-EARTH_CONTINENTAL_WEATHERING_REF = (8e12 / YR) / _CONT_LAND_AREA_EARTH  # mol_eq / m² / s
-
-def get_continental_weathering_flux(
-    T: float,
-    P_CO2: float,
-    F_alk_ref: float = EARTH_CONTINENTAL_WEATHERING_REF,
-    T_ref: float = 288.0,
-    P_CO2_ref: float = EARTH_ATM * 280e-6,
-    beta: float = 0.3,
-    T_e: float = 17.0,
-) -> npt.NDArray[np.float64]:
-    """Walker-Hays-Kasting continental silicate weathering parameterization.
-
-    Returns flux per unit land area [mol/m²/s] using CaSiO3 stoichiometry:
-        CaSiO3 + 2CO2 + H2O -> Ca2+ + 2HCO3-
-
-    Parameters
-    ----------
-    T        : surface temperature [K]
-    P_CO2    : atmospheric CO2 partial pressure [Pa]
-    F_alk_ref: reference alkalinity flux at (T_ref, P_CO2_ref) [mol_eq/m²/s]
-    beta     : CO2 sensitivity exponent (default 0.3)
-    T_e      : temperature e-folding scale [K] (default 17 K ~ 70 kJ/mol)
-    """
-    f = (P_CO2 / P_CO2_ref) ** beta * np.exp((T - T_ref) / T_e)
-    F_alk = F_alk_ref * f   # mol_eq / m² / s
-
-    flux = np.zeros(len(elements))
-
-    # Per mol CaSiO3 dissolved: 1 mol Ca2+, 2 mol HCO3-
-    # => 2 eq Alk, 2 mol C, 1 mol Ca per mol CaSiO3
-    flux[alk_idx] = F_alk        # eq / m² / s
-    flux[c_idx]   = F_alk        # mol C / m² / s  (1 HCO3- = 1 C = 1 eq Alk)
-    flux[ca_idx]  = F_alk / 2    # mol Ca / m² / s (2 eq per mol Ca2+)
-
-    return flux
-
-
-def get_P_CO2_analytic(T_kelvin: float, C_chem: float) -> tuple[float, float]:
-
-    # K0: Weiss (1974)
-    ln_K0 = -60.2409 + 93.4517 * (100.0 / T_kelvin) + 23.3585 * np.log(T_kelvin / 100.0)
-    K0 = np.exp(ln_K0)
-    
-    # K1: Harned & Davis (1943)
-    pK1 = (3404.71 / T_kelvin) + 0.032786 * T_kelvin - 14.8435
-    K1 = 10 ** -pK1
-    
-    # K2: Harned & Scholes (1941)
-    pK2 = (2902.39 / T_kelvin) + 0.02379 * T_kelvin - 6.4980
-    K2 = 10 ** -pK2
-
-    thermo_ratio = K2 / (K0 * K1)
-
-    P_CO2 = C_chem * thermo_ratio
-    
-    return P_CO2, thermo_ratio
-
-
-def get_P_CO2(P: float, T: float, b: npt.NDArray[np.float64]):
+def get_gas_partial_pressure(P: float, T: float, b: npt.NDArray[np.float64], gases: list[str]) -> list[float]:
 
     output = solve_solution(P, T, b)
 
-    si_CO2 = float(output['si_CO2(g)'][-1])
-    P_CO2 = EARTH_ATM * 10 ** si_CO2
+    P_gases = []
 
-    return P_CO2
+    for gas in gases:
+        si = float(output[f'si_{gas}(g)'][-1])
+        P_gases.append(EARTH_ATM * 10 ** si)
+
+    return P_gases
+
+def get_P_CO2(P: float, T: float, b: npt.NDArray[np.float64]) -> float:
+    return get_gas_partial_pressure(P, T, b, ['CO2'])[0]
+
+def get_pH(P: float, T: float, b: npt.NDArray[np.float64]) -> float:
+    output = solve_solution(P, T, b)
+    pH = float(output['pH'][-1])
+    return pH
 
 class ChemistryError(Exception):
     pass
-
-from scipy.optimize import least_squares
-
-# print("Calibrating weathering model to modern Earth baseline (1 Tmol/yr Alkalinity)...")
-
-_T_ref_calib = 280
-_P_ref_calib = 1000 * 10 * 3000
-_P_CO2_ref_calib = EARTH_ATM * 280e-6
-_seafloor_flux = 1e12 / YR
-_seafloor_flux_normalised = _seafloor_flux / A_seafloor
-
-# Residual function to find the alpha that produces the correct Alkalinity flux (Index 0)
-def _calibration_residual(a_array):
-    a_val = a_array[0]
-    flux, _ = get_weathering_flux(
-        _P_ref_calib, _T_ref_calib, _P_CO2_ref_calib, 
-        np.array([]), alpha=a_val, rate=rate_ref, J=J_ref_normalised
-    )
-    alkalinity_flux = flux[0]
-    return (alkalinity_flux - _seafloor_flux_normalised) / _seafloor_flux_normalised
-
-# Run the optimization
-_root = least_squares(_calibration_residual, [100.0])
-ALPHA_REF = float(_root.x[0])
-
-W_REF, _ = get_weathering_flux(
-        _P_ref_calib, _T_ref_calib, _P_CO2_ref_calib, 
-        np.array([]), alpha=ALPHA_REF, rate=rate_ref, J=J_ref_normalised
-)
-
-# print(f"Calibration complete: ALPHA_REF = {ALPHA_REF:.2e}")
-# print(f'Weathering flux: {W_REF[0] * YR * A_seafloor / 1e12:.2e} Tmol/yr')

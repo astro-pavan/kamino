@@ -52,6 +52,7 @@ def get_T_surface(S, P_CO2, albedo, tidally_locked=False):
     else:
         temp = rgi_rapid(point)[0]
 
-    assert ~np.isnan(temp) # NEDD TO REPLACE WITH BETTER ERROR HANDLING
+    if np.isnan(temp):
+        raise ValueError
     
     return float(temp)
