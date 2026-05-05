@@ -8,9 +8,9 @@ import os
 
 from kamino.constants import *
 from kamino.chemistry import elements, get_P_CO2, c_idx, si_idx, ChemistryError
-from kamino.weathering import get_weathering_flux
+from kamino.weathering import get_weathering_flux, J_ref_normalised, rate_ref
 from kamino.precipitation import get_precipitation
-from kamino.mineral_info import basalt_composition, carbonate_minerals, secondary_sink_minerals
+from kamino.mineral_info import *
 
 
 from kamino.climate.clima_interpolator import get_T_surface
@@ -34,10 +34,26 @@ class Planet:
             ocean_depth: float,
             land_fraction: float=0.0,
             crust_carbonate_content: float=0.0,
-            reverse_weathering: bool=False,
+            reverse_weathering: bool=True,
+            f_HT: float=0.0,
             verbose: bool=False,
             name: str='planet'
             ):
+        
+        planet_config = {
+            "name": name,
+            "mass": mass,
+            "radius": radius,
+            "background_pressure": background_pressure,
+            "ocean_depth": ocean_depth,
+            "land_fraction": land_fraction,
+            "instellation": instellation,
+            "crust_production_rate": crust_production_rate,
+            "outgassing": outgassing,
+            "crust_carbonate_content": crust_carbonate_content,
+            "reverse_weathering": reverse_weathering,
+            "f_HT": f_HT
+        }
 
         self.name = name
         self.mass = mass
@@ -59,19 +75,19 @@ class Planet:
                 self.crust_composition[mineral] *= (1 - crust_carbonate_content)
             self.crust_composition['Calcite'] = crust_carbonate_content
 
-        rw_minerals = ['Sepiolite'] if reverse_weathering else []
-        self.precipitating_minerals = carbonate_minerals + secondary_sink_minerals + rw_minerals
+        self.pore_precipitating_minerals = carbonate_minerals + clay_minerals
+        self.ocean_precipitating_minerals = carbonate_minerals + clay_minerals + silica_minerals
+
+        if reverse_weathering:
+            self.pore_precipitating_minerals += reverse_weathering_minerals
+            self.ocean_precipitating_minerals += reverse_weathering_minerals
 
         self.outgassing_flux = np.zeros(elements.shape)
         self.outgassing_flux[1] = (EARTH_OUTGASSING / YR) * self.surface_area * outgassing
 
         self.tidally_locked = False
 
-        self._input_instellation = instellation
-        self._input_crust_production_rate = crust_production_rate
-        self._input_outgassing = outgassing
-        self._input_crust_carbonate_content = crust_carbonate_content
-        self._input_reverse_Weathering = reverse_weathering
+        self.f_HT = f_HT
 
         self.land_fraction = land_fraction
         self.land_area = land_fraction * self.surface_area
@@ -84,27 +100,11 @@ class Planet:
         self.instellation = instellation * SOLAR_CONSTANT
         self.albedo = land_albedo * land_fraction + ocean_albedo * (1 - land_fraction)
 
-        planet_config = {
-            "name": self.name,
-            "mass": self.mass,
-            "radius": self.radius,
-            "background_pressure": self.P_background,
-            "ocean_depth": self.ocean_depth,
-            "land_fraction": self.land_fraction,
-            "instellation": self._input_instellation,
-            "crust_production_rate": self._input_crust_production_rate,
-            "outgassing": self._input_outgassing,
-            "crust_carbonate_content": self._input_crust_carbonate_content,
-            "reverse_weathering": self._input_reverse_Weathering
-        }
-
         self._output_filename = f"{output_path}{self.name}.json"
         with open(self._output_filename, 'w') as f:
             json.dump(planet_config, f, indent=0)
 
         self.verbose = verbose
-
-        self._calcite_SI = -10
 
     def dY_dt(self, t, Y):
 
@@ -123,9 +123,6 @@ class Planet:
         P_surface = self.P_background + P_CO2 + P_H2O
         T_surface = get_T_surface(self.instellation, P_CO2, self.albedo, self.tidally_locked)
         P_H2O_new = august_roche_magnus_formula(T_surface)
-        P_CO2_new = get_P_CO2(P_surface, T_surface, b_ocean)
-
-        assert P_CO2_new > 0
 
         # seafloor properties
 
@@ -141,7 +138,9 @@ class Planet:
         self._T = T_surface
 
         try:
-            F_prec, pH, SI = get_precipitation(P_pore, T_seafloor, b_ocean, precipitating_minerals=self.precipitating_minerals, precipitation_timescale=tau_prec)
+            P_CO2_new = get_P_CO2(P_surface, T_surface, b_ocean)
+            assert P_CO2_new > 0
+            F_prec, pH, SI = get_precipitation(P_pore, T_seafloor, b_ocean, precipitating_minerals=self.ocean_precipitating_minerals, precipitation_timescale=tau_prec)
             self._pH = pH
             self._SI = SI
 
@@ -149,11 +148,27 @@ class Planet:
             F_carb, F_sil = max(0.0, -F_prec[c_idx]), max(0.0, -F_prec[si_idx])
 
             S_sed = (F_carb * 0.100 / 2710.0 + F_sil * 0.060 / 2650.0) * ocean_water_per_area
-            weathering_flux, weath_diag = get_weathering_flux(P_pore, T_pore, P_CO2, b_ocean, None, self.crust_production_rate, crust_composition=self.crust_composition, clog=False, sedimentation_rate=S_sed)
+            J_total = J_ref_normalised * (self.crust_production_rate / rate_ref)
+            J_LT = J_total * (1 - self.f_HT)
+            J_HT = J_total * self.f_HT
+
+            flux_lt, _ = get_weathering_flux(P_pore, T_pore, P_CO2, b_ocean, 
+                                             rate=self.crust_production_rate, J=J_LT, crust_composition=self.crust_composition,
+                                             sedimentation_rate=S_sed, precipitating_minerals=self.pore_precipitating_minerals)
+            
+            if self.f_HT > 0:
+                flux_ht, _ = get_weathering_flux(P_pore, 600, P_CO2, b_ocean, high_temperature=True,
+                                                 rate=self.crust_production_rate, J=J_HT, crust_composition=self.crust_composition,
+                                                 sedimentation_rate=S_sed, precipitating_minerals=self.pore_precipitating_minerals)
+            else:
+                flux_ht = np.zeros_like(flux_lt)
+
+            weathering_flux = flux_lt + flux_ht
 
             F_diss = (weathering_flux * self.surface_area) / self.ocean_water_mass
             F_net = F_vol + F_prec + F_diss
-        except ChemistryError:
+
+        except (ChemistryError, AssertionError):
             # Chemistry has left the valid domain (typically high P_CO2 where PHREEQC cannot converge).
             # Return pure outgassing so LSODA gets a finite derivative and the acid_ocean event can terminate cleanly.
             dYdt = np.zeros_like(Y)
@@ -179,9 +194,6 @@ class Planet:
             print(f't = {t/YR:.4e} yr  T = {T_surface:.1f}  P_CO2 = {P_CO2 / 1e5:.1e} bar  pH = {pH:.1f}  Calcite SI = {calcite_SI:.1f}  C flux = {(carbon_flux / carbon) * 1e9 * YR:.1e} / Gyr  ', end='\r')
 
         self._pH = pH
-        self._calcite_SI = calcite_SI
-        if calcite_SI >= 0:
-            self._calcite_first_precipitated_time = min(self._calcite_first_precipitated_time, t)
 
         return dYdt
 
@@ -192,14 +204,12 @@ class Planet:
         Y0[0] = 1000
         Y0[1] = 1000
 
-        P_CO2_max = 1e6
         T_runaway = 350
         T_snowball = 260
         P_CO2_acid_threshold = 5e5   # Pa (5 bar)
-        min_time = 1e6 * YR
+        min_time = 2e6 * YR
         convergence_rate = 0.1 / (1e9 * YR)
 
-        self._calcite_first_precipitated_time = np.inf
         self._T = np.nan
         self._pH = np.nan
 
@@ -353,13 +363,13 @@ if __name__ == '__main__':
     OCEAN_DEPTH = 3000          # m
     TECTONICS = 1.0
 
-    instellation = [0.8, 1.0, 1.2]
+    instellation = [0.6, 0.8, 1.0, 1.2]
 
-    for rw in [False, True]:
-        tag = 'rw' if rw else 'norw'
-        for s in instellation:
-            print(f's = {s}  reverse_weathering = {rw}')
-            p = Planet(M_EARTH, R_EARTH, BACKGROUND_PRESSURE, s, 1.0, 1.0, 3000,
-                       name=f'test_s_{s}_{tag}', reverse_weathering=rw, verbose=True)
-            p.time_evolve()
-            print('')
+    # for rw in [False, True]:
+    #     tag = 'rw' if rw else 'norw'
+    for s in instellation:
+        print(f's = {s}')
+        p = Planet(M_EARTH, R_EARTH, BACKGROUND_PRESSURE, s, 1.0, 1.0, 3000,
+                    name=f'test_s_{s}', f_HT=0.05, verbose=True)
+        p.time_evolve()
+        print('')
