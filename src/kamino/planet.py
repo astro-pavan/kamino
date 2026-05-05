@@ -10,7 +10,9 @@ from kamino.constants import *
 from kamino.chemistry import elements, get_P_CO2, c_idx, si_idx, ChemistryError
 from kamino.weathering import get_weathering_flux
 from kamino.precipitation import get_precipitation
-from kamino.mineral_info import basalt_composition, carbonate_minerals, secondary_sink_minerals, reverse_weathering_minerals
+from kamino.mineral_info import basalt_composition, carbonate_minerals, secondary_sink_minerals
+
+
 from kamino.climate.clima_interpolator import get_T_surface
 from kamino.utils import august_roche_magnus_formula
 
@@ -57,9 +59,8 @@ class Planet:
                 self.crust_composition[mineral] *= (1 - crust_carbonate_content)
             self.crust_composition['Calcite'] = crust_carbonate_content
 
-        self.precipitating_minerals = carbonate_minerals + secondary_sink_minerals
-        if reverse_weathering:
-            self.precipitating_minerals += reverse_weathering_minerals
+        rw_minerals = ['Sepiolite'] if reverse_weathering else []
+        self.precipitating_minerals = carbonate_minerals + secondary_sink_minerals + rw_minerals
 
         self.outgassing_flux = np.zeros(elements.shape)
         self.outgassing_flux[1] = (EARTH_OUTGASSING / YR) * self.surface_area * outgassing
@@ -148,7 +149,7 @@ class Planet:
             F_carb, F_sil = max(0.0, -F_prec[c_idx]), max(0.0, -F_prec[si_idx])
 
             S_sed = (F_carb * 0.100 / 2710.0 + F_sil * 0.060 / 2650.0) * ocean_water_per_area
-            weathering_flux, _ = get_weathering_flux(P_pore, T_pore, P_CO2, b_ocean, None, self.crust_production_rate, crust_composition=self.crust_composition, clog=False, sedimentation_rate=S_sed)
+            weathering_flux, weath_diag = get_weathering_flux(P_pore, T_pore, P_CO2, b_ocean, None, self.crust_production_rate, crust_composition=self.crust_composition, clog=False, sedimentation_rate=S_sed)
 
             F_diss = (weathering_flux * self.surface_area) / self.ocean_water_mass
             F_net = F_vol + F_prec + F_diss
@@ -212,10 +213,10 @@ class Planet:
 
         def event_hothouse(t, Y):
             if t < min_time:
-                return 1.0
+                return -1.0  # negative guard: direction=+1 won't trigger on the guard→actual transition
             T = get_T_surface(self.instellation, max(Y[0], 1e-2), self.albedo, self.tidally_locked)
             return T - T_runaway
-        event_hothouse.terminal, event_hothouse.direction = True, -1 # type: ignore
+        event_hothouse.terminal, event_hothouse.direction = True, +1 # type: ignore
 
         def event_acid_ocean(t, Y):
             if t < min_time:
@@ -352,10 +353,13 @@ if __name__ == '__main__':
     OCEAN_DEPTH = 3000          # m
     TECTONICS = 1.0
 
-    instellation = [0.4, 0.6, 0.8, 1.0, 1.2]
+    instellation = [0.8, 1.0, 1.2]
 
-    for s in instellation:
-        print(f's = {s}')
-        p1 = Planet(M_EARTH, R_EARTH, BACKGROUND_PRESSURE, s, 1.0, 1.0, 3000, name=f'test_s_{s}', reverse_weathering=True, verbose=True)
-        p1.time_evolve()
-        print('')
+    for rw in [False, True]:
+        tag = 'rw' if rw else 'norw'
+        for s in instellation:
+            print(f's = {s}  reverse_weathering = {rw}')
+            p = Planet(M_EARTH, R_EARTH, BACKGROUND_PRESSURE, s, 1.0, 1.0, 3000,
+                       name=f'test_s_{s}_{tag}', reverse_weathering=rw, verbose=True)
+            p.time_evolve()
+            print('')

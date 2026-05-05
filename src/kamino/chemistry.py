@@ -259,8 +259,9 @@ def get_b_eq(P: float, T: float, P_CO2: float, composition: dict[str, float], b_
     _excluded = set(carbonate_minerals)
 
     # These silicate minerals cause problems for the equilibrium calculations at low T
+    # Enstatite is supersaturated at seawater pH and back-precipitates, driving b_eq[Mg] to ~0
     if not high_temperature:
-        _excluded |= {'Anorthite', 'Forsterite'}
+        _excluded |= {'Anorthite', 'Forsterite', 'Enstatite'}
     else:
         _excluded.add('Anorthite')
 

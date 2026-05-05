@@ -1517,6 +1517,41 @@ Daphnite-14A
         -analytic -1.5261e+2 -6.1392e-2 2.8283e+4 5.1788e+1 4.4137e+2
 #       -Range:  0-300
 
+Greenalite
+        Fe3Si2O5(OH)4 + 6 H+ = 2 SiO2 + 3 Fe+2 + 5 H2O
+        log_k 22.6701
+	-delta_H -165.297 kJ/mol # Calculated enthalpy of reaction Greenalite
+        -analytic -1.4187e+1 -3.8377e-3 1.171e+4 1.6442e+0 -4.829e+5
+#       -Range:  0-300
+
+Minnesotaite
+        Fe3Si4O10(OH)2 + 6 H+ = 3 Fe+2 + 4 H2O + 4 SiO2
+        log_k 13.9805
+	-delta_H -105.211 kJ/mol # Calculated enthalpy of reaction Minnesotaite
+        -analytic -1.8812e+1 1.7261e-2 1.9804e+4 -6.441e+0 -2.0433e+6
+#       -Range:  0-300
+
+Chamosite-7A
+        Fe2Al2SiO5(OH)4 + 10 H+ = SiO2 + 2 Al+3 + 2 Fe+2 + 7 H2O
+        log_k 32.8416
+	-delta_H -364.213 kJ/mol # Calculated enthalpy of reaction Chamosite-7A
+        -analytic -2.5581e+2 -7.089e-2 2.4619e+4 9.1789e+1 3.8424e+2
+#       -Range:  0-300
+
+Nontronite-Mg
+        Mg.165Fe2Al.33Si3.67H2O12 + 7.32 H+ = 0.165 Mg+2 + 0.33 Al+3 + 2 Fe+3 + 3.67 SiO2 + 4.66 H2O
+        log_k -11.62
+	-delta_H -41.1779 kJ/mol # Calculated enthalpy of reaction Nontronite-Mg
+        -analytic 5.5961e+1 1.0139e-2 8.0777e+3 -3.3164e+1 -1.4031e+6
+#       -Range:  0-300
+
+Saponite-Mg
+        Mg3.165Al.33Si3.67O10(OH)2 + 7.32 H+ = 0.33 Al+3 + 3.165 Mg+2 + 3.67 SiO2 + 4.66 H2O
+        log_k 26.2523
+	-delta_H -210.822 kJ/mol # Calculated enthalpy of reaction Saponite-Mg
+        -analytic 9.8888e+0 1.432e-2 1.9418e+4 -1.5259e+1 -1.3716e+6
+#       -Range:  0-300
+
 # NOTE: Glauconite — absent from all searched databases (thermodynamic data unavailable; see basic_v2.dat README)
 
 # NOTE: Palygorskite — absent from all searched databases

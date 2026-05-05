@@ -2,7 +2,7 @@ import numpy as np
 import numpy.typing as npt
 from scipy.optimize import least_squares 
 
-from kamino.chemistry import get_b_eq, get_k, elements, alk_idx, c_idx, ca_idx, si_idx
+from kamino.chemistry import get_b_eq, get_k, elements, alk_idx, c_idx, ca_idx, mg_idx, si_idx
 from kamino.precipitation import get_precipitation
 from kamino.mineral_info import basalt_composition, hydrothermal_composition, carbonate_minerals
 from kamino.constants import YR, R_EARTH, EARTH_ATM
@@ -38,7 +38,9 @@ def seafloor_reactive_area(T: float, pH: float, rate: float, alpha: float, clog:
 
     return alpha * rate * t_reduce * (1 - np.exp(- 1 / (rate * t_reduce)))
 
-def get_weathering_flux(P: float, T: float, P_CO2: float, b_input: npt.NDArray[np.float64], alpha: float | None=None, rate: float | None=None, J: float | None=None, cover: bool=True, clog: bool=False, high_temperature: bool=False, crust_composition: dict[str, float]=basalt_composition, precipitating_minerals: list[str] | None=None, fO2: float=0, sedimentation_rate: float | None=None) -> tuple[npt.NDArray[np.float64], dict[str, float]]:
+MG_SINK_MINERALS: list[str] = ['Saponite-Mg']  # secondary clay minerals that remove Mg in low-T alteration
+
+def get_weathering_flux(P: float, T: float, P_CO2: float, b_input: npt.NDArray[np.float64], alpha: float | None=None, rate: float | None=None, J: float | None=None, cover: bool=True, clog: bool=False, high_temperature: bool=False, crust_composition: dict[str, float]=basalt_composition, precipitating_minerals: list[str] | None=None, fO2: float=0, sedimentation_rate: float | None=None, reverse_weathering_minerals: list[str] | None=None, pore_carbonate: bool=False) -> tuple[npt.NDArray[np.float64], dict[str, float]]:
 
     molar_mass = 0.216 # kg / mol (THIS NEEDS TO BE ACCURATELY CALCULATED)
 
@@ -58,7 +60,7 @@ def get_weathering_flux(P: float, T: float, P_CO2: float, b_input: npt.NDArray[n
         crust_composition = hydrothermal_composition
         default_precipitating = []          # Kaolinite not in hydrothermal.dat
     else:
-        default_precipitating = ['Kaolinite', 'Goethite']
+        default_precipitating = ['Kaolinite', 'Goethite', 'Saponite-Mg']
 
     if precipitating_minerals is None:
         precipitating_minerals = default_precipitating
@@ -82,15 +84,28 @@ def get_weathering_flux(P: float, T: float, P_CO2: float, b_input: npt.NDArray[n
 
     flux = F_primary
 
-    d_b_carb, _, _ = get_precipitation(P, T, b_pore, carbonate_minerals, [])
-    flux += J * d_b_carb
+    d_b_carb = np.zeros_like(flux)
+    if pore_carbonate and b_pore[c_idx] > 1e-6:  # skip if no C — avoids PHREEQC charge-balance failure
+        d_b_carb, _, _ = get_precipitation(P, T, b_pore, carbonate_minerals, [])
+        flux += J * d_b_carb
+
+    rw_flux = np.zeros_like(flux)
+    rw_si_dict = {}
+    if reverse_weathering_minerals:
+        b_pore_rw = b_pore + d_b_carb  # pore water after carbonate equilibration
+        d_b_clay, _, rw_si_dict = get_precipitation(P, T, b_pore_rw, reverse_weathering_minerals, [])
+        rw_flux = J * d_b_clay
+        flux += rw_flux
 
     supply_efficiency = 1 - np.exp(-Da_primary[0])
 
     weathering_diagnostics = {
         'Da': Da_primary[0],
         'A_reactive': A_reactive,
-        'supply_efficiency': supply_efficiency
+        'supply_efficiency': supply_efficiency,
+        'rw_si_dict': rw_si_dict,
+        'rw_alk_flux': float(-rw_flux[0]),   # mol alkalinity/m²/s consumed by clays (positive = consumed)
+        'rw_si_flux': float(-rw_flux[2]),    # mol Si/m²/s consumed by clays (positive = consumed)
     }
 
     return flux, weathering_diagnostics
@@ -101,12 +116,16 @@ _P_CO2_ref_calib = EARTH_ATM * 280e-6
 _seafloor_flux = 1e12 / YR
 _seafloor_flux_normalised = _seafloor_flux / A_seafloor
 
-# Residual function to find the alpha that produces the correct Alkalinity flux (Index 0)
+# Residual function to find the alpha that produces the correct Alkalinity flux (Index 0).
+# Uses pore_carbonate=False so the calibration is insulated from the carbonate step:
+# at modern seawater conditions the carbonate step can overwhelm the primary signal,
+# so we calibrate the primary dissolution rate independently.
 def _calibration_residual(a_array):
     a_val = a_array[0]
     flux, _ = get_weathering_flux(
-        _P_ref_calib, _T_ref_calib, _P_CO2_ref_calib, 
-        np.array([]), alpha=a_val, rate=rate_ref, J=J_ref_normalised
+        _P_ref_calib, _T_ref_calib, _P_CO2_ref_calib,
+        np.array([]), alpha=a_val, rate=rate_ref, J=J_ref_normalised,
+        pore_carbonate=False,
     )
     alkalinity_flux = flux[0]
     return (alkalinity_flux - _seafloor_flux_normalised) / _seafloor_flux_normalised
@@ -114,11 +133,6 @@ def _calibration_residual(a_array):
 # Run the optimization
 _root = least_squares(_calibration_residual, [100.0])
 ALPHA_REF = float(_root.x[0])
-
-W_REF, _ = get_weathering_flux(
-        _P_ref_calib, _T_ref_calib, _P_CO2_ref_calib, 
-        np.array([]), alpha=ALPHA_REF, rate=rate_ref, J=J_ref_normalised
-)
 
 # Reference alkalinity flux per unit land area at modern Earth conditions.
 # Calibrated so that 0.3 land fraction gives ~8 Tmol eq/yr total, which

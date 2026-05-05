@@ -864,6 +864,113 @@ def chlorite_rate(T: float, pH: float, omega: float) -> float:
     return chlorite_k(T, pH) * _tst_factor(omega, 1.0)
 
 
+# ── Reverse-weathering authigenic clays ──────────────────────────────────────
+
+@jit
+def greenalite_k(T: float, pH: float) -> float:
+    """
+    Greenalite (Fe₃Si₂O₅(OH)₄) effective rate constant k_eff [mol m⁻² s⁻¹].
+
+    Mechanism: acid + neutral + base  (σ = 1)
+    Source: proxy — chlorite (Clinochlore/Daphnite) parameters from
+    phreeqc_rates.dat 2023 table. No independent Greenalite kinetic data
+    found in Kinec_v3.dat or phreeqc_rates.dat; chlorite is the closest
+    structurally related Fe-phyllosilicate with tabulated rate data.
+    Thermodynamic data: llnl.dat (LLNL database).
+    """
+    return chlorite_k(T, pH)
+
+
+@jit
+def greenalite_rate(T: float, pH: float, omega: float) -> float:
+    """Greenalite dissolution/precipitation rate [mol m⁻² s⁻¹]."""
+    return greenalite_k(T, pH) * _tst_factor(omega, 1.0)
+
+
+@jit
+def minnesotaite_k(T: float, pH: float) -> float:
+    """
+    Minnesotaite (Fe₃Si₄O₁₀(OH)₂) effective rate constant k_eff [mol m⁻² s⁻¹].
+
+    Mechanism: acid + neutral + base  (σ = 3.5)
+    Source: proxy — Smectite-high-Fe-Mg parameters (Kinec_v3.dat / Kinec.v2.dat).
+    No independent Minnesotaite kinetic data in any searched database.
+    Smectite used as proxy for this Fe²⁺-talc; talc kinetics are broadly
+    similar to smectite in the literature.
+    Thermodynamic data: llnl.dat (LLNL database).
+    """
+    return smectite_high_k(T, pH)
+
+
+@jit
+def minnesotaite_rate(T: float, pH: float, omega: float) -> float:
+    """Minnesotaite dissolution/precipitation rate [mol m⁻² s⁻¹]."""
+    return minnesotaite_k(T, pH) * _tst_factor(omega, 3.5)
+
+
+@jit
+def chamosite_7a_k(T: float, pH: float) -> float:
+    """
+    Chamosite-7A (Fe₂Al₂SiO₅(OH)₄, Berthierine) effective rate constant
+    k_eff [mol m⁻² s⁻¹].
+
+    Mechanism: acid + neutral + base  (σ = 1)
+    Source: proxy — chlorite parameters from phreeqc_rates.dat 2023 table.
+    The table note states these parameters apply to Chamosite (Fe-chlorite);
+    Chamosite-7A is the 7 Å polymorph (Berthierine), structurally related.
+    Thermodynamic data: llnl.dat (LLNL database).
+    """
+    return chlorite_k(T, pH)
+
+
+@jit
+def chamosite_7a_rate(T: float, pH: float, omega: float) -> float:
+    """Chamosite-7A (Berthierine) dissolution/precipitation rate [mol m⁻² s⁻¹]."""
+    return chamosite_7a_k(T, pH) * _tst_factor(omega, 1.0)
+
+
+@jit
+def nontronite_k(T: float, pH: float) -> float:
+    """
+    Nontronite-Mg (Mg₀.₁₆₅Fe₂Al₀.₃₃Si₃.₆₇·nH₂O) effective rate constant
+    k_eff [mol m⁻² s⁻¹].
+
+    Mechanism: acid + neutral + base  (σ = 3.65)
+    Source: Kinec_v3.dat (Catalano 2013; Hermanska et al. 2022).
+    Identical kinetic parameters to Smectite-high-Fe-Mg; sigma differs (3.65
+    vs 3.5) per Kinec_v3.dat Nontronite-Mg entry.
+    Thermodynamic data: llnl.dat (LLNL database).
+    """
+    return smectite_high_k(T, pH)
+
+
+@jit
+def nontronite_rate(T: float, pH: float, omega: float) -> float:
+    """Nontronite-Mg dissolution/precipitation rate [mol m⁻² s⁻¹]."""
+    return nontronite_k(T, pH) * _tst_factor(omega, 3.65)
+
+
+@jit
+def saponite_k(T: float, pH: float) -> float:
+    """
+    Saponite-Mg (Mg₃.₁₆₅Al₀.₃₃Si₃.₆₇O₁₀(OH)₂) effective rate constant
+    k_eff [mol m⁻² s⁻¹].
+
+    Mechanism: acid + neutral + base  (σ = 3.65)
+    Source: Kinec_v3.dat (Catalano 2013; Hermanska et al. 2022).
+    Identical kinetic parameters to Smectite-high-Fe-Mg; sigma differs (3.65)
+    per Kinec_v3.dat Saponite-Mg-Mg entry.
+    Thermodynamic data: llnl.dat (LLNL database).
+    """
+    return smectite_high_k(T, pH)
+
+
+@jit
+def saponite_rate(T: float, pH: float, omega: float) -> float:
+    """Saponite-Mg dissolution/precipitation rate [mol m⁻² s⁻¹]."""
+    return saponite_k(T, pH) * _tst_factor(omega, 3.65)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # SULFIDE MINERALS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1095,8 +1202,14 @@ K_FUNCTIONS: dict[str, Callable] = {
     "Palygorskite":          sepiolite_k,    # proxy: same parameters as Sepiolite
     "SiO2(am)":              sio2am_k,
     "Goethite":              goethite_k,     # signature (T,) — no pH
-    "Clinochlore-14A":       chlorite_k,    # Mg-chlorite
-    "Daphnite-14A":          chlorite_k,    # Fe-chlorite (same parameters)
+    "Clinochlore-14A":       chlorite_k,      # Mg-chlorite
+    "Daphnite-14A":          chlorite_k,      # Fe-chlorite (same parameters)
+    # Reverse-weathering authigenic clays
+    "Greenalite":            greenalite_k,    # Fe-serpentine; proxy: chlorite
+    "Minnesotaite":          minnesotaite_k,  # Fe-talc; proxy: smectite-high
+    "Chamosite-7A":          chamosite_7a_k,  # Berthierine/Fe-serpentine; proxy: chlorite
+    "Nontronite-Mg":         nontronite_k,    # Fe³⁺-smectite; Kinec_v3 params
+    "Saponite-Mg":           saponite_k,      # Mg-smectite; Kinec_v3 params
     # Pyrite: empirical log-linear form — no separate k function
     # Glauconite: no PHREEQC PHASES; call glauconite_k() directly
 }
@@ -1131,8 +1244,14 @@ RATE_FUNCTIONS: dict[str, Callable] = {
     "Palygorskite":          sepiolite_rate,  # proxy: same parameters as Sepiolite
     "SiO2(am)":              sio2am_rate,
     "Goethite":              jit(lambda T, pH, omega: goethite_rate(T, omega)),
-    "Clinochlore-14A":       chlorite_rate,   # Mg-chlorite
-    "Daphnite-14A":          chlorite_rate,   # Fe-chlorite (same parameters)
+    "Clinochlore-14A":       chlorite_rate,     # Mg-chlorite
+    "Daphnite-14A":          chlorite_rate,     # Fe-chlorite (same parameters)
+    # Reverse-weathering authigenic clays
+    "Greenalite":            greenalite_rate,   # Fe-serpentine; proxy: chlorite
+    "Minnesotaite":          minnesotaite_rate, # Fe-talc; proxy: smectite-high
+    "Chamosite-7A":          chamosite_7a_rate, # Berthierine/Fe-serpentine; proxy: chlorite
+    "Nontronite-Mg":         nontronite_rate,   # Fe³⁺-smectite; Kinec_v3 params
+    "Saponite-Mg":           saponite_rate,     # Mg-smectite; Kinec_v3 params
     # Pyrite has a different signature; call pyrite_rate() directly
     # Glauconite: no PHREEQC PHASES; call glauconite_rate() directly
 }
