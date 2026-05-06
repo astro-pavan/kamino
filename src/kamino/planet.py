@@ -19,7 +19,7 @@ from kamino.utils import august_roche_magnus_formula
 output_path = os.path.join(os.path.dirname(__file__), '../../output/')
 
 tau_prec = 1e5 * YR
-tau_atm = 1e5 * YR
+tau_atm = 1e4 * YR
 
 class Planet:
 
@@ -190,8 +190,11 @@ class Planet:
         carbon = Y[3]
         calcite_SI = SI['Calcite']
 
-        if self.verbose:
-            print(f't = {t/YR:.4e} yr  T = {T_surface:.1f}  P_CO2 = {P_CO2 / 1e5:.1e} bar  pH = {pH:.1f}  Calcite SI = {calcite_SI:.1f}  C flux = {(carbon_flux / carbon) * 1e9 * YR:.1e} / Gyr  ', end='\r')
+        if self.verbose and not getattr(self, '_jac_active', False):
+            self._step_count = getattr(self, '_step_count', 0) + 1
+            dt_str = f'  dt={((t - self._last_t)/YR):.1e}yr' if hasattr(self, '_last_t') else ''
+            print(f't = {t/YR:.4e} yr  T = {T_surface:.1f}  P_CO2 = {P_CO2 / 1e5:.1e} bar  pH = {pH:.1f}  Calcite SI = {calcite_SI:.1f}  C flux = {(carbon_flux / carbon) * 1e9 * YR:.1e} / Gyr  step={self._step_count}{dt_str}  ', end='\r')
+            self._last_t = t
 
         self._pH = pH
 
@@ -207,6 +210,7 @@ class Planet:
         T_runaway = 350
         T_snowball = 260
         P_CO2_acid_threshold = 5e5   # Pa (5 bar)
+        P_CO2_floor = 1.0            # Pa — below this the planet is unambiguously going snowball
         min_time = 2e6 * YR
         convergence_rate = 0.1 / (1e9 * YR)
 
@@ -233,6 +237,12 @@ class Planet:
                 return 1.0
             return P_CO2_acid_threshold - np.clip(Y[0], 0, None)
         event_acid_ocean.terminal, event_acid_ocean.direction = True, -1 # type: ignore
+
+        def event_co2_floor(t, Y):
+            if t < min_time:
+                return 1.0
+            return np.clip(Y[0], 0, None) - P_CO2_floor
+        event_co2_floor.terminal, event_co2_floor.direction = True, -1 # type: ignore
 
         atol = np.ones_like(Y0) * 1e-6
         atol[0] = 1.0   # P_CO2 in Pa
@@ -270,7 +280,7 @@ class Planet:
             jac = np.zeros((N, N))
 
             eps_abs = np.empty(N)
-            eps_abs[0] = 0.1      # P_CO2  [Pa]   (atol=1 Pa)
+            eps_abs[0] = 1e-3     # P_CO2  [Pa] — small so jac_epsilon*|P_CO2| dominates at all relevant values
             eps_abs[1] = 0.1      # P_H2O  [Pa]
             eps_abs[2:] = 1e-9   # b_ocean [mol/kgw]  (trace_approx threshold)
 
@@ -370,6 +380,6 @@ if __name__ == '__main__':
     for s in instellation:
         print(f's = {s}')
         p = Planet(M_EARTH, R_EARTH, BACKGROUND_PRESSURE, s, 1.0, 1.0, 3000,
-                    name=f'test_s_{s}', f_HT=0.05, verbose=True)
+                    name=f'test_s_{s}', f_HT=0.005, verbose=True)
         p.time_evolve()
         print('')
