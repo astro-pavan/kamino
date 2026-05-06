@@ -1,16 +1,16 @@
-peridotite_42 = {
+komatiite_42 = {
     'Forsterite': 0.7,
     'Fayalite': 0.3
 } # 100% Olivine
 
-peridotite_44 = {
+komatiite_44 = {
     'Wollastonite': 0.333 * 0.3,
     'Enstatite': 0.666 * 0.3,
     'Forsterite': 0.7 * 0.7,
     'Fayalite': 0.3 * 0.7
 } # 70% Olivine 30% Pyroxene
 
-peridotite_47 = {
+basalt_47 = {
     'Wollastonite': 0.333 * 0.7,
     'Enstatite': 0.666 * 0.7,
     'Forsterite': 0.7 * 0.3,

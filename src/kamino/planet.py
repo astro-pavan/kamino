@@ -33,6 +33,7 @@ class Planet:
             outgassing: float,
             ocean_depth: float,
             land_fraction: float=0.0,
+            crust_composition: dict[str, float]=basalt_composition,
             crust_carbonate_content: float=0.0,
             reverse_weathering: bool=True,
             f_HT: float=0.0,
@@ -47,6 +48,7 @@ class Planet:
             "background_pressure": background_pressure,
             "ocean_depth": ocean_depth,
             "land_fraction": land_fraction,
+            "crust_composition": crust_composition.copy(),
             "instellation": instellation,
             "crust_production_rate": crust_production_rate,
             "outgassing": outgassing,
@@ -68,7 +70,7 @@ class Planet:
         self.crust_production_rate = EARTH_CRUST_PRODUCTION_RATE_PER_AREA * crust_production_rate
         self.hydrothermal_flux = EARTH_HYDROTHERMAL_FLUX_PER_AREA * crust_production_rate
 
-        self.crust_composition = basalt_composition.copy()
+        self.crust_composition = crust_composition.copy()
 
         if crust_carbonate_content > 0:
             for mineral in self.crust_composition:
@@ -121,7 +123,7 @@ class Planet:
         # atmosphere properties
 
         P_surface = self.P_background + P_CO2 + P_H2O
-        T_surface = get_T_surface(self.instellation, P_CO2, self.albedo, self.tidally_locked)
+        T_surface = get_T_surface(self.instellation, max(P_CO2, 1.0), self.albedo, self.tidally_locked)
         P_H2O_new = august_roche_magnus_formula(T_surface)
 
         # seafloor properties
@@ -221,14 +223,14 @@ class Planet:
             if t < min_time:
                 return 1.0
             P_CO2 = np.clip(Y[0], 0, 1e6)
-            T_surface = get_T_surface(self.instellation, max(P_CO2, 1e-2), self.albedo, self.tidally_locked)
+            T_surface = get_T_surface(self.instellation, max(P_CO2, 1.0), self.albedo, self.tidally_locked)
             return T_surface - T_snowball
         event_snowball.terminal, event_snowball.direction = True, -1 # type: ignore
 
         def event_hothouse(t, Y):
             if t < min_time:
                 return -1.0  # negative guard: direction=+1 won't trigger on the guard→actual transition
-            T = get_T_surface(self.instellation, max(Y[0], 1e-2), self.albedo, self.tidally_locked)
+            T = get_T_surface(self.instellation, max(Y[0], 1.0), self.albedo, self.tidally_locked)
             return T - T_runaway
         event_hothouse.terminal, event_hothouse.direction = True, +1 # type: ignore
 
@@ -241,6 +243,10 @@ class Planet:
         def event_co2_floor(t, Y):
             if t < min_time:
                 return 1.0
+            P_CO2 = np.clip(Y[0], 0, 1e6)
+            T_surface = get_T_surface(self.instellation, max(P_CO2, 1.0), self.albedo, self.tidally_locked)
+            if T_surface < T_snowball:
+                return 1.0  # snowball handles this case
             return np.clip(Y[0], 0, None) - P_CO2_floor
         event_co2_floor.terminal, event_co2_floor.direction = True, -1 # type: ignore
 
@@ -319,12 +325,12 @@ class Planet:
             rtol=1e-3,
             atol=atol,
             jac=macro_jacobian,
-            events=[event_snowball, event_hothouse, event_acid_ocean, event_converged],
+            events=[event_snowball, event_hothouse, event_acid_ocean, event_converged, event_co2_floor],
         )
 
         end = time.time()
 
-        event_names = ['snowball', 'hothouse', 'acid_ocean', 'converged']
+        event_names = ['snowball', 'hothouse', 'acid_ocean', 'converged', 'co2_floor']
 
         sol.y = np.maximum(sol.y, 0.0)
         time_steps = sol.t.tolist()
@@ -379,7 +385,7 @@ if __name__ == '__main__':
     #     tag = 'rw' if rw else 'norw'
     for s in instellation:
         print(f's = {s}')
-        p = Planet(M_EARTH, R_EARTH, BACKGROUND_PRESSURE, s, 1.0, 1.0, 3000,
+        p = Planet(M_EARTH, R_EARTH, BACKGROUND_PRESSURE, s, 1.0, 3.0, 3000,
                     name=f'test_s_{s}', f_HT=0.005, verbose=True)
         p.time_evolve()
         print('')
