@@ -20,6 +20,7 @@ output_path = os.path.join(os.path.dirname(__file__), '../../output/')
 
 tau_prec = 1e5 * YR
 tau_atm = 1e4 * YR
+tau_r_avg = 3e7 * YR   # EMA timescale for convergence rate smoothing (~30 Myr)
 
 class Planet:
 
@@ -112,7 +113,7 @@ class Planet:
 
         P_CO2 = Y[0]
         P_H2O = Y[1]
-        b_ocean = Y[2:]
+        b_ocean = Y[2:-1]   # Y[-1] is r_avg, excluded from chemistry
 
         # input safety
 
@@ -174,8 +175,8 @@ class Planet:
             # Chemistry has left the valid domain (typically high P_CO2 where PHREEQC cannot converge).
             # Return pure outgassing so LSODA gets a finite derivative and the acid_ocean event can terminate cleanly.
             dYdt = np.zeros_like(Y)
-            dYdt[2:] = F_vol
-            self._F_net = dYdt[2:]
+            dYdt[2:-1] = F_vol
+            self._F_net = dYdt[2:-1]
             return dYdt
 
         dYdt = np.zeros_like(Y)
@@ -185,8 +186,16 @@ class Planet:
 
         F_net[b_ocean <= 0.0] = np.maximum(F_net[b_ocean <= 0.0], 0.0)
 
-        dYdt[2:] = F_net
+        dYdt[2:-1] = F_net
         self._F_net = F_net
+
+        # Relaxation equation for smoothed convergence rate (r_avg = Y[-1])
+        significant = b_ocean > 1e-7
+        if np.any(significant):
+            max_frac_rate = np.max(np.abs(F_net[significant]) / np.maximum(b_ocean[significant], 1e-6))
+        else:
+            max_frac_rate = 0.0
+        dYdt[-1] = (max_frac_rate - Y[-1]) / tau_r_avg
 
         carbon_flux = dYdt[3]
         carbon = Y[3]
@@ -204,10 +213,11 @@ class Planet:
 
     def time_evolve(self, t_end=2e9 * YR, jac_epsilon=0.01):
 
-        Y0 = np.zeros(elements.shape[0] + 2)
+        Y0 = np.zeros(elements.shape[0] + 3)  # +2 for P_CO2/P_H2O, +1 for r_avg
 
         Y0[0] = 1000
         Y0[1] = 1000
+        Y0[-1] = 1.0 / (1e6 * YR)  # r_avg starts high (1/Myr) so convergence can't fire immediately
 
         T_runaway = 350
         T_snowball = 260
@@ -221,7 +231,7 @@ class Planet:
 
         def event_snowball(t, Y):
             if t < min_time:
-                return 1.0
+                return -1.0  # negative guard: direction=-1 won't trigger on the guard→actual transition
             P_CO2 = np.clip(Y[0], 0, 1e6)
             T_surface = get_T_surface(self.instellation, max(P_CO2, 1.0), self.albedo, self.tidally_locked)
             return T_surface - T_snowball
@@ -242,7 +252,7 @@ class Planet:
 
         def event_co2_floor(t, Y):
             if t < min_time:
-                return 1.0
+                return -1.0  # negative guard: direction=-1 won't trigger on the guard→actual transition
             P_CO2 = np.clip(Y[0], 0, 1e6)
             T_surface = get_T_surface(self.instellation, max(P_CO2, 1.0), self.albedo, self.tidally_locked)
             if T_surface < T_snowball:
@@ -253,6 +263,7 @@ class Planet:
         atol = np.ones_like(Y0) * 1e-6
         atol[0] = 1.0   # P_CO2 in Pa
         atol[1] = 1.0   # P_H2O in Pa
+        atol[-1] = convergence_rate * 0.1  # r_avg: resolve to 10% of the convergence threshold
 
         chem_significant = 1e-7  # mol/kgw
         min_time_frozen = 1e8 * YR  # 100 Myr: if no carbonate cycle by here, ocean is frozen
@@ -264,19 +275,10 @@ class Planet:
             T_surface = get_T_surface(self.instellation, max(P_CO2, 1e-2), self.albedo, self.tidally_locked)
             if T_surface < T_snowball:
                 return 1.0  # snowball conditions — defer to event_snowball
-            b = Y[2:]
-            mask = b > chem_significant
-            if not np.any(mask):
-                # No mutable-state guard here: purely a function of (t, Y)
+            b = Y[2:-1]
+            if not np.any(b > chem_significant):
                 return min_time_frozen - t
-            try:
-                dYdt = self.dY_dt(t, Y)
-            except ChemistryError:
-                return 1.0
-            F_net = dYdt[2:]
-            denom = np.maximum(b[mask], 1e-6)
-            max_fractional_rate = np.max(np.abs(F_net[mask]) / denom)
-            return max_fractional_rate - convergence_rate
+            return Y[-1] - convergence_rate  # r_avg vs threshold; pure function of (t, Y)
         event_converged.terminal, event_converged.direction = True, -1 # type: ignore
 
         N = len(Y0)
@@ -292,25 +294,29 @@ class Planet:
 
             delta = np.maximum(jac_epsilon * np.abs(y), eps_abs)
 
-            for j in range(N):
+            self._jac_active = True # type: ignore
+            try:
+                for j in range(N):
 
-                if j == 1:
-                    jac[1, 1] = -1.0 / tau_atm
-                    continue
+                    if j == 1:
+                        jac[1, 1] = -1.0 / tau_atm
+                        continue
 
-                y_plus = np.copy(y)
-                y_minus = np.copy(y)
+                    y_plus = np.copy(y)
+                    y_minus = np.copy(y)
 
-                y_plus[j] += delta[j]
-                y_minus[j] -= delta[j]
+                    y_plus[j] += delta[j]
+                    y_minus[j] -= delta[j]
 
-                try:
-                    f_plus = self.dY_dt(t, y_plus)
-                    f_minus = self.dY_dt(t, y_minus)
-                except ChemistryError:
-                    continue
+                    try:
+                        f_plus = self.dY_dt(t, y_plus)
+                        f_minus = self.dY_dt(t, y_minus)
+                    except ChemistryError:
+                        continue
 
-                jac[:, j] = (f_plus - f_minus) / (2 * delta[j])
+                    jac[:, j] = (f_plus - f_minus) / (2 * delta[j])
+            finally:
+                self._jac_active = False # type: ignore
 
             return jac
 
