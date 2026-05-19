@@ -283,9 +283,9 @@ def get_b_eq(P: float, T: float, P_CO2: float, composition: dict[str, float], b_
 
     return b_eq, pH
 
-def get_gas_partial_pressure(P: float, T: float, b: npt.NDArray[np.float64], gases: list[str]) -> list[float]:
+def get_gas_partial_pressure(P: float, T: float, b: npt.NDArray[np.float64], gases: list[str], pH: float | None=None) -> list[float]:
 
-    output = solve_solution(P, T, b)
+    output = solve_solution(P, T, b, pH=pH)
 
     P_gases = []
 
