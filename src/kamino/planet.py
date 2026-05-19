@@ -8,7 +8,7 @@ import os
 
 from kamino.constants import *
 from kamino.chemistry import elements, get_P_CO2, c_idx, si_idx, ChemistryError
-from kamino.weathering import get_weathering_flux, J_ref_normalised, rate_ref
+from kamino.weathering import get_weathering_flux, get_continental_weathering_flux, J_ref_normalised, rate_ref
 from kamino.precipitation import get_precipitation
 from kamino.mineral_info import *
 
@@ -169,7 +169,13 @@ class Planet:
             weathering_flux = flux_lt + flux_ht
 
             F_diss = (weathering_flux * self.surface_area) / self.ocean_water_mass
-            F_net = F_vol + F_prec + F_diss
+
+            F_cont = np.zeros_like(F_diss)
+            if self.land_fraction > 0:
+                F_cont = get_continental_weathering_flux(T_surface, P_CO2).copy() * self.land_area / self.ocean_water_mass
+                F_cont[c_idx] = 0.0  # C came from atmosphere; adding it here raises P_CO2 (double-counting)
+
+            F_net = F_vol + F_prec + F_diss + F_cont
 
         except (ChemistryError, AssertionError):
             # Chemistry has left the valid domain (typically high P_CO2 where PHREEQC cannot converge).

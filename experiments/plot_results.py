@@ -200,6 +200,7 @@ def load_data(output_path):
             'ocean_depth':        float(d['ocean_depth']),
             'comp_name':          comp_name,
             'f_HT':               float(d.get('f_HT', 0.0)),
+            'land_fraction':      float(d.get('land_fraction', 0.0)),
             'termination':        d['termination'],
             'end_time_yr':        d.get('end_time_yr', np.nan),
             'T':                  d.get('T', np.nan),
@@ -213,13 +214,14 @@ def load_data(output_path):
 
 
 def _base(df):
-    """Sweep 1: basalt_49, rw=True, depth=3000, f_HT=0, outgassing>0."""
+    """Sweep 1: basalt_49, rw=True, depth=3000, f_HT=0, outgassing>0, ocean world."""
     return df[
         df['reverse_weathering'] &
         (df['comp_name'] == 'basalt_49') &
         (df['crust_carbonate'] == 0.0) &
         (df['ocean_depth'] == 3000) &
         (df['f_HT'] == 0.0) &
+        (df['land_fraction'] == 0.0) &
         (df['outgassing'] > 0)
     ]
 
@@ -793,11 +795,51 @@ def plot_damkohler_contour(df, output_path, out_targets=(0.1, 1.0, 10.0)):
         cbar_ax = fig.add_axes([0.85, pos_bot.y0, 0.03, pos_top.y1 - pos_bot.y0])
         sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
         sm.set_array([])
-        cbar = fig.colorbar(sm, cax=cbar_ax, label=r'$\log_{10}(\mathrm{Da})$')
+        cbar = fig.colorbar(sm, cax=cbar_ax, label=r'$\log_{10}(\mathrm{Damkohler Coefficient})$')
         cbar.ax.axhline(0, color='k', linewidth=1.5)
 
         # fig.suptitle('Damköhler number — basalt_49, rw=True, depth = 3000 m', fontsize=10)
         _save_fig(fig, os.path.join(output_path, 'da_contour.png'))
+
+
+def plot_continental_baseline(df, output_path):
+    """T and P_CO2 vs instellation for the Earth-like continental baseline.
+
+    Runs with land_fraction=0.3, basalt_49, rw=True, out=1×, crust=1×, depth=3000 m.
+    """
+    subset = df[
+        (df['land_fraction'] == 0.3) &
+        (df['comp_name'] == 'basalt_49') &
+        df['reverse_weathering'] &
+        (df['outgassing'] == 1.0) &
+        (df['crust_production'] == 1.0) &
+        (df['ocean_depth'] == 3000) &
+        (df['f_HT'] == 0.0)
+    ]
+    if subset.empty:
+        print("No continental baseline data found — skipping.")
+        return
+
+    cols = ['T', 'P_CO2']
+    group = subset.sort_values('instellation')
+
+    EARTH_S   = 1.0
+    EARTH_T   = 288.0        # K
+    EARTH_PCO2 = 280e-6      # bar (modern ~280 ppm)
+
+    fig, axes = plt.subplots(len(cols), 1, figsize=(3.5, len(cols) * 2), sharex=True)
+    _plot_group_on_axes(axes, group, color='k', show_markers=False, cols=cols)
+    _style_axes(axes, cols)
+
+    earth_vals = {'T': EARTH_T, 'P_CO2': EARTH_PCO2}
+    for ax, col in zip(axes, cols):
+        ax.scatter(EARTH_S, earth_vals[col], marker='*', s=220, color='blue',
+                   edgecolors='k', linewidths=0.7, zorder=6)
+    axes[0].annotate('Earth', xy=(EARTH_S, EARTH_T), xytext=(EARTH_S + 0.06, EARTH_T - 6),
+                     fontsize=8, arrowprops=dict(arrowstyle='-', color='k', lw=0.8))
+
+    # fig.suptitle('Continental baseline  (out=1×, crust=1×, depth=3000 m, land=30%)')
+    _save_fig(fig, os.path.join(output_path, 'continental_baseline.png'))
 
 
 def _get_mineral_si(d):
@@ -961,5 +1003,6 @@ if __name__ == '__main__':
         plot_ratio_scatter(df, args.path)
         plot_crust_composition(df, args.path, show_markers=False)
         plot_damkohler_contour(df, args.path)
+        plot_continental_baseline(df, args.path)
         #plot_magnesium_chemistry(df, args.path)
         print("Done.")
