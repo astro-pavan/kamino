@@ -56,8 +56,6 @@ def get_weathering_flux(
         fO2: float=0,
         ) -> tuple[npt.NDArray[np.float64], dict[str, float]]:
 
-    molar_mass = 0.216 # kg / mol (THIS NEEDS TO BE ACCURATELY CALCULATED)
-
     if alpha is None:
         alpha = ALPHA_REF
 
@@ -84,7 +82,11 @@ def get_weathering_flux(
     F_primary = A_reactive * (b_eq_primary - b_input) / (b_eq_primary / k_primary + A_reactive / J)
     F_primary = np.where(k_nonzero, F_primary, 0.0)  # zero out elements with no basalt stoichiometry (e.g. C)
 
-    Da_primary = (k_primary * A_reactive * molar_mass) / J
+    # Da = k*A / (J*b_eq): dimensionless ratio of transport to kinetic resistance.
+    # Da>>1 → thermodynamically limited (pore fluid near equilibrium with basalt);
+    # Da<<1 → kinetically limited.
+    b_eq_safe = np.where(b_eq_primary > 0, b_eq_primary, np.inf)
+    Da_primary = (k_primary * A_reactive) / (J * b_eq_safe)
     b_pore = b_input + (b_eq_primary - b_input) * (1 - np.exp(-Da_primary))
 
     if 'Calcite' not in crust_composition:
@@ -97,7 +99,9 @@ def get_weathering_flux(
     weathering_diagnostics = {
         'Da': Da_primary[0],
         'A_reactive': A_reactive,
-        'supply_efficiency': supply_efficiency
+        'supply_efficiency': supply_efficiency,
+        'b_pore': b_pore,
+        'secondary_SI': {},
     }
 
     if precipitating_minerals and not high_temperature:
@@ -105,13 +109,7 @@ def get_weathering_flux(
         flux += J * d_b_secondary
         b_pore = b_pore + d_b_secondary
         weathering_diagnostics['secondary_SI'] = SI_dict
-
-    weathering_diagnostics = {
-        'Da': Da_primary[0],
-        'A_reactive': A_reactive,
-        'supply_efficiency': supply_efficiency,
-        'b_pore': b_pore
-    }
+        weathering_diagnostics['b_pore'] = b_pore
     
     return flux, weathering_diagnostics
 
