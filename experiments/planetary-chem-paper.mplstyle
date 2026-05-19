@@ -1,0 +1,39 @@
+figure.figsize: 3.33, 3
+figure.constrained_layout.use: True
+
+font.family: serif
+font.size: 8
+
+legend.fontsize: 7
+legend.frameon: False
+
+axes.labelsize: 9
+axes.spines.top: False
+axes.spines.right: False
+axes.linewidth: 0.5
+axes.labelpad: 3
+
+axes.prop_cycle: cycler('color', ['4477AA', 'EE6677', '228833', 'CCBB44', '66CCEE', 'AA3377', 'BBBBBB'])
+
+xtick.direction: in
+ytick.direction: in
+
+xtick.major.width: 0.5
+ytick.major.width: 0.5
+xtick.major.pad: 2
+ytick.major.pad: 2
+
+xtick.labelsize: 7
+ytick.labelsize: 7
+
+xtick.minor.width: 0.4
+ytick.minor.width: 0.4
+xtick.minor.visible: True
+ytick.minor.visible: True
+
+lines.linewidth: 1.0
+lines.markersize: 4
+
+savefig.dpi: 300
+
+
