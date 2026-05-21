@@ -123,7 +123,7 @@ def _diag_from_json(d):
 
         crust_composition = d.get('crust_composition', {})
         rw = bool(d.get('reverse_weathering', False))
-        pore_minerals = carbonate_minerals + clay_minerals + (reverse_weathering_minerals if rw else [])
+        pore_minerals = carbonate_minerals + clay_minerals  # reverse weathering is in ocean sediments, not pore space
 
         flux, diag = get_weathering_flux(
             P_pore, T_pore, P_CO2, b_ocean,
