@@ -7,7 +7,7 @@ import json
 import os
 
 from kamino.constants import *
-from kamino.chemistry import elements, get_P_CO2, c_idx, si_idx, ChemistryError
+from kamino.chemistry import elements, get_P_CO2, c_idx, si_idx, alk_idx, ca_idx, mg_idx, ChemistryError
 from kamino.weathering import get_weathering_flux, get_continental_weathering_flux, J_ref_normalised, rate_ref
 from kamino.precipitation import get_precipitation
 from kamino.mineral_info import *
@@ -17,6 +17,11 @@ from kamino.climate.clima_interpolator import get_T_surface
 from kamino.utils import august_roche_magnus_formula
 
 output_path = os.path.join(os.path.dirname(__file__), '../../output/')
+
+# Mg→Ca exchange partition coefficient for HT hydrothermal circulation.
+# Calibrated so that at Earth conditions ([Mg]=53 mM, crust_rate=1) the exchange gives
+# ~1.4 Tmol/yr: KD_MG_HT = 1.4e12 × 0.7 / (0.053 × J_ref × YR), where 0.7 = A_seafloor/A_total.
+KD_MG_HT = 0.7 * 1.4e12 / (0.053 * 1.4e15)  # ≈ 0.013
 
 tau_prec = 1e5 * YR
 tau_atm = 1e4 * YR
@@ -38,6 +43,7 @@ class Planet:
             crust_carbonate_content: float=0.0,
             reverse_weathering: bool=True,
             f_HT: float=0.0,
+            f_carb: float=0.0,
             verbose: bool=False,
             name: str='planet'
             ):
@@ -55,7 +61,8 @@ class Planet:
             "outgassing": outgassing,
             "crust_carbonate_content": crust_carbonate_content,
             "reverse_weathering": reverse_weathering,
-            "f_HT": f_HT
+            "f_HT": f_HT,
+            "f_carb": f_carb
         }
 
         self.name = name
@@ -78,11 +85,17 @@ class Planet:
                 self.crust_composition[mineral] *= (1 - crust_carbonate_content)
             self.crust_composition['Calcite'] = crust_carbonate_content
 
-        self.pore_precipitating_minerals = carbonate_minerals + clay_minerals
+        # Calcite excluded from pore space: carbonate veins in basalt form on Myr timescales,
+        # much slower than tau_prec = 1e5 yr. Including it captures all basalt-derived Ca in
+        # situ and starves the ocean of Ca entirely.
+        self.pore_precipitating_minerals = [m for m in carbonate_minerals if m != 'Calcite'] + clay_minerals
         self.ocean_precipitating_minerals = carbonate_minerals + clay_minerals + silica_minerals
+        self.shelf_depth = 1000.0  # m — representative continental shelf depth for carbonate burial
+        self.shelf_precipitating_minerals = carbonate_minerals
 
         if reverse_weathering:
-            self.pore_precipitating_minerals += reverse_weathering_minerals
+            # Reverse weathering (saponite authigenesis) occurs in marine sediment porewaters,
+            # not in the seafloor basalt alteration zone — Isson & Planavsky (2018).
             self.ocean_precipitating_minerals += reverse_weathering_minerals
 
         self.outgassing_flux = np.zeros(elements.shape)
@@ -91,6 +104,7 @@ class Planet:
         self.tidally_locked = False
 
         self.f_HT = f_HT
+        self.f_carb = f_carb
 
         self.land_fraction = land_fraction
         self.land_area = land_fraction * self.surface_area
@@ -171,11 +185,34 @@ class Planet:
             F_diss = (weathering_flux * self.surface_area) / self.ocean_water_mass
 
             F_cont = np.zeros_like(F_diss)
+            F_shelf_prec = np.zeros_like(F_diss)
             if self.land_fraction > 0:
-                F_cont = get_continental_weathering_flux(T_surface, P_CO2).copy() * self.land_area / self.ocean_water_mass
-                F_cont[c_idx] = 0.0  # C came from atmosphere; adding it here raises P_CO2 (double-counting)
+                F_sil_cont = get_continental_weathering_flux(T_surface, P_CO2).copy()
+                F_sil_cont[c_idx] = 0.0  # C came from atmosphere; adding it here raises P_CO2 (double-counting)
+                # Continental carbonate weathering: CaCO3 + CO2 + H2O -> Ca2+ + 2HCO3-
+                # C here is geological (from land CaCO3), so it is NOT zeroed out.
+                F_carb_w = np.zeros(elements.shape)
+                F_carb_w[ca_idx] = self.f_carb * F_sil_cont[ca_idx]
+                F_carb_w[alk_idx] = 2.0 * self.f_carb * F_sil_cont[ca_idx]
+                F_carb_w[c_idx] = self.f_carb * F_sil_cont[ca_idx]
+                F_cont = (F_sil_cont + F_carb_w) * self.land_area / self.ocean_water_mass
 
-            F_net = F_vol + F_prec + F_diss + F_cont
+                # Shallow carbonate precipitation on continental shelves (above the CCD).
+                # Uses T_seafloor (below thermocline) and 1000m pressure — higher Calcite SI
+                # than the deep seafloor drives stronger carbonate burial.
+                P_shelf = P_surface + 1000 * self.gravity * self.shelf_depth
+                F_shelf_prec, _, _ = get_precipitation(P_shelf, T_seafloor, b_ocean,
+                                                       precipitating_minerals=self.shelf_precipitating_minerals,
+                                                       precipitation_timescale=tau_prec)
+
+            # Simple HT Mg→Ca exchange: hot fluids strip Mg from seawater, Ca released from basalt.
+            # Rate proportional to [Mg] and crust production; replaces the complex f_HT PHREEQC path.
+            _ht_rate = KD_MG_HT * b_ocean[mg_idx] * J_total * self.surface_area / self.ocean_water_mass
+            F_ht_exchange = np.zeros(elements.shape)
+            F_ht_exchange[mg_idx] = -_ht_rate
+            F_ht_exchange[ca_idx] = +_ht_rate
+
+            F_net = F_vol + F_prec + F_shelf_prec + F_diss + F_cont + F_ht_exchange
 
         except (ChemistryError, AssertionError):
             # Chemistry has left the valid domain (typically high P_CO2 where PHREEQC cannot converge).
