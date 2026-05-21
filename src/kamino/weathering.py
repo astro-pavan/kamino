@@ -50,7 +50,7 @@ def get_weathering_flux(
         sedimentation_rate: float | None=None,
         high_temperature: bool=False,
         crust_composition: dict[str, float]=basalt_composition,
-        precipitating_minerals: list[str] =clay_minerals + reverse_weathering_minerals + carbonate_minerals, 
+        precipitating_minerals: list[str] = clay_minerals + carbonate_minerals,
         cover: bool=True,
         clog: bool=False,
         fO2: float=0,
@@ -142,6 +142,8 @@ ALPHA_REF = float(_root.x[0])
 _CONT_LAND_AREA_EARTH = 0.3 * 4 * np.pi * R_EARTH ** 2   # m²
 EARTH_CONTINENTAL_WEATHERING_REF = (8e12 / YR) / _CONT_LAND_AREA_EARTH  # mol_eq / m² / s
 
+_MG_FRACTION = 0.28  # Mg/(Ca+Mg) in continental silicate weathering — Gaillardet et al. (1999)
+
 def get_continental_weathering_flux(
     T: float,
     P_CO2: float,
@@ -153,8 +155,8 @@ def get_continental_weathering_flux(
 ) -> npt.NDArray[np.float64]:
     """Walker-Hays-Kasting continental silicate weathering parameterization.
 
-    Returns flux per unit land area [mol/m²/s] using CaSiO3 stoichiometry:
-        CaSiO3 + 2CO2 + H2O -> Ca2+ + 2HCO3- + SiO2
+    Returns flux per unit land area [mol/m²/s] using mixed CaSiO3+MgSiO3 stoichiometry.
+    Total Alk flux calibrated to Earth; Ca/Mg split from Gaillardet et al. (1999) river data.
 
     Parameters
     ----------
@@ -169,11 +171,11 @@ def get_continental_weathering_flux(
 
     flux = np.zeros(len(elements))
 
-    # Per mol CaSiO3 dissolved: 1 mol Ca2+, 2 mol HCO3-
-    # => 2 eq Alk, 2 mol C, 1 mol Ca per mol CaSiO3
-    flux[alk_idx] = F_alk        # eq / m² / s
-    flux[c_idx]   = F_alk        # mol C / m² / s  (1 HCO3- = 1 C = 1 eq Alk)
-    flux[ca_idx]  = F_alk / 2    # mol Ca / m² / s (2 eq per mol Ca2+)
+    # Mixed CaSiO3 + MgSiO3 — same total Alk, cation split Ca/Mg.
+    flux[alk_idx] = F_alk
+    flux[c_idx]   = F_alk
+    flux[ca_idx]  = F_alk / 2 * (1 - _MG_FRACTION)
+    flux[mg_idx]  = F_alk / 2 * _MG_FRACTION
     flux[si_idx]  = F_alk / 2
 
     return flux
