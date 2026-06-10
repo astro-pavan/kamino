@@ -1510,6 +1510,12 @@ Sepiolite
         -analytic 1.869e+1 4.7544e-2 2.6765e+4 -2.5301e+1 -2.6498e+6
 #       -Range:  0-300
 
+Sepiolite(d)
+        Mg4Si6O15(OH)2:6H2O + 8 H+ = 4 Mg+2 + 6 SiO2 + 11 H2O
+        log_k 33.34
+	-delta_H -157.339 kJ/mol # Disordered form; log_k = Sepiolite + 2.90 (ordering difference from phreeqc.dat)
+#       -Range:  0-300
+
 Clinochlore-14A
         Mg5Al2Si3O10(OH)8 + 16 H+ = 2 Al+3 + 3 SiO2 + 5 Mg+2 + 12 H2O
         log_k 67.2391
