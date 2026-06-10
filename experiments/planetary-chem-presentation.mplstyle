@@ -1,0 +1,45 @@
+# Presentation version of planetary-chem style
+# Sized for 16:9 slides, readable from the back of a room
+
+# 13.33 x 7.5 in = full 16:9 slide at 1in margins
+# Slightly smaller to leave room for slide title
+figure.figsize: 12, 6.5
+figure.constrained_layout.use: True
+
+font.family: sans-serif
+font.size: 18
+
+legend.fontsize: 16
+legend.frameon: False
+
+axes.labelsize: 20
+axes.spines.top: False
+axes.spines.right: False
+axes.linewidth: 1.2
+axes.labelpad: 6
+
+xtick.direction: in
+ytick.direction: in
+
+xtick.major.width: 1.2
+ytick.major.width: 1.2
+xtick.major.pad: 6
+ytick.major.pad: 6
+
+xtick.labelsize: 16
+ytick.labelsize: 16
+
+xtick.minor.width: 0.8
+ytick.minor.width: 0.8
+xtick.minor.visible: True
+ytick.minor.visible: True
+
+xtick.major.size: 6
+ytick.major.size: 6
+xtick.minor.size: 3
+ytick.minor.size: 3
+
+lines.linewidth: 2.5
+lines.markersize: 8
+
+savefig.dpi: 150
