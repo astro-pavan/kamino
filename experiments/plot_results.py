@@ -37,9 +37,10 @@ T_SNOWBALL = 260.0
 T_RUNAWAY  = 360.0
 
 # Molar masses for b_ocean elements (g/mol), skipping Alkalinity (index 2 of y):
-# y[3]=C×61, y[4]=Si×60.1, y[5]=Al×27, y[6]=Fe×55.8, y[7]=Ca×40.1, y[8]=Mg×24.3
-_SAL_INDICES = [3, 4, 5, 6, 7, 8]
-_SAL_MASSES  = [61.0, 60.1, 27.0, 55.8, 40.1, 24.3]
+# y[3]=C×61, y[4]=Si×60.1, y[5]=Al×27, y[6]=Fe×55.8, y[7]=Ca×40.1, y[8]=Mg×24.3,
+# y[9]=Na×23.0, y[10]=Cl×35.45  (added with NaCl chemistry)
+_SAL_INDICES = [3, 4, 5, 6, 7, 8, 9, 10]
+_SAL_MASSES  = [61.0, 60.1, 27.0, 55.8, 40.1, 24.3, 23.0, 35.45]
 
 COMP_COLORS = {
     'komatiite_42': '#7b2d8b',
@@ -99,9 +100,10 @@ def _diag_from_json(d):
     """
     try:
         y_list = d.get('data', {}).get('y', [])
-        if not y_list or len(y_list) < 9:
+        n_elements = len(y_list) - 3  # y_list = [P_CO2, P_H2O, *elements, r_avg]
+        if not y_list or n_elements < 7:
             return _DIAG_NAN
-        b_ocean = np.maximum(np.array([float(y_list[i][-1]) for i in range(2, 9)]), 0.0)
+        b_ocean = np.maximum(np.array([float(y_list[i][-1]) for i in range(2, 2 + n_elements)]), 0.0)
 
         mass      = float(d.get('mass',   5.972e24))
         radius    = float(d.get('radius', 6.371e6))
@@ -317,7 +319,11 @@ def _style_combined_col(axes_c, ci, n_cols, title='', cols=None):
 
 
 def _plot_line_da_style(ax, x, y, da, color, at_floor=None, linewidth=1.8, alpha=0.8, zorder=3):
-    """Draw a line: dotted where seafloor T is floored, dashed where Da≥1, solid where Da<1."""
+    """Draw a line: dotted where seafloor T is floored, dashed where Da≥1, solid where Da<1.
+
+    Places an open circle at each kinetic↔thermodynamic transition (solid↔dashed only;
+    transitions into/out of the dotted floor regime are not marked).
+    """
     if len(x) < 2:
         return
 
@@ -332,6 +338,7 @@ def _plot_line_da_style(ax, x, y, da, color, at_floor=None, linewidth=1.8, alpha
     seg_x = [x[0]]
     seg_y = [y[0]]
     current_ls = _ls(0)
+    trans_x, trans_y = [], []
 
     for i in range(1, len(x)):
         ls = _ls(i)
@@ -341,6 +348,10 @@ def _plot_line_da_style(ax, x, y, da, color, at_floor=None, linewidth=1.8, alpha
         else:
             ax.plot(seg_x, seg_y, color=color, linewidth=linewidth,
                     alpha=alpha, linestyle=current_ls, zorder=zorder)
+            # Mark only solid↔dashed transitions (skip dotted floor segments)
+            if {current_ls, ls} == {'-', '--'}:
+                trans_x.append(seg_x[-1])
+                trans_y.append(seg_y[-1])
             seg_x = [seg_x[-1], x[i]]
             seg_y = [seg_y[-1], y[i]]
             current_ls = ls
@@ -348,6 +359,10 @@ def _plot_line_da_style(ax, x, y, da, color, at_floor=None, linewidth=1.8, alpha
     if len(seg_x) >= 2:
         ax.plot(seg_x, seg_y, color=color, linewidth=linewidth,
                 alpha=alpha, linestyle=current_ls, zorder=zorder)
+
+    if trans_x:
+        ax.scatter(trans_x, trans_y, facecolors='none', edgecolors=color,
+                   s=30, linewidths=1.2, zorder=5)
 
 
 def _plot_group_on_axes(axes, group, color, linestyle='-', show_markers=True, cols=None):
@@ -803,7 +818,8 @@ def plot_damkohler_contour(df, output_path, out_targets=(0.1, 1.0, 10.0)):
 
 
 def plot_continental_baseline(df, output_path):
-    """T and P_CO2 vs instellation for the Earth-like continental baseline.
+    """T, P_CO2, pH, salinity, and individual ion concentrations vs instellation
+    for the Earth-like continental baseline.
 
     Runs with land_fraction=0.3, basalt_49, rw=True, out=1×, crust=1×, depth=3000 m.
     """
@@ -820,26 +836,84 @@ def plot_continental_baseline(df, output_path):
         print("No continental baseline data found — skipping.")
         return
 
-    cols = ['T', 'P_CO2']
+    cols = ['T', 'P_CO2', 'pH', 'salinity']
     group = subset.sort_values('instellation')
 
-    EARTH_S   = 1.0
-    EARTH_T   = 288.0        # K
-    EARTH_PCO2 = 280e-6      # bar (modern ~280 ppm)
+    EARTH_S    = 1.0
+    EARTH_T    = 288.0
+    EARTH_PCO2 = 280e-6
+    EARTH_PH   = 8.1
+    EARTH_SAL  = (2.0e-3 * 61.0 + 0.1e-3 * 60.1 +
+                  10.3e-3 * 40.1 + 52.8e-3 * 24.3 +
+                  480e-3 * 23.0 + 550e-3 * 35.45)
 
-    fig, axes = plt.subplots(len(cols), 1, figsize=(3.5, len(cols) * 2), sharex=True)
-    _plot_group_on_axes(axes, group, color='k', show_markers=False, cols=cols)
-    _style_axes(axes, cols)
+    earth_vals = {'T': EARTH_T, 'P_CO2': EARTH_PCO2, 'pH': EARTH_PH, 'salinity': EARTH_SAL}
 
-    earth_vals = {'T': EARTH_T, 'P_CO2': EARTH_PCO2}
-    for ax, col in zip(axes, cols):
+    # --- ion panel setup ---
+    # (index, label, Earth mmol/kg or None) — Al(3), Fe(4), SO₄(9) excluded
+    ION_SPEC = [
+        (0, 'Alk',  2.3),
+        (1, 'DIC',  2.0),
+        (2, 'Si',   0.1),
+        (5, 'Ca',  10.3),
+        (6, 'Mg',  52.8),
+        (7, 'Na', 480.0),
+        (8, 'Cl', 550.0),
+    ]
+    ION_COLORS = [plt.cm.tab10(k / 10) for k in range(len(ION_SPEC))]
+
+    # Load final b_ocean for each run from the JSON files
+    ion_rows = []
+    for _, row in group.iterrows():
+        fpath = os.path.join(output_path, f"{row['name']}.json")
+        try:
+            with open(fpath) as fh:
+                d_json = json.load(fh)
+            y = d_json['data']['y']
+            n_el = len(y) - 3
+            b = [max(float(y[2 + i][-1]), 1e-15) for i in range(n_el)]
+            # Pad to 10 elements if an older file lacks some ions
+            while len(b) < 10:
+                b.append(1e-15)
+            ion_rows.append((row['instellation'], b[:10]))
+        except Exception:
+            pass
+
+    # --- figure 1: 4 summary panels ---
+    fig, axes_summary = plt.subplots(len(cols), 1, figsize=(3.5, len(cols) * 2), sharex=True)
+    _plot_group_on_axes(axes_summary, group, color='k', show_markers=False, cols=cols)
+    _style_axes(axes_summary, cols)
+
+    for ax, col in zip(axes_summary, cols):
         ax.scatter(EARTH_S, earth_vals[col], marker='*', s=220, color='blue',
                    edgecolors='k', linewidths=0.7, zorder=6)
-    axes[0].annotate('Earth', xy=(EARTH_S, EARTH_T), xytext=(EARTH_S + 0.06, EARTH_T - 6),
-                     fontsize=8, arrowprops=dict(arrowstyle='-', color='k', lw=0.8))
-
-    # fig.suptitle('Continental baseline  (out=1×, crust=1×, depth=3000 m, land=30%)')
+    axes_summary[0].annotate(
+        'Earth', xy=(EARTH_S, EARTH_T), xytext=(EARTH_S + 0.06, EARTH_T - 6),
+        fontsize=8, arrowprops=dict(arrowstyle='-', color='k', lw=0.8),
+    )
     _save_fig(fig, os.path.join(output_path, 'continental_baseline.png'))
+
+    # --- figure 2: ion concentrations ---
+    fig2, ax_ions = plt.subplots(1, 1, figsize=(3.5, 3))
+
+    if ion_rows:
+        s_vals = np.array([r[0] for r in ion_rows])
+        b_mmol = np.array([r[1] for r in ion_rows]) * 1e3  # mol/kg → mmol/kg
+
+        for (idx, label, earth_val), color in zip(ION_SPEC, ION_COLORS):
+            ax_ions.plot(s_vals, b_mmol[:, idx], color=color, linewidth=1.5, label=label)
+            if earth_val is not None:
+                ax_ions.scatter(EARTH_S, earth_val, marker='*', s=150,
+                                color=color, edgecolors='k', linewidths=0.5, zorder=6)
+
+    ax_ions.set_ylabel('Concentration (mmol/kg)')
+    ax_ions.set_yscale('log')
+    ax_ions.set_xlabel('Instellation ($S/S_0$)')
+    ax_ions.grid(True, linestyle='--', alpha=0.4)
+    ax_ions.set_xlim(0.25, 1.45)
+    ax_ions.legend(ncols=2, fontsize=7, loc='lower left',
+                   handlelength=1.2, columnspacing=0.8, labelspacing=0.3)
+    _save_fig(fig2, os.path.join(output_path, 'continental_baseline_ions.png'))
 
 
 def _get_mineral_si(d):
@@ -999,10 +1073,10 @@ if __name__ == '__main__':
     else:
         plot_faceted_lines(df, args.path)
         plot_faceted_lines(df, args.path, all_results=False, split_panels=True)
-        plot_ocean_depth_effect(df, args.path)
-        plot_ratio_scatter(df, args.path)
-        plot_crust_composition(df, args.path, show_markers=False)
-        plot_damkohler_contour(df, args.path)
+        # plot_ocean_depth_effect(df, args.path)
+        # plot_ratio_scatter(df, args.path)
+        # plot_crust_composition(df, args.path, show_markers=False)
+        # plot_damkohler_contour(df, args.path)
         plot_continental_baseline(df, args.path)
         #plot_magnesium_chemistry(df, args.path)
         print("Done.")
