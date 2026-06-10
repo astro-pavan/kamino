@@ -50,22 +50,25 @@ def get_instellation(T: float, pCO2: float) -> float:
 def OLR(T: float, pCO2: float) -> float:
 
    pCO2 = 1e-12 if pCO2 <= 0 else pCO2
-   v = np.where(pCO2 < 1, 0.2 * np.log10(pCO2), np.log10(pCO2))
+   log_pCO2 = np.log10(pCO2)
    xi = 0.01 * (T - 250)
 
    T_mat = np.array([xi**0, xi, xi**2, xi**3, xi**4, xi**5, xi**6])
-   Y_mat = np.array([v**0, v, v**2, v**3, v**4])
 
-   T_mat = T_mat[:, 0] if T_mat.ndim == 2 else T_mat
-   Y_mat = Y_mat[:, 0] if Y_mat.ndim == 2 else Y_mat
+   v_low  = 0.2 * log_pCO2
+   v_high = log_pCO2
+   Y_low  = np.array([v_low**0,  v_low,  v_low**2,  v_low**3,  v_low**4])
+   Y_high = np.array([v_high**0, v_high, v_high**2, v_high**3, v_high**4])
 
-   high_pCO2_LR = float(np.einsum('i,ij,j', T_mat, Bh, Y_mat))
-   low_pCO2_LR = float(np.einsum('i,ij,j', T_mat, Bl, Y_mat))
+   low_pCO2_LR  = float(np.einsum('i,ij,j', T_mat, Bl, Y_low))
+   high_pCO2_LR = float(np.einsum('i,ij,j', T_mat, Bh, Y_high))
 
-   if pCO2 < 1:
-      return I0 + low_pCO2_LR
-   else:
-      return I0 + high_pCO2_LR
+   # Smooth sigmoid blend between the two polynomial fits, centred at 1 bar.
+   # Width 0.1 bar keeps the transition region >> the Jacobian perturbation (~0.02 bar),
+   # preventing the finite-difference Jacobian from straddling the formula boundary and
+   # producing a spurious ~100-year fast mode in the pCO2 ODE.
+   blend = 0.5 * (1.0 + np.tanh((pCO2 - 1.0) / 0.1))
+   return I0 + (1.0 - blend) * low_pCO2_LR + blend * high_pCO2_LR
 
 def get_T_surface_v0(S, P_CO2, albedo, tidally_locked=False) -> float:
    
@@ -81,47 +84,34 @@ def get_T_surface_v0(S, P_CO2, albedo, tidally_locked=False) -> float:
    return float(T_res)
 
 def get_T_surface_analytic(S, P_CO2, albedo, tidally_locked=False):
-    
-    pCO2_bar = P_CO2 / 1e5
-    
-    # 1. Handle Albedo Consistency
-    # If you want to match the Interpolator (which likely treats 'albedo' as total Bond albedo):
-    # A_bond = albedo  
-    # If you want to use the WK97 physics (Surface + Atmosphere):
-    A_bond = albedo_funtion(pCO2_bar, albedo)
-    
-    # 2. Define Energy Balance: Incoming - Outgoing = 0
-    def residual(T):
-        # Clip T to valid range of the polynomial to prevent divergence
-        T_safe = np.clip(T, 180, 400) 
-        
-        # Calculate Incoming Flux (W/m^2)
-        # S is passed in W/m^2 (based on planet.py usage)
-        f_geo = 0.25  # Geometric factor (1/4 for rapid)
-        if tidally_locked:
-            f_geo = 0.66 # Tuning for tidal locking
-            
-        F_in = S * (1 - A_bond) * f_geo
-        
-        # Calculate Outgoing Flux
-        F_out = OLR(T_safe, pCO2_bar)
-        
-        return F_in - F_out
 
-    # 3. Solve with brackets (safer than newton)
-    try:
-        # Search between 180K and 400K
-        T_surf = brentq(residual, 180, 400)
-    except ValueError:
-        # If signs are the same at both ends, we are either in Snowball or Runaway
-        res_min = residual(180)
-        res_max = residual(400)
-        
-        if res_max > 0: # Energy In > Energy Out at 400K -> Runaway
-            T_surf = 400.0 
-        elif res_min < 0: # Energy In < Energy Out at 180K -> Snowball
-            T_surf = 180.0
-        else:
-            T_surf = np.nan
-            
-    return float(T_surf)
+    pCO2_bar = P_CO2 / 1e5
+    A_bond = albedo_funtion(pCO2_bar, albedo)
+
+    f_geo = 0.66 if tidally_locked else 0.25
+    F_in = S * (1 - A_bond) * f_geo
+
+    def residual(T):
+        return F_in - OLR(np.clip(T, 180, 400), pCO2_bar)
+
+    # The Bl polynomial (low pCO2) has a local OLR maximum near T~360 K and
+    # drops sharply toward T=400 K (Komabayashi-Ingersoll saturation plus
+    # polynomial boundary artefact). Using T=400 K as the upper bracket end
+    # can make residual(400) > 0 even when a stable equilibrium exists at
+    # ~300-360 K, hiding the root from brentq. Using T=400 K can also create
+    # spurious secondary roots from the OLR dip.
+    #
+    # Fix: scan [180, 390] K in coarse steps and take the first + -> - sign
+    # change (stable equilibrium). This reliably finds the physical root without
+    # being confused by the boundary artefact or the unstable branch above the
+    # OLR maximum.
+    T_nodes = np.linspace(180, 390, 22)   # ~10 K spacing
+    r_nodes = [residual(T) for T in T_nodes]
+
+    for i in range(len(T_nodes) - 1):
+        if r_nodes[i] >= 0 and r_nodes[i + 1] < 0:
+            return float(brentq(residual, T_nodes[i], T_nodes[i + 1]))
+
+    if r_nodes[0] <= 0:
+        return 180.0   # Snowball: OLR > F_in even at 180 K
+    return 400.0       # Runaway: OLR < F_in everywhere in [180, 390] K
