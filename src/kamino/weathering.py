@@ -2,7 +2,7 @@ import numpy as np
 import numpy.typing as npt
 from scipy.optimize import least_squares 
 
-from kamino.chemistry import get_b_eq, get_k, elements, alk_idx, c_idx, ca_idx, mg_idx, si_idx
+from kamino.chemistry import get_b_eq, get_k, elements, alk_idx, c_idx, ca_idx, mg_idx, si_idx, na_idx, cl_idx, so4_idx
 from kamino.precipitation import get_precipitation
 from kamino.mineral_info import *
 from kamino.constants import YR, R_EARTH, EARTH_ATM
@@ -38,22 +38,21 @@ def seafloor_reactive_area(T: float, pH: float, rate: float, alpha: float, clog:
 
     return alpha * rate * t_reduce * (1 - np.exp(- 1 / (rate * t_reduce)))
 
-MG_SINK_MINERALS: list[str] = ['Saponite-Mg']  # secondary clay minerals that remove Mg in low-T alteration
-
 def get_weathering_flux(
         P: float,
         T: float,
-        P_CO2: float, 
-        b_input: npt.NDArray[np.float64], 
+        P_CO2: float,
+        b_input: npt.NDArray[np.float64],
         alpha: float | None=None, rate: float | None=None,
         J: float | None=None,
         sedimentation_rate: float | None=None,
         high_temperature: bool=False,
-        crust_composition: dict[str, float]=basalt_composition,
+        crust_composition: dict[str, float]=basalt_49,
         precipitating_minerals: list[str] = clay_minerals + carbonate_minerals,
         cover: bool=True,
         clog: bool=False,
         fO2: float=0,
+        water_rock_ratio: float | None=None,
         ) -> tuple[npt.NDArray[np.float64], dict[str, float]]:
 
     if alpha is None:
@@ -71,7 +70,7 @@ def get_weathering_flux(
     if precipitating_minerals is None:
         precipitating_minerals = []
 
-    b_eq_primary, pH = get_b_eq(P, T, P_CO2, crust_composition, b_input=b_input, high_temperature=high_temperature, fO2=fO2)
+    b_eq_primary, pH = get_b_eq(P, T, P_CO2, crust_composition, b_input=b_input, high_temperature=high_temperature, fO2=fO2, water_rock_ratio=water_rock_ratio)
     k_primary = get_k(P, T, pH, crust_composition)
     k_nonzero = k_primary != 0  # save before replacing zeros with inf
     k_primary = np.where(k_nonzero, k_primary, np.inf)
@@ -113,21 +112,31 @@ def get_weathering_flux(
     
     return flux, weathering_diagnostics
 
-_T_ref_calib = 280
+# Calibration at actual Earth pore conditions: T_surface=288K gives T_sf=277K, T_pore=286K.
+# Using modern seawater concentrations as b_input ensures ALPHA_REF produces the observed
+# ~1 Tmol/yr seafloor Alk flux at Earth steady state, not at an empty-ocean reference.
+# Secondary precipitation excluded (precipitating_minerals=[]) to isolate primary dissolution.
+_T_ref_calib = 286
 _P_ref_calib = 1000 * 10 * 3000
 _P_CO2_ref_calib = EARTH_ATM * 280e-6
 _seafloor_flux = 1e12 / YR
 _seafloor_flux_normalised = _seafloor_flux / A_seafloor
 
-# Residual function to find the alpha that produces the correct Alkalinity flux (Index 0).
-# Uses pore_carbonate=False so the calibration is insulated from the carbonate step:
-# at modern seawater conditions the carbonate step can overwhelm the primary signal,
-# so we calibrate the primary dissolution rate independently.
+_calib_b_input = np.zeros(elements.shape)
+_calib_b_input[alk_idx]  = 2.3e-3
+_calib_b_input[ca_idx]   = 10.3e-3
+_calib_b_input[mg_idx]   = 52.8e-3
+_calib_b_input[na_idx]   = 480e-3
+_calib_b_input[cl_idx]   = 550e-3
+_calib_b_input[so4_idx]  = 28e-3
+_calib_b_input[si_idx]   = 0.1e-3
+_calib_b_input[c_idx]    = 2.0e-3
+
 def _calibration_residual(a_array):
     a_val = a_array[0]
     flux, _ = get_weathering_flux(
         _P_ref_calib, _T_ref_calib, _P_CO2_ref_calib,
-        np.array([]), alpha=a_val, rate=rate_ref, precipitating_minerals=[],
+        _calib_b_input, alpha=a_val, rate=rate_ref, precipitating_minerals=[],
     )
     alkalinity_flux = flux[0]
     return (alkalinity_flux - _seafloor_flux_normalised) / _seafloor_flux_normalised
@@ -143,6 +152,7 @@ _CONT_LAND_AREA_EARTH = 0.3 * 4 * np.pi * R_EARTH ** 2   # m²
 EARTH_CONTINENTAL_WEATHERING_REF = (8e12 / YR) / _CONT_LAND_AREA_EARTH  # mol_eq / m² / s
 
 _MG_FRACTION = 0.28  # Mg/(Ca+Mg) in continental silicate weathering — Gaillardet et al. (1999)
+_NA_CA_FRACTION = 0.67  # Na/Ca from silicate weathering — Gaillardet et al. (1999), global rivers
 
 def get_continental_weathering_flux(
     T: float,
@@ -173,9 +183,12 @@ def get_continental_weathering_flux(
 
     # Mixed CaSiO3 + MgSiO3 — same total Alk, cation split Ca/Mg.
     flux[alk_idx] = F_alk
-    flux[c_idx]   = F_alk
     flux[ca_idx]  = F_alk / 2 * (1 - _MG_FRACTION)
     flux[mg_idx]  = F_alk / 2 * _MG_FRACTION
     flux[si_idx]  = F_alk / 2
+    # Na from continental feldspar (albite) weathering. No Alk added: balanced Na cycle assumption
+    # (Coogan 2022) — the HCO3- produced when Na-silicate weathers is consumed when Na is
+    # eventually removed from the ocean via reverse weathering or subduction.
+    flux[na_idx]  = flux[ca_idx] * _NA_CA_FRACTION
 
     return flux
