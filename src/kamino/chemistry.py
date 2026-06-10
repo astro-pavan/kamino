@@ -11,7 +11,7 @@ import re
 import pandas as pd
 
 _data_dir = os.path.join(os.path.dirname(__file__), 'data')
-database_path = os.path.join(_data_dir, 'ocean_chem.dat')
+database_path = os.path.join(_data_dir, 'hybrid_ocean.dat')
 _hydrothermal_path = os.path.join(_data_dir, 'hydrothermal.dat')
 
 elements = np.array([
@@ -22,10 +22,10 @@ elements = np.array([
     'Fe',
     'Ca',
     'Mg',
-    #'Na',
-    #'Cl',
+    'Na',
+    'Cl',
+    'S',    # sulfate — fixed background for charge balance; not a dynamic ODE variable
     #'K',
-    #'S',
     #'N',
     #'F',
 ])
@@ -34,7 +34,10 @@ alk_idx = int(np.where(elements == 'Alkalinity')[0][0])
 ca_idx  = int(np.where(elements == 'Ca')[0][0])
 mg_idx  = int(np.where(elements == 'Mg')[0][0])
 c_idx   = int(np.where(elements == 'C')[0][0])
-si_idx = int(np.where(elements == 'Si')[0][0])
+si_idx  = int(np.where(elements == 'Si')[0][0])
+na_idx  = int(np.where(elements == 'Na')[0][0])
+cl_idx  = int(np.where(elements == 'Cl')[0][0])
+so4_idx = int(np.where(elements == 'S')[0][0])
 
 element_string = ' '.join(elements[1:])
 
@@ -47,7 +50,7 @@ try:
             if line.startswith('PHASES'):
                 in_phases = True
                 continue
-            if line.startswith('RATES'):
+            if line.startswith('RATES') or line.startswith('PITZER') or line.strip() == 'END':
                 in_phases = False
                 continue
             if in_phases:
@@ -69,12 +72,14 @@ available_mineral_string = ' '.join(minerals)
 species_to_element = {
     'Ca+2': 'Ca',
     'Mg+2': 'Mg',
-    # 'Na+': 'Na',
+    'Na+': 'Na',
+    'Cl-': 'Cl',
     # 'K+': 'K',
     'Fe+2': 'Fe',
     'Fe+3': 'Fe',
     'Al+3': 'Al',
     'SiO2': 'Si',
+    'H4SiO4': 'Si',
     'HCO3-': 'C',
     'CO3-2': 'C',
     #'SO4-2': 'S',
@@ -127,7 +132,7 @@ def parse_stoichiometry(filepath: str) -> dict[str, npt.NDArray[np.float64]]:
             if line == 'PHASES':
                 in_phases = True
                 continue
-            elif line in ('RATES', 'SOLUTION_SPECIES', 'END'):
+            elif line in ('RATES', 'SOLUTION_SPECIES', 'END', 'PITZER'):
                 in_phases = False
                 continue
             if not in_phases:
@@ -156,7 +161,7 @@ if p_LT.LoadDatabase(database_path) == 1:
 p_HT = Phreeqc()
 p_HT.LoadDatabase(_hydrothermal_path)
 
-def solve_solution(P: float, T: float, b: npt.NDArray[np.float64], pH: float | None=None, P_CO2: float | None=None, precipitating_minerals: list[str]=[], equilibriating_minerals: list[str]=[], high_temperature: bool=False, fO2: float=0, trace_approximation: bool=True, precipitation_SI: float=0, verbose: bool=False):
+def solve_solution(P: float, T: float, b: npt.NDArray[np.float64], pH: float | None=None, P_CO2: float | None=None, precipitating_minerals: list[str]=[], equilibriating_minerals: list[str]=[], equilibriating_amounts: dict[str, float] | None=None, high_temperature: bool=False, fO2: float=0, trace_approximation: bool=True, precipitation_SI: float=0, verbose: bool=False):
 
     solution_lines: list[str] = [
         #'KNOBS',
@@ -193,7 +198,8 @@ def solve_solution(P: float, T: float, b: npt.NDArray[np.float64], pH: float | N
             equilibrium_lines.append(f'    O2(g)   {np.log10(fO2 / EARTH_ATM):.4f}  {1e6}')
 
         for phase in equilibriating_minerals:
-            equilibrium_lines.append(f'    {phase}  {0.0}  {100.0}')
+            amount = equilibriating_amounts.get(phase, 100.0) if equilibriating_amounts else 100.0
+            equilibrium_lines.append(f'    {phase}  {0.0}  {amount:.6f}')
 
         equilibrium_lines.append('')
 
@@ -251,7 +257,7 @@ def get_k(P: float, T: float, pH: float, composition: dict[str, float]) -> npt.N
 
     return k
 
-def get_b_eq(P: float, T: float, P_CO2: float, composition: dict[str, float], b_input: npt.NDArray[np.float64] | None=None, precipitating_minerals: list[str]=[], high_temperature: bool=False, fO2: float=0) -> tuple[npt.NDArray[np.float64], float]:
+def get_b_eq(P: float, T: float, P_CO2: float, composition: dict[str, float], b_input: npt.NDArray[np.float64] | None=None, precipitating_minerals: list[str]=[], high_temperature: bool=False, fO2: float=0, water_rock_ratio: float | None=None) -> tuple[npt.NDArray[np.float64], float]:
 
     b_eq = np.zeros(elements.shape)
 
@@ -262,8 +268,6 @@ def get_b_eq(P: float, T: float, P_CO2: float, composition: dict[str, float], b_
     # Enstatite is supersaturated at seawater pH and back-precipitates, driving b_eq[Mg] to ~0
     if not high_temperature:
         _excluded |= {'Anorthite', 'Forsterite', 'Enstatite'}
-    else:
-        _excluded.add('Anorthite')
 
     # These minerals cause problems with oxic conditions
     if fO2 > 0:
@@ -273,7 +277,24 @@ def get_b_eq(P: float, T: float, P_CO2: float, composition: dict[str, float], b_
 
     b = b_input if b_input is not None else np.array([])
 
-    output = solve_solution(P, T, b, P_CO2=P_CO2, equilibriating_minerals=equilibrium_minerals, precipitating_minerals=precipitating_minerals, high_temperature=high_temperature, fO2=fO2)
+    # If a water-to-rock mass ratio is given, compute physically constrained
+    # per-mineral mole amounts: amount_i = (1000 g/kgw / w_r) * fraction_i / M_i
+    # This prevents PHREEQC from dissolving unrealistically large amounts of crust.
+    eq_amounts: dict[str, float] | None = None
+    if water_rock_ratio is not None:
+        rock_g_per_kgw = 1000.0 / water_rock_ratio
+        eq_amounts = {
+            m: rock_g_per_kgw * composition[m] / MINERAL_MOLAR_MASS.get(m, 150.0)
+            for m in equilibrium_minerals
+        }
+
+    # At HT conditions, Quartz precipitates to buffer Si to realistic levels
+    # (~5-17 mM at 200-327°C). Mg-Ca exchange is handled by the parameterised
+    # KD_MG_HT in planet.py (no pH dependence justified by PHREEQC experiments).
+    if high_temperature:
+        precipitating_minerals = list(precipitating_minerals) + ['Quartz']
+
+    output = solve_solution(P, T, b, P_CO2=P_CO2, equilibriating_minerals=equilibrium_minerals, equilibriating_amounts=eq_amounts, precipitating_minerals=precipitating_minerals, high_temperature=high_temperature, fO2=fO2)
 
     for i, element in enumerate(elements):
         output_key = 'Alk(eq/kgw)' if element == 'Alkalinity' else f'{element}(mol/kgw)'
