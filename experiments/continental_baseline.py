@@ -43,6 +43,7 @@ def run_simulation(s, output_path):
             crust_composition=basalt_49,
             reverse_weathering=True,
             name=run_name,
+            f_HT=0.01
         )
         p.time_evolve()
         return run_name, None

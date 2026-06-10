@@ -77,7 +77,7 @@ def run_sweep(instellation, outgassing, crust_production_rate, ocean_depth, reve
 instellation = [0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.15, 1.2, 1.25, 1.3, 1.35, 1.4]
 outgassing = [0.01, 0.03, 0.1, 0.3, 1, 3, 10]
 crust_production_rate = [0.01, 0.03, 0.1, 0.3, 1, 3, 10]
-ocean_depth = [100, 300, 1000, 3000, 10000, 30000]
+ocean_depth = [100, 300, 1000, 3000, 10000, 30000, 100000]
 crust_composition = [
     ('komatiite_42', komatiite_42),
     ('komatiite_44', komatiite_44),
@@ -91,7 +91,7 @@ f_HT = [0, 0.001, 0.005, 0.01]
 ocean_depth_default = [3000]
 crust_composition_default = [('basalt_49', basalt_49)]
 reverse_weathering_default = [True]
-f_HT_default = [0]
+f_HT_default = [0.01]
 
 basalt_49_no_fe = {
     'Anorthite': 0.1,
@@ -112,7 +112,7 @@ if __name__ == "__main__":
 
     # Sweep 1: basic
 
-    # run_sweep(instellation, outgassing, crust_production_rate, ocean_depth_default, reverse_weathering_default, crust_composition_default, f_HT_default)
+    run_sweep(instellation, outgassing, crust_production_rate, ocean_depth_default, reverse_weathering_default, crust_composition_default, f_HT_default)
 
     # Sweep 2: ocean depth
 
@@ -120,7 +120,7 @@ if __name__ == "__main__":
 
     # Sweep 3: crust composition
 
-    run_sweep(instellation, outgassing, crust_production_rate, ocean_depth_default, reverse_weathering_default, crust_composition, f_HT_default)
+    # run_sweep(instellation, outgassing, crust_production_rate, ocean_depth_default, reverse_weathering_default, crust_composition, f_HT_default)
 
     # Sweep 4: reverse weathering (magnesium chemistry)
 
