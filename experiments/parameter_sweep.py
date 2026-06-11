@@ -11,7 +11,7 @@ from kamino.planet import Planet
 from kamino.constants import M_EARTH, R_EARTH
 from kamino.mineral_info import *
 
-RERUN = True
+RERUN = False
 
 def run_simulation(s, o, c, d, rw, cc, fht, output_path):
     p2.output_path = output_path  # each subprocess imports a fresh module; set path here
