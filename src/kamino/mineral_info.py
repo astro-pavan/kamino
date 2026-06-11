@@ -69,5 +69,5 @@ hydrothermal_mineral_string = ' '.join(hydrothermal_minerals)
 carbonate_minerals = ['Calcite', 'Siderite'] # Ca and Fe sinks
 clay_minerals = ['Kaolinite', 'Goethite'] # Al, Fe sinks
 silica_minerals = ['SiO2(am)'] # Si sink
-reverse_weathering_minerals = ['Saponite-Mg', 'Smectite-Na'] # Mg and Na sinks (via reverse weathering)
+reverse_weathering_minerals = ['Sepiolite(d)', 'Smectite-Na', 'Greenalite'] # Mg, Na, Fe sinks (via reverse weathering)
 evaporite_minerals = ['Halite'] # Cl (and Na) sink; only active when land_fraction > 0
