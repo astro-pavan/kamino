@@ -1,4 +1,5 @@
 import itertools
+import json
 import multiprocessing as mp
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -10,6 +11,7 @@ from kamino.planet import Planet
 from kamino.constants import M_EARTH, R_EARTH
 from kamino.mineral_info import *
 
+RERUN = True
 
 def run_simulation(s, o, c, d, rw, cc, fht, output_path):
     p2.output_path = output_path  # each subprocess imports a fresh module; set path here
@@ -20,6 +22,17 @@ def run_simulation(s, o, c, d, rw, cc, fht, output_path):
         run_name += '_rw'
     if fht > 0.0:
         run_name += f'_fht_{fht}'
+
+    if not RERUN:
+        json_path = os.path.join(output_path, f'{run_name}.json')
+        if os.path.exists(json_path):
+            try:
+                with open(json_path) as fh:
+                    d = json.load(fh)
+                if 'termination' in d:
+                    return run_name, None
+            except Exception:
+                pass  # corrupt/incomplete file — fall through and re-run
 
     try:
         p = Planet(
@@ -43,7 +56,7 @@ def run_simulation(s, o, c, d, rw, cc, fht, output_path):
 
 def run_sweep(instellation, outgassing, crust_production_rate, ocean_depth, reverse_weathering, crust_composition, high_T_flux):
 
-    output_path = '/data/pt426/kamino_experiments'
+    output_path = '/data/pt426/kamino_experiments_fast_2'
     if not output_path.endswith('/'):
         output_path += '/'
     p2.output_path = output_path
@@ -75,11 +88,18 @@ def run_sweep(instellation, outgassing, crust_production_rate, ocean_depth, reve
 
 
 instellation = [0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.15, 1.2, 1.25, 1.3, 1.35, 1.4]
+# outgassing = [0.01, 0.03, 0.1, 0.3, 1, 3, 10]
+# crust_production_rate = [0.01, 0.03, 0.1, 0.3, 1, 3, 10]
+# ocean_depth = [100, 300, 1000, 3000, 10000, 30000, 100000]
+
+# instellation = [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4] # maybe stop at 1.2??
 outgassing = [0.01, 0.03, 0.1, 0.3, 1, 3, 10]
 crust_production_rate = [0.01, 0.03, 0.1, 0.3, 1, 3, 10]
-ocean_depth = [100, 300, 1000, 3000, 10000, 30000, 100000]
+ocean_depth = [300, 1000, 3000, 10000, 30000]
+
+
 crust_composition = [
-    ('komatiite_42', komatiite_42),
+    # ('komatiite_42', komatiite_42),
     ('komatiite_44', komatiite_44),
     ('basalt_47', basalt_47),
     ('basalt_49', basalt_49),
@@ -88,10 +108,13 @@ crust_composition = [
 reverse_weathering = [False, True]
 f_HT = [0, 0.001, 0.005, 0.01]
 
+crust_production_rate_default = [1]
+outgassing_default = [1]
+
 ocean_depth_default = [3000]
 crust_composition_default = [('basalt_49', basalt_49)]
 reverse_weathering_default = [True]
-f_HT_default = [0.01]
+f_HT_default = [0.0]
 
 basalt_49_no_fe = {
     'Anorthite': 0.1,
@@ -110,23 +133,19 @@ magnesium_test_crust = [
 
 if __name__ == "__main__":
 
+    # Full Sweep
+
+    # run_sweep(instellation, outgassing, crust_production_rate, ocean_depth, reverse_weathering_default, crust_composition, f_HT_default)
+
     # Sweep 1: basic
 
     run_sweep(instellation, outgassing, crust_production_rate, ocean_depth_default, reverse_weathering_default, crust_composition_default, f_HT_default)
 
     # Sweep 2: ocean depth
 
-    # run_sweep(instellation, outgassing, crust_production_rate, ocean_depth, reverse_weathering_default, crust_composition_default, f_HT_default)
+    # run_sweep(instellation, outgassing_default, crust_production_rate_default, ocean_depth, reverse_weathering_default, crust_composition_default, f_HT_default)
 
     # Sweep 3: crust composition
 
-    # run_sweep(instellation, outgassing, crust_production_rate, ocean_depth_default, reverse_weathering_default, crust_composition, f_HT_default)
+    # run_sweep(instellation, outgassing_default, crust_production_rate_default, ocean_depth_default, reverse_weathering_default, crust_composition, f_HT_default)
 
-    # Sweep 4: reverse weathering (magnesium chemistry)
-
-    # run_sweep(instellation, outgassing, crust_production_rate, ocean_depth_default, [True], [('mg', basalt_49_no_iron)], f_HT_default)
-    # run_sweep(instellation, outgassing, crust_production_rate, ocean_depth_default, [False], [('no_mg', calcium_only_crust)], f_HT_default)
-
-    # Sweep 5: high temperature hydrothermal
-
-    # run_sweep(instellation, outgassing, crust_production_rate, ocean_depth_default, reverse_weathering, crust_composition_default, f_HT)
