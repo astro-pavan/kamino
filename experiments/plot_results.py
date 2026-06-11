@@ -20,9 +20,17 @@ from kamino.constants import G, EARTH_CRUST_PRODUCTION_RATE_PER_AREA, YR
 from kamino.chemistry import alk_idx
 from kamino.mineral_info import carbonate_minerals, clay_minerals, silica_minerals, reverse_weathering_minerals
 
-plt.style.use('experiments/planetary-chem-paper.mplstyle')
+fig_width_half = 3.5
+fig_subplot_height = 1.5
 
-DEFAULT_OUTPUT_PATH = '/data/pt426/kamino_experiments/'
+presentation = True
+
+if presentation:
+    plt.style.use('experiments/planetary-chem-presentation.mplstyle')
+else:
+    plt.style.use('experiments/planetary-chem-paper.mplstyle')
+
+DEFAULT_OUTPUT_PATH = '/data/pt426/kamino_experiments_fast_2/'
 
 TERM_LABELS = {
     'snowball':   'Snowball',
@@ -222,7 +230,6 @@ def _base(df):
         (df['comp_name'] == 'basalt_49') &
         (df['crust_carbonate'] == 0.0) &
         (df['ocean_depth'] == 3000) &
-        (df['f_HT'] == 0.0) &
         (df['land_fraction'] == 0.0) &
         (df['outgassing'] > 0)
     ]
@@ -293,6 +300,10 @@ def _make_legend_handles(show_markers=True, prefix_handles=None):
                                 facecolors='none', edgecolors='k', linewidths=1.4)
                     for t, m in FAILED_MARKERS.items()]
     return handles
+
+
+def _legend_ncol(handles, fallback):
+    return len(handles) if presentation else fallback
 
 
 def _save_fig(fig, path):
@@ -433,13 +444,15 @@ def plot_faceted_lines(df, output_path, all_results=True, split_panels=False):
                 _add_colorbar(fig, list(axes), cmap, norm, 'Outgassing',
                               ticks=outgassing_vals, ticklabels=[f'{v}×' for v in outgassing_vals],
                               aspect=n_rows * 7.5)
-                fig.legend(handles=_make_legend_handles(), loc='outside lower center', ncol=4)
+                _h = _make_legend_handles()
+                fig.legend(handles=_h, loc='outside lower center', ncol=_legend_ncol(_h, 4))
                 fig.suptitle(f'Crust production = {c}× Earth')
                 _save_fig(fig, os.path.join(output_path, f'lines_crust_{c}{sfx}.png'))
 
         # Combined plot: crust rates as columns
         n_cols = len(crust_rates)
-        full_figsize = (6 * n_cols + 1.5, n_rows * 3) if all_results else (7, n_rows * 7 / 4)
+        figsize = (fig_width_half * 2 * 2, n_rows * fig_subplot_height * 2) if presentation else (fig_width_half * 2, n_rows * fig_subplot_height)
+        full_figsize = (6 * n_cols + 1.5, n_rows * 3) if all_results else figsize
         fig_c, axes_c = plt.subplots(n_rows, n_cols, figsize=full_figsize,
                                       sharex=True, sharey='row', squeeze=False)
         for ci, c in enumerate(crust_rates):
@@ -451,46 +464,14 @@ def plot_faceted_lines(df, output_path, all_results=True, split_panels=False):
                                         show_markers=all_results, cols=cols)
             _style_combined_col(axes_c, ci, n_cols, title=f'{c}×', cols=cols)
 
-        fig_c.legend(handles=_make_legend_handles(show_markers=all_results),
-                     loc='outside lower center', ncol=4)
+        _h = _make_legend_handles(show_markers=all_results)
+        fig_c.legend(handles=_h, loc='outside lower center', ncol=_legend_ncol(_h, 4))
         _add_colorbar(fig_c, list(axes_c.ravel()), cmap, norm, 'Outgassing',
                       ticks=outgassing_vals, ticklabels=[f'{v}×' for v in outgassing_vals],
                       aspect=n_rows * 10)
         fig_c.suptitle('Crust production rate')
         fname = f'lines_combined{"_full" if all_results else ""}{sfx}.png'
         _save_fig(fig_c, os.path.join(output_path, fname))
-
-
-def plot_zero_outgassing_carb01(df, output_path, split_panels=False):
-    """T, P_CO2, pH, salinity vs instellation for outgassing=0, crust_carbonate=0.1, coloured by crust rate."""
-    subset = df[
-        (df['outgassing'] == 0.0) &
-        (df['crust_carbonate'] == 0.1) &
-        (df['ocean_depth'] == 3000)
-    ]
-    if subset.empty:
-        print("No data for out=0, carb=0.1 — skipping.")
-        return
-    subset = _add_diag_columns(subset, output_path)
-
-    crust_rates = sorted(subset['crust_production'].unique())
-    norm = mcolors.LogNorm(vmin=min(crust_rates), vmax=max(crust_rates))
-    cmap = plt.get_cmap('viridis')
-
-    for cols, sfx in _panel_groups(split_panels):
-        n_rows = len(cols)
-        fig, axes = plt.subplots(n_rows, 1, figsize=(7, n_rows * 3), sharex=True)
-        for c in crust_rates:
-            group = subset[subset['crust_production'] == c].sort_values('instellation')
-            if not group.empty:
-                _plot_group_on_axes(axes, group, cmap(norm(c)), cols=cols)
-        _style_axes(axes, cols, x_lims=(0.2, 1.5))
-        _add_colorbar(fig, list(axes), cmap, norm, 'Crust production rate (×Earth)',
-                      ticks=crust_rates, ticklabels=[f'{v}×' for v in crust_rates],
-                      aspect=n_rows * 7.5)
-        fig.legend(handles=_make_legend_handles(), loc='outside lower center', ncol=4)
-        fig.suptitle('Zero Outgassing, 10% Carbonate Crust (ocean depth 3000 m)')
-        _save_fig(fig, os.path.join(output_path, f'lines_out0_carb01{sfx}.png'))
 
 
 def plot_ocean_depth_effect(df, output_path, show_markers=False, split_panels=False):
@@ -500,8 +481,7 @@ def plot_ocean_depth_effect(df, output_path, show_markers=False, split_panels=Fa
         (df['crust_production'] == 1.0) &
         df['reverse_weathering'] &
         (df['comp_name'] == 'basalt_49') &
-        (df['crust_carbonate'] == 0.0) &
-        (df['f_HT'] == 0.0)
+        (df['crust_carbonate'] == 0.0)
     ]
     if subset.empty:
         print("No data for ocean depth sweep — skipping.")
@@ -525,7 +505,8 @@ def plot_ocean_depth_effect(df, output_path, show_markers=False, split_panels=Fa
 
     for cols, sfx in _panel_groups(split_panels):
         n_rows = len(cols)
-        fig, axes = plt.subplots(n_rows, 1, figsize=(3.5, n_rows * 1.75), sharex=True)
+        figsize = (fig_width_half * 2, n_rows * fig_subplot_height * 2) if presentation else (fig_width_half, n_rows * fig_subplot_height)
+        fig, axes = plt.subplots(n_rows, 1, figsize=figsize, sharex=True)
         for d in depths:
             group = subset[subset['ocean_depth'] == d].sort_values('instellation')
             if not group.empty:
@@ -533,8 +514,8 @@ def plot_ocean_depth_effect(df, output_path, show_markers=False, split_panels=Fa
         _style_axes(axes, cols, x_lims=x_lims)
         _add_colorbar(fig, list(axes), cmap, norm, 'Ocean Depth (m)',
                       ticks=ticks, ticklabels=ticklabels, aspect=n_rows * 7.5)
-        fig.legend(handles=_make_legend_handles(show_markers=show_markers),
-                   loc='outside lower center', ncol=2 if show_markers else 1)
+        _h = _make_legend_handles(show_markers=show_markers)
+        fig.legend(handles=_h, loc='outside lower center', ncol=_legend_ncol(_h, 2 if show_markers else 1))
         _save_fig(fig, os.path.join(output_path, f'lines_ocean_depth{sfx}.png'))
 
 
@@ -561,7 +542,8 @@ def plot_crust_composition(df, output_path, split_panels=False, show_markers=Fal
 
     for cols, sfx in _panel_groups(split_panels):
         n_rows = len(cols)
-        fig, axes = plt.subplots(n_rows, 1, figsize=(3.5, n_rows * 1.5), sharex=True)
+        figsize = (fig_width_half * 2, n_rows * fig_subplot_height * 2) if presentation else (fig_width_half, n_rows * fig_subplot_height)
+        fig, axes = plt.subplots(n_rows, 1, figsize=figsize, sharex=True)
         for comp, sio2 in zip(compositions, sio2_vals):
             group = subset[subset['comp_name'] == comp].sort_values('instellation')
             if not group.empty:
@@ -569,86 +551,13 @@ def plot_crust_composition(df, output_path, split_panels=False, show_markers=Fal
         _style_axes(axes, cols)
         _add_colorbar(fig, list(axes), cmap, norm, 'SiO₂ content (%)',
                       ticks=sio2_vals, ticklabels=[f'{v}%' for v in sio2_vals])
-        fig.legend(handles=_make_legend_handles(show_markers=show_markers),
-                   loc='outside lower center', ncol=2 if show_markers else 1)
+        _h = _make_legend_handles(show_markers=show_markers)
+        fig.legend(handles=_h, loc='outside lower center', ncol=_legend_ncol(_h, 2 if show_markers else 1))
         # fig.suptitle('Crust Composition Effect (out=1×, crust=1×, depth=3000 m, rw=True)')
         _save_fig(fig, os.path.join(output_path, f'lines_crust_composition{sfx}.png'))
 
 
-def plot_magnesium_chemistry(df, output_path, split_panels=False):
-    """Sweep 4: Compare mg chemistry (basalt_49_no_iron + rw=True) vs no_mg (Ca-only + rw=False)."""
-    combined = df[df['comp_name'].isin(['mg', 'no_mg'])]
-    if combined.empty:
-        print("No magnesium chemistry sweep data found — skipping.")
-        return
-    combined = _add_diag_columns(combined, output_path)
-
-    crust_rates     = sorted(combined['crust_production'].unique())
-    outgassing_vals = sorted(combined['outgassing'].unique())
-    norm = mcolors.LogNorm(vmin=min(outgassing_vals), vmax=max(outgassing_vals))
-    cmap = cmr.tropical
-
-    mg_legend = [
-        Line2D([0], [0], color='k', linestyle='-',  linewidth=1.8, label='With Mg chemistry (rw=True)'),
-        Line2D([0], [0], color='k', linestyle='--', linewidth=1.8, label='No Mg (Ca-only, rw=False)'),
-    ]
-    mg_legend_combined = [
-        Line2D([0], [0], color='k', linestyle='-',  linewidth=1.8, label='With Mg chemistry (rw=True)'),
-        Line2D([0], [0], color='k', linestyle=':',  linewidth=1.8, label='No Mg (Ca-only, rw=False)'),
-    ]
-
-    for cols, sfx in _panel_groups(split_panels):
-        n_rows = len(cols)
-
-        for c in crust_rates:
-            fig, axes = plt.subplots(n_rows, 1, figsize=(7, n_rows * 3), sharex=True)
-            for o in outgassing_vals:
-                color = cmap(norm(o))
-                for comp, ls in [('mg', '-'), ('no_mg', '--')]:
-                    group = combined[
-                        (combined['comp_name'] == comp) &
-                        (combined['crust_production'] == c) &
-                        (combined['outgassing'] == o)
-                    ].sort_values('instellation')
-                    if not group.empty:
-                        _plot_group_on_axes(axes, group, color, linestyle=ls, cols=cols)
-            _style_axes(axes, cols)
-            _add_colorbar(fig, list(axes), cmap, norm, 'Outgassing',
-                          ticks=outgassing_vals, ticklabels=[f'{v}×' for v in outgassing_vals],
-                          aspect=n_rows * 7.5)
-            fig.legend(handles=_make_legend_handles(prefix_handles=mg_legend),
-                       loc='outside lower center', ncol=4)
-            fig.suptitle(f'Magnesium Chemistry Comparison — Crust = {c}× Earth')
-            _save_fig(fig, os.path.join(output_path, f'lines_mg_crust_{c}{sfx}.png'))
-
-        # Combined plot: crust rates as columns
-        n_cols = len(crust_rates)
-        fig_c, axes_c = plt.subplots(n_rows, n_cols, figsize=(6 * n_cols + 1.5, n_rows * 3),
-                                      sharex=True, sharey='row', squeeze=False)
-        for ci, c in enumerate(crust_rates):
-            for o in outgassing_vals:
-                color = cmap(norm(o))
-                for comp, ls in [('mg', '-'), ('no_mg', ':')]:
-                    group = combined[
-                        (combined['comp_name'] == comp) &
-                        (combined['crust_production'] == c) &
-                        (combined['outgassing'] == o)
-                    ].sort_values('instellation')
-                    if not group.empty:
-                        _plot_group_on_axes(axes_c[:, ci], group, color, linestyle=ls, cols=cols)
-            _style_combined_col(axes_c, ci, n_cols, title=f'{c}×', cols=cols)
-
-        fig_c.legend(handles=_make_legend_handles(prefix_handles=mg_legend_combined),
-                     loc='outside lower center', ncol=4)
-        _add_colorbar(fig_c, list(axes_c.ravel()), cmap, norm, 'Outgassing',
-                      ticks=outgassing_vals, ticklabels=[f'{v}×' for v in outgassing_vals],
-                      aspect=n_rows * 10)
-        fig_c.suptitle('Magnesium Chemistry Comparison — Crust production rate →')
-        _save_fig(fig_c, os.path.join(output_path, f'lines_mg_combined{sfx}.png'))
-
-
-def plot_ratio_scatter(df, output_path,
-                       s_vals=(0.4, 0.6, 0.8, 1.0, 1.2)):
+def plot_ratio_scatter(df, output_path, s_vals=(0.4, 0.6, 0.8, 1.0, 1.2)):
     """T and P_CO2 vs outgassing/crust-production ratio, coloured by instellation."""
     base = _base(df)
     sub = base[base['instellation'].isin(s_vals)].copy()
@@ -663,7 +572,8 @@ def plot_ratio_scatter(df, output_path,
     norm = mcolors.Normalize(vmin=min(s_vals), vmax=max(s_vals))
     cmap = cmr.cosmic
 
-    fig, axes = plt.subplots(2, 1, figsize=(3.5, 5), sharex=True)
+    figsize = (fig_width_half * 2, fig_subplot_height * 2 * 2) if presentation else (fig_width_half, fig_subplot_height * 2)
+    fig, axes = plt.subplots(2, 1, figsize=figsize, sharex=True)
 
     for term, marker in HAB_MARKERS.items():
         grp = hab[hab['termination'] == term]
@@ -712,7 +622,7 @@ def plot_ratio_scatter(df, output_path,
                     linewidths=0.8, label=TERM_LABELS[t])
         for t, m in FAILED_MARKERS.items()
     ]
-    fig.legend(handles=marker_handles, loc='outside lower center', ncol=2)
+    fig.legend(handles=marker_handles, loc='outside lower center', ncol=_legend_ncol(marker_handles, 2))
     _save_fig(fig, os.path.join(output_path, 'ratio_scatter.png'))
 
 
@@ -1056,7 +966,7 @@ def plot_mineral_si(df, output_path):
         _add_colorbar(fig, list(axes.ravel()), cmap, norm, 'Outgassing',
                       ticks=outgassing_vals, ticklabels=[f'{v}×' for v in outgassing_vals],
                       aspect=n_min * 8)
-        fig.legend(handles=DA_LEGEND, loc='outside lower center', ncol=3)
+        fig.legend(handles=DA_LEGEND, loc='outside lower center', ncol=_legend_ncol(DA_LEGEND, 3))
         fig.suptitle(f'Mineral saturation indices — Crust = {c}× Earth')
         _save_fig(fig, os.path.join(output_path, f'mineral_si_crust_{c}.png'))
 
@@ -1068,15 +978,16 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     df = load_data(args.path)
+
     if df.empty:
         print("No data found. Check --path.")
     else:
         plot_faceted_lines(df, args.path)
         plot_faceted_lines(df, args.path, all_results=False, split_panels=True)
-        # plot_ocean_depth_effect(df, args.path)
-        # plot_ratio_scatter(df, args.path)
-        # plot_crust_composition(df, args.path, show_markers=False)
-        # plot_damkohler_contour(df, args.path)
-        plot_continental_baseline(df, args.path)
+        plot_ocean_depth_effect(df, args.path, split_panels=presentation)
+        plot_ratio_scatter(df, args.path)
+        plot_crust_composition(df, args.path, show_markers=False, split_panels=presentation)
+        plot_damkohler_contour(df, args.path)
+        # plot_continental_baseline(df, args.path)
         #plot_magnesium_chemistry(df, args.path)
         print("Done.")
