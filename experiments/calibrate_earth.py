@@ -91,18 +91,21 @@ K_CL_ANALYTIC = (EARTH_OUTGASSING / YR * CL_OUTGASSING_RATIO) / (T_Cl * J_ref_no
 
 # Starting points for iterated constants
 K_NA_INIT     = planet_module.K_NA_ALBITIZATION
-# f_HT: fraction of hydrothermal flux going through high-T (>150°C) axial systems.
-# PHREEQC handles Mg-Ca exchange (via Talc precipitation) and albitization for f_HT > 0.
-# Starting estimate: ~2% gives ~1.4 Tmol/yr Mg removal assuming near-complete removal
-# at HT conditions (b_eq[Mg] ≈ 0), matching the old KD_MG_HT = 1.8e-2 budget.
-F_HT_INIT     = 0.02
+# KD_MG_HT: first-order Mg-Ca exchange at HT (scales with J_HT × [Mg]).
+# Balances Mg: larger KD → more Mg removal → lower steady-state [Mg].
+KD_MG_INIT    = planet_module.KD_MG_HT
+# f_HT: controls Ca from HT PHREEQC (Anorthite/Diopside dissolution).
+F_HT_INIT     = 0
 TAU_PREC_INIT = 100e3 * YR   # literature alkalinity residence time ~100 kyr
+TAU_RW_INIT   = 5e6 * YR     # reverse weathering timescale (secondary Mg control)
 
 print(f"K_CL (analytic)         = {K_CL_ANALYTIC:.4e}  "
       f"(current in planet.py: {planet_module.K_CL_SUBDUCTION:.4e})")
 print(f"K_NA (starting)         = {K_NA_INIT:.4e}")
-print(f"f_HT (starting)         = {F_HT_INIT:.4f}  (PHREEQC HT Mg-Ca exchange fraction)")
+print(f"KD_MG_HT (starting)     = {KD_MG_INIT:.4e}  (Mg-Ca exchange, Mg balance)")
+print(f"f_HT (starting)         = {F_HT_INIT:.4f}  (PHREEQC HT Ca source)")
 print(f"tau_prec (starting)     = {TAU_PREC_INIT/YR/1e6:.2f} Myr")
+print(f"tau_rw (starting)       = {TAU_RW_INIT/YR/1e6:.1f} Myr  (reverse weathering)")
 print(f"ALPHA_REF               = {ALPHA_REF:.4f}")
 print()
 
@@ -140,11 +143,11 @@ def make_b0():
     return b
 
 
-def run_planet(K_na, f_HT, tau_prec, f_bio=0.0, f_carb=0.0, name='calib'):
+def run_planet(K_na, KD_mg, f_HT, tau_prec, tau_rw, f_bio=0.0, name='calib'):
     """Patch module constants, run from Cl-seeded blank ocean, return result dict."""
-    planet_module.K_CL_SUBDUCTION         = K_CL_ANALYTIC
+    planet_module.K_CL_SUBDUCTION   = K_CL_ANALYTIC
     planet_module.K_NA_ALBITIZATION = K_na
-    # KD_MG_HT stays 0.0: Mg-Ca exchange handled by PHREEQC via f_HT
+    planet_module.KD_MG_HT          = KD_mg
 
     p = Planet(
         mass=M_EARTH,
@@ -156,20 +159,19 @@ def run_planet(K_na, f_HT, tau_prec, f_bio=0.0, f_carb=0.0, name='calib'):
         ocean_depth=OCEAN_DEPTH,
         land_fraction=LAND_FRAC,
         reverse_weathering=True,
-        f_HT=f_HT,
         tau_prec=tau_prec,
+        tau_rw=tau_rw,
         f_bio=f_bio,
-        f_carb=f_carb,
         name=name,
     )
 
-    # Run to 2.5 Gyr.  Na (τ~500 Myr) reaches ~98% of SS by then.
+    # Run to 1 Gyr.  Ca (τ~1 Myr), Mg (τ~50 Myr), Na (τ~500 Myr) reach SS.
     # Cl stays near T_Cl throughout (K_cl is analytic; τ_Cl~10 Gyr so
     # drift is negligible).  Termination is usually "timeout" because
     # Cl's tiny residual fractional rate prevents the convergence event;
     # the fast species are at steady state regardless.
     p.time_evolve(
-        t_end=2.5e9 * YR,
+        t_end=1e9 * YR,
         b0=make_b0(),
         convergence_threshold=0.05,
     )
@@ -230,7 +232,7 @@ def seafloor_alk_flux_tmol(result):
     return flux[alk_idx] * A_seafloor * YR / 1e12   # Tmol/yr
 
 
-def print_state(label, result, K_na, f_HT, tau_prec, f_bio=0.0):
+def print_state(label, result, K_na, KD_mg, f_HT, tau_prec, tau_rw, f_bio=0.0):
     sf_alk = seafloor_alk_flux_tmol(result)
     bar = '─' * 70
     print(f"\n{bar}")
@@ -255,9 +257,11 @@ def print_state(label, result, K_na, f_HT, tau_prec, f_bio=0.0):
     print()
     print(f"  pCO2 = {result['pCO2_ppm']:.1f} ppm  (target: {T_pCO2:.0f})")
     print(f"  K_NA      = {K_na:.4e}  (init: {K_NA_INIT:.4e})")
-    print(f"  f_HT      = {f_HT:.4f}   (init: {F_HT_INIT:.4f}; PHREEQC Mg-Ca exchange)")
+    print(f"  KD_MG_HT  = {KD_mg:.4e}  (init: {KD_MG_INIT:.4e}; Mg balance)")
+    print(f"  f_HT      = {f_HT:.4f}   (init: {F_HT_INIT:.4f}; Ca balance)")
     print(f"  K_CL      = {K_CL_ANALYTIC:.4e}  (analytic, fixed)")
     print(f"  tau_prec  = {tau_prec/YR/1e6:.3f} Myr")
+    print(f"  tau_rw    = {tau_rw/YR/1e6:.1f} Myr")
     print(f"  f_bio     = {f_bio:.2f}")
 
 
@@ -272,46 +276,49 @@ def calibrated(result, tol=0.07):
 # Phase 1: abiotic iteration
 # ---------------------------------------------------------------------------
 
-def phase1(K_na, f_HT, tau_prec, f_bio=0.0, n_iter=12, tag='p1', fix_tau=True):
-    """Iteratively update K_na and f_HT (and optionally tau_prec) until Na/Mg/Ca converge."""
+def phase1(K_na, KD_mg, f_HT, tau_prec, tau_rw, f_bio=0.0, n_iter=6, tag='p1', fix_tau=True):
+    """Iteratively update K_na, KD_mg, and f_HT until Na/Mg/Ca converge.
+
+    Update rules (ratio-scaling):
+      K_na   — Na  balance: albitization sink
+      KD_mg  — Mg  balance: first-order HT Mg-Ca exchange (independent of Si)
+      f_HT   — Ca  balance: HT PHREEQC Ca source from Anorthite/Diopside
+      tau_rw — fixed; secondary Mg sink via reverse-weathering clays
+    """
     print(f"\n{'#'*70}")
     print(f"  Phase 1  f_bio={f_bio:.2f}  tag={tag}")
     print(f"{'#'*70}")
 
     for i in range(n_iter):
         name   = f'calib_{tag}_i{i:02d}'
-        result = run_planet(K_na, f_HT, tau_prec, f_bio=f_bio, name=name)
-        print_state(f"Iter {i+1}/{n_iter}", result, K_na, f_HT, tau_prec, f_bio)
+        result = run_planet(K_na, KD_mg, f_HT, tau_prec, tau_rw, f_bio=f_bio, name=name)
+        print_state(f"Iter {i+1}/{n_iter}", result, K_na, KD_mg, f_HT, tau_prec, tau_rw, f_bio)
 
         if calibrated(result):
             print(f"\n  *** Converged after {i+1} iteration(s) ***")
-            return K_na, f_HT, tau_prec, result
+            return K_na, KD_mg, f_HT, tau_prec, tau_rw, result
 
-        # Ratio-scaling update.
-        # For a first-order sink: [X]_ss = source / (K * J * A / M)
-        # → K_new = K_old * [X]_sim / [X]_target drives steady state to target.
-        K_na = K_na * (result['Na'] / T_Na)
-        # f_HT controls the HT fluid flux; more HT flow → more Mg removal.
-        # Clamp to [0, 0.5] to stay physically reasonable.
-        f_HT = min(f_HT * (result['Mg'] / T_Mg), 0.5)
+        K_na  = K_na  * (result['Na'] / T_Na)
+        # KD_mg: too-high Mg → increase removal rate; too-low → decrease. Damped (0.6).
+        KD_mg = max(KD_mg * (result['Mg'] / T_Mg) ** 0.6, 1e-6)
+        # f_HT: too-low Ca → increase; too-high → decrease. Damped (0.5). Clamped.
+        # f_HT  = min(max(f_HT * (T_Ca / max(result['Ca'], 1e-6)) ** 0.5, 1e-3), 0.5)
 
         if not fix_tau:
-            # tau_prec: larger tau → slower precipitation → higher [Ca].
-            # Damped (gamma=0.7) to avoid oscillation through PHREEQC nonlinearity.
-            tau_prec = tau_prec * (T_Ca / result['Ca']) ** 0.7
+            tau_prec = tau_prec * (T_Ca / max(result['Ca'], 1e-9)) ** 0.3
 
     print(f"\n  *** Did not fully converge in {n_iter} iterations ***")
-    return K_na, f_HT, tau_prec, result
+    return K_na, KD_mg, f_HT, tau_prec, tau_rw, result # type: ignore
 
 
-K_na, f_HT, tau_prec, result1 = phase1(
-    K_NA_INIT, F_HT_INIT, TAU_PREC_INIT, f_bio=0.0, tag='abiotic', fix_tau=True
+K_na, KD_mg, f_HT, tau_prec, tau_rw, result1 = phase1(
+    K_NA_INIT, KD_MG_INIT, F_HT_INIT, TAU_PREC_INIT, TAU_RW_INIT, f_bio=0.0, tag='abiotic', fix_tau=True
 )
 
 print("\n" + "="*70)
 print("  PHASE 1 (ABIOTIC) COMPLETE")
 print("="*70)
-print_state("Abiotic final", result1, K_na, f_HT, tau_prec, f_bio=0.0)
+print_state("Abiotic final", result1, K_na, KD_mg, f_HT, tau_prec, tau_rw, f_bio=0.0)
 
 # ---------------------------------------------------------------------------
 # Phase 2: scan f_bio to close residual Ca/Alk error.
@@ -329,8 +336,8 @@ def score(result):
             0.5 * abs(result['pCO2_ppm'] / T_pCO2 - 1))
 
 
-best = dict(score=score(result1), K_na=K_na, f_HT=f_HT, tau_prec=tau_prec,
-            f_bio=0.0, result=result1)
+best = dict(score=score(result1), K_na=K_na, KD_mg=KD_mg, f_HT=f_HT,
+            tau_prec=tau_prec, tau_rw=tau_rw, f_bio=0.0, result=result1)
 
 # Enter Phase 2 if Ca or pCO2 are off — with f_bio=0 the C budget is open
 # and pCO2 will typically be >> 280 ppm regardless of Ca.
@@ -343,8 +350,8 @@ if result1['Ca'] > T_Ca * 1.05 or result1['pCO2_ppm'] > T_pCO2 * 1.5:
 
     for fbio in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0]:
         print(f"\n  --- f_bio = {fbio:.1f} ---")
-        K_na_t, f_HT_t, tau_t, res_t = phase1(
-            K_na, f_HT, tau_prec,
+        K_na_t, KD_mg_t, f_HT_t, tau_t, tau_rw_t, res_t = phase1(
+            K_na, KD_mg, f_HT, tau_prec, tau_rw,
             f_bio=fbio, n_iter=5,
             tag=f'bio{int(fbio * 10):02d}',
             fix_tau=True,
@@ -354,8 +361,8 @@ if result1['Ca'] > T_Ca * 1.05 or result1['pCO2_ppm'] > T_pCO2 * 1.5:
               f"Alk={res_t['Alk']*1e3:.2f} mM  score={s:.4f}")
 
         if s < best['score']:
-            best = dict(score=s, K_na=K_na_t, f_HT=f_HT_t, tau_prec=tau_t,
-                        f_bio=fbio, result=res_t)
+            best = dict(score=s, K_na=K_na_t, KD_mg=KD_mg_t, f_HT=f_HT_t,
+                        tau_prec=tau_t, tau_rw=tau_rw_t, f_bio=fbio, result=res_t)
 
         if res_t['pCO2_ppm'] < T_pCO2 * 0.8:
             print("  pCO2 below 80% of target — stopping scan.")
@@ -374,16 +381,18 @@ sf = seafloor_alk_flux_tmol(r)
 print("\n\n" + "="*70)
 print("  CALIBRATION COMPLETE — FINAL CONSTANTS")
 print("="*70)
-print_state("Best result", r, best['K_na'], best['f_HT'], best['tau_prec'], best['f_bio'])
+print_state("Best result", r, best['K_na'], best['KD_mg'], best['f_HT'], best['tau_prec'], best['tau_rw'], best['f_bio']) # type: ignore
 print(f"\n  Seafloor Alk flux: {sf:.3f} Tmol/yr  (target ~1)")
 
 print("""
   ── Paste into planet.py ──────────────────────────────────────────────""")
 print(f"  K_CL_SUBDUCTION         = {K_CL_ANALYTIC:.6e}")
 print(f"  K_NA_ALBITIZATION       = {best['K_na']:.6e}")
+print(f"  KD_MG_HT                = {best['KD_mg']:.6e}")
 print("""
   ── Planet constructor defaults ───────────────────────────────────────""")
-print(f"  f_HT     = {best['f_HT']:.4f}   # PHREEQC HT Mg-Ca exchange + albitization")
-print(f"  tau_prec = {best['tau_prec']/YR:.4e} * YR   # {best['tau_prec']/YR/1e6:.3f} Myr")
+# print(f"  f_HT     = {best['f_HT']:.4f}   # PHREEQC HT Ca source + Mg-Ca exchange")
+print(f"  tau_prec = {best['tau_prec']/YR:.4e} * YR   # {best['tau_prec']/YR/1e6:.3f} Myr") # type: ignore
+print(f"  tau_rw   = {best['tau_rw']/YR:.4e} * YR   # {best['tau_rw']/YR/1e6:.1f} Myr  (reverse weathering)") # type: ignore
 print(f"  f_bio    = {best['f_bio']:.2f}")
 print()
