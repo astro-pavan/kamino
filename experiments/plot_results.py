@@ -30,7 +30,7 @@ if presentation:
 else:
     plt.style.use('experiments/planetary-chem-paper.mplstyle')
 
-DEFAULT_OUTPUT_PATH = '/data/pt426/kamino_experiments_fast_2/'
+DEFAULT_OUTPUT_PATH = '/home/pavan/PhD/kamino_experiments/'
 
 TERM_LABELS = {
     'snowball':   'Snowball',
@@ -265,7 +265,7 @@ def _style_axes(axes, cols, x_lims=(0.25, 1.45)):
             ax.set_ylabel('Ocean pH')
             ax.set_ylim(4.5, 12)
         elif col == 'salinity':
-            ax.set_ylabel('Dissolved Ions (g/kg)')
+            ax.set_ylabel('Salinity (g/kg)')
             ax.set_yscale('log')
             ax.set_ylim(1e-2, 1e3)
         elif col == 'calcite_si':
@@ -747,7 +747,11 @@ def plot_continental_baseline(df, output_path):
         return
 
     cols = ['T', 'P_CO2', 'pH', 'salinity']
-    group = subset.sort_values('instellation')
+    group_all = subset.sort_values('instellation')
+    group_hab = group_all[
+        (group_all['T'] > T_SNOWBALL) &
+        (group_all['T'] < T_RUNAWAY)
+    ]
 
     EARTH_S    = 1.0
     EARTH_T    = 288.0
@@ -774,7 +778,7 @@ def plot_continental_baseline(df, output_path):
 
     # Load final b_ocean for each run from the JSON files
     ion_rows = []
-    for _, row in group.iterrows():
+    for _, row in group_hab.iterrows():
         fpath = os.path.join(output_path, f"{row['name']}.json")
         try:
             with open(fpath) as fh:
@@ -790,9 +794,19 @@ def plot_continental_baseline(df, output_path):
             pass
 
     # --- figure 1: 4 summary panels ---
-    fig, axes_summary = plt.subplots(len(cols), 1, figsize=(3.5, len(cols) * 2), sharex=True)
-    _plot_group_on_axes(axes_summary, group, color='k', show_markers=False, cols=cols)
+    if presentation:
+        fig, _ax2d = plt.subplots(2, 2, figsize=(fig_width_half * 2, fig_subplot_height * 2 * 2),
+                                   sharex=True)
+        axes_summary = _ax2d.ravel()
+    else:
+        fig, axes_summary = plt.subplots(len(cols), 1, figsize=(3.5, len(cols) * 2), sharex=True)
+
+    # T panel shows all runs (including failed); other panels show only runs in habitable T range
+    _plot_group_on_axes(axes_summary[:1], group_all, color='k', show_markers=False, cols=['T'])
+    _plot_group_on_axes(axes_summary[1:], group_hab, color='k', show_markers=False, cols=['P_CO2', 'pH', 'salinity'])
     _style_axes(axes_summary, cols)
+    if presentation:
+        axes_summary[2].set_xlabel('Instellation (S/S₀)')  # bottom-left panel also needs x label
 
     for ax, col in zip(axes_summary, cols):
         ax.scatter(EARTH_S, earth_vals[col], marker='*', s=220, color='blue',
@@ -982,12 +996,11 @@ if __name__ == '__main__':
     if df.empty:
         print("No data found. Check --path.")
     else:
-        plot_faceted_lines(df, args.path)
-        plot_faceted_lines(df, args.path, all_results=False, split_panels=True)
-        plot_ocean_depth_effect(df, args.path, split_panels=presentation)
-        plot_ratio_scatter(df, args.path)
-        plot_crust_composition(df, args.path, show_markers=False, split_panels=presentation)
-        plot_damkohler_contour(df, args.path)
-        # plot_continental_baseline(df, args.path)
-        #plot_magnesium_chemistry(df, args.path)
+        # plot_faceted_lines(df, args.path)
+        # plot_faceted_lines(df, args.path, all_results=False, split_panels=True)
+        # plot_ocean_depth_effect(df, args.path, split_panels=presentation)
+        # plot_ratio_scatter(df, args.path)
+        # plot_crust_composition(df, args.path, show_markers=False, split_panels=presentation)
+        # plot_damkohler_contour(df, args.path)
+        plot_continental_baseline(df, args.path)
         print("Done.")
