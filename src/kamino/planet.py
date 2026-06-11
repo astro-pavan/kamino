@@ -7,7 +7,7 @@ import json
 import os
 
 from kamino.constants import *
-from kamino.chemistry import elements, get_P_CO2, c_idx, si_idx, alk_idx, ca_idx, mg_idx, na_idx, cl_idx, so4_idx, ChemistryError
+from kamino.chemistry import elements, get_P_CO2, get_pH, c_idx, si_idx, alk_idx, ca_idx, mg_idx, na_idx, cl_idx, so4_idx, ChemistryError
 from kamino.weathering import get_weathering_flux, get_continental_weathering_flux, J_ref_normalised, rate_ref, EARTH_CONTINENTAL_WEATHERING_REF, ALPHA_REF
 from kamino.precipitation import get_precipitation
 from kamino.mineral_info import *
@@ -19,24 +19,10 @@ from kamino.utils import august_roche_magnus_formula
 
 output_path = os.path.join(os.path.dirname(__file__), '../../output/')
 
-# Mg→Ca exchange partition coefficient for HT hydrothermal circulation.
-# No pH dependence: PHREEQC experiments show HT fluid pH is rock-buffered and
-# insensitive to ocean pH (effective n ≈ 0). Scales with J_HT.
-KD_MG_HT = 1.8e-2
-
-# Cl subduction partition coefficient.
-# Calibrated from Jarrard (2003): ~0.1 Tmol Cl/yr subducted globally at Earth conditions
-# ([Cl] = 0.55 mol/kg, J_ref = 1.4e15 kg/yr crustal flux).
-K_CL_SUBDUCTION = 1.3e-4
-
-# Na albitization partition coefficient (Na removal into HT crust via albitization).
-# No pH dependence: albitization is driven by temperature and Na/Ca activity ratio;
-# HT fluid pH is rock-buffered and insensitive to ocean pH (PHREEQC experiment, n ≈ 0).
-# Calibrated so that at Earth conditions ([Na]=0.48 mol/kg) the sink balances the
-# continental Na source (~1.82 Tmol/yr).
-K_NA_ALBITIZATION = 3.4e-3
-
-_M_OCEAN_REF = 1.4e21  # kg
+KD_MG_HT = 1.197244e-02
+K_CL_SUBDUCTION = 1.373251e-04
+K_NA_ALBITIZATION = 2.194806e-03
+_M_OCEAN_REF = 1.4e21 # kg
 
 # CaCO3: calibrated to net Ca burial rate matching continental + seafloor weathering inputs
 # (~6 Tmol/yr at modern [Ca]=10.3 mmol/kg). NET geological burial
@@ -68,19 +54,16 @@ class Planet:
             ocean_depth: float,
             land_fraction: float=0.0,
             crust_composition: dict[str, float]=basalt_49,
-            crust_carbonate_content: float=0.0,
             reverse_weathering: bool=True,
+            alpha: float=1.43,
             f_HT: float=0.0,
             cl_outgassing_ratio: float=0.02,
-            cl_subduction: float=1.0,
-            na_albitization: float=1.0,
-            f_carb: float=0.0,
             tau_prec: float=100e3 * YR,
+            tau_rw: float=5e6 * YR,
             f_bio: float=0.0,
             verbose: bool=False,
             name: str='planet',
             climate_model: str='analytic',
-            alpha: float=1.43,
             ):
         
         planet_config = {
@@ -94,16 +77,12 @@ class Planet:
             "instellation": instellation(0.0) if callable(instellation) else instellation,
             "crust_production_rate": crust_production_rate,
             "outgassing": outgassing,
-            "crust_carbonate_content": crust_carbonate_content,
             "reverse_weathering": reverse_weathering,
-            "f_HT": f_HT,
+            "alpha": alpha,
             "cl_outgassing_ratio": cl_outgassing_ratio,
-            "cl_subduction": cl_subduction,
-            "na_albitization": na_albitization,
-            "f_carb": f_carb,
             "tau_prec": tau_prec,
-            "f_bio": f_bio,
-            "alpha": alpha
+            "tau_rw": tau_rw,
+            "f_bio": f_bio
         }
 
         self._get_T_surface = _get_T_analytic if climate_model == 'analytic' else _get_T_interp
@@ -123,18 +102,17 @@ class Planet:
 
         self.crust_composition = crust_composition.copy()
 
-        if crust_carbonate_content > 0:
-            for mineral in self.crust_composition:
-                self.crust_composition[mineral] *= (1 - crust_carbonate_content)
-            self.crust_composition['Calcite'] = crust_carbonate_content
+        # if crust_carbonate_content > 0:
+        #     for mineral in self.crust_composition:
+        #         self.crust_composition[mineral] *= (1 - crust_carbonate_content)
+        #     self.crust_composition['Calcite'] = crust_carbonate_content
 
         self.pore_precipitating_minerals = clay_minerals
-        self.ocean_precipitating_minerals = carbonate_minerals + clay_minerals + silica_minerals + evaporite_minerals
+        self.fast_ocean_precipitating_minerals = carbonate_minerals + clay_minerals + silica_minerals + evaporite_minerals
+        self.rw_ocean_precipitating_minerals = list(reverse_weathering_minerals) if reverse_weathering else []
+        self.ocean_precipitating_minerals = self.fast_ocean_precipitating_minerals + self.rw_ocean_precipitating_minerals
         self.shelf_depth = 1000.0  # m — representative continental shelf depth for carbonate burial
         self.shelf_precipitating_minerals = carbonate_minerals
-
-        if reverse_weathering:
-            self.ocean_precipitating_minerals += reverse_weathering_minerals
 
         self.outgassing_flux = np.zeros(elements.shape)
         self.outgassing_flux[c_idx]  = (EARTH_OUTGASSING / YR) * self.surface_area * outgassing
@@ -142,10 +120,10 @@ class Planet:
         # HCl outgassing acidifies the ocean: H+ + HCO3- → CO2 + H2O, consuming 1 eq Alk per mol Cl.
         self.outgassing_flux[alk_idx] -= self.outgassing_flux[cl_idx]
 
-        self.cl_subduction_k = cl_subduction * K_CL_SUBDUCTION
-        self.na_albit_k = na_albitization * K_NA_ALBITIZATION
-        self.f_carb = f_carb
+        self.cl_subduction_k = K_CL_SUBDUCTION
+        self.na_albit_k = K_NA_ALBITIZATION
         self.tau_prec = tau_prec
+        self.tau_rw = tau_rw
         self.f_bio = f_bio
 
         self.tidally_locked = False
@@ -215,13 +193,18 @@ class Planet:
             P_CO2_new = get_P_CO2(P_surface, T_surface, b_ocean)
             assert P_CO2_new > 0
 
-            # Carbonate + clay + silica precipitation
-            F_prec, pH, SI = get_precipitation(P_pore, T_seafloor, b_ocean, precipitating_minerals=self.ocean_precipitating_minerals, precipitation_timescale=self.tau_prec)
+            # Fast precipitation: carbonates, clays, silica, evaporites (tau_prec ~100 kyr)
+            F_prec, pH, SI = get_precipitation(P_pore, T_seafloor, b_ocean, precipitating_minerals=self.fast_ocean_precipitating_minerals, precipitation_timescale=self.tau_prec)
+            # Slow precipitation: reverse weathering clays (tau_rw ~10-100 Myr)
+            if self.rw_ocean_precipitating_minerals:
+                F_prec_rw, _, SI_rw = get_precipitation(P_pore, T_seafloor, b_ocean, precipitating_minerals=self.rw_ocean_precipitating_minerals, precipitation_timescale=self.tau_rw)
+                F_prec = F_prec + F_prec_rw
+                SI.update(SI_rw)
             F_carb_abiotic = max(0.0, -F_prec[c_idx])
             F_sil_abiotic  = max(0.0, -F_prec[si_idx])
 
-            # Oceam chemistry
-            self._pH = pH
+            # Ocean chemistry — pH at surface conditions (not pore conditions)
+            self._pH = get_pH(P_surface, T_surface, b_ocean)
             self._SI = SI
             ocean_water_per_area = self.ocean_depth * 1000.0
             
@@ -236,21 +219,13 @@ class Planet:
             J_LT = J_total * (1 - self.f_HT)
             J_HT = J_total * self.f_HT
 
-            # Off axis hydrothermal weathering systems
+            # Off axis hydrothermal weathering
             flux_LT, _ = get_weathering_flux(P_pore, T_pore, P_CO2, b_ocean, alpha=self.alpha, rate=self.crust_production_rate, J=J_LT, crust_composition=self.crust_composition, sedimentation_rate=S_sed, precipitating_minerals=self.pore_precipitating_minerals)
             
-            # High temperature hydrothermal system weathering.
-            # Uses basalt_49_HT (Diopside instead of Wollastonite+Enstatite):
-            # Wollastonite is a metamorphic mineral absent from fresh MORB and
-            # gives unrealistically high equilibrium Ca (~62 mM) at HT conditions.
-            # Diopside (CaMgSi2O6) is the actual dominant MORB pyroxene.
-            # T=473K (200°C): represents average HT conditions across mixed on/off-axis
-            # systems. Higher temperatures (327°C) give >30 mM Ca/Si offsets, causing
-            # stiff ODE dynamics and 25× more solver steps. At 200°C: ΔCa=+4 mM,
-            # ΔSi=+4 mM (buffered by Quartz in the HT database), ΔMg=-5 mM.
-            # w/r=2 constrains mineral amounts to physically sensible levels.
+            # High temperature hydrothermal weathering
+
             if self.f_HT > 0:
-                flux_HT, _ = get_weathering_flux(P_pore, 473, P_CO2, b_ocean, high_temperature=True, alpha=self.alpha, rate=self.crust_production_rate, J=J_HT, crust_composition=basalt_49_HT, sedimentation_rate=S_sed, precipitating_minerals=self.pore_precipitating_minerals, water_rock_ratio=2.0)
+                flux_HT, _ = get_weathering_flux(P_pore, 473, P_CO2, b_ocean, high_temperature=True, alpha=self.alpha, rate=self.crust_production_rate, J=J_HT, crust_composition=self.crust_composition, sedimentation_rate=S_sed, precipitating_minerals=self.pore_precipitating_minerals, water_rock_ratio=2.0)
             else:
                 flux_HT = np.zeros_like(flux_LT)
 
@@ -274,11 +249,11 @@ class Planet:
                 F_sil_cont = get_continental_weathering_flux(T_surface, P_CO2).copy()
                 
                 # Continetal carbonate weathering: CaCO3 + CO2 + H2O -> Ca2+ + 2HCO3-
-                F_carb_w = np.zeros(elements.shape)
-                if self.f_carb > 0:
-                    F_carb_w[ca_idx]  = self.f_carb * F_sil_cont[ca_idx]
-                    F_carb_w[alk_idx] = 2.0 * self.f_carb * F_sil_cont[ca_idx]
-                    F_carb_w[c_idx]   = self.f_carb * F_sil_cont[ca_idx]
+                F_carb_w = np.zeros(elements.shape) # switched off
+                # if self.f_carb > 0:
+                #     F_carb_w[ca_idx]  = self.f_carb * F_sil_cont[ca_idx]
+                #     F_carb_w[alk_idx] = 2.0 * self.f_carb * F_sil_cont[ca_idx]
+                #     F_carb_w[c_idx]   = self.f_carb * F_sil_cont[ca_idx]
 
                 F_cont = (F_sil_cont + F_carb_w) * self.land_area / self.ocean_water_mass
 
@@ -287,7 +262,7 @@ class Planet:
                 F_shelf_prec, _, _ = get_precipitation(P_shelf, T_seafloor, b_ocean, precipitating_minerals=self.shelf_precipitating_minerals, precipitation_timescale=self.tau_prec)
 
             # HT Mg->Ca exchange (scales with J_HT: Mg removal is a HT-only process)
-            _ht_rate = KD_MG_HT * b_ocean[mg_idx] * J_HT * self.surface_area / self.ocean_water_mass
+            _ht_rate = KD_MG_HT * b_ocean[mg_idx] * J_LT * self.surface_area / self.ocean_water_mass
             F_ht_exchange = np.zeros(elements.shape)
             F_ht_exchange[mg_idx] = -_ht_rate
             F_ht_exchange[ca_idx] = +_ht_rate
