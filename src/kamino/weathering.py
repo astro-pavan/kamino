@@ -70,6 +70,14 @@ def get_weathering_flux(
     if precipitating_minerals is None:
         precipitating_minerals = []
 
+    if high_temperature:
+        diopside_fraction = crust_composition['Wollastonite'] + crust_composition['Enstatite']
+        ht_crust_composition = crust_composition.copy()
+        ht_crust_composition.pop('Wollastonite')
+        ht_crust_composition.pop('Enstatite')
+        ht_crust_composition['Diopside'] = diopside_fraction
+        crust_composition = ht_crust_composition
+
     b_eq_primary, pH = get_b_eq(P, T, P_CO2, crust_composition, b_input=b_input, high_temperature=high_temperature, fO2=fO2, water_rock_ratio=water_rock_ratio)
     k_primary = get_k(P, T, pH, crust_composition)
     k_nonzero = k_primary != 0  # save before replacing zeros with inf
@@ -77,16 +85,31 @@ def get_weathering_flux(
 
     A_reactive = seafloor_reactive_area(T, pH, rate, alpha, clog, cover, sedimentation_rate=sedimentation_rate)
 
-    # Flux formula: F = A*(b_eq - b_in) / (b_eq/k + A/J)
-    F_primary = A_reactive * (b_eq_primary - b_input) / (b_eq_primary / k_primary + A_reactive / J)
-    F_primary = np.where(k_nonzero, F_primary, 0.0)  # zero out elements with no basalt stoichiometry (e.g. C)
+    # Kinetic dissolution offset for Mg-bearing minerals excluded from the LT PHREEQC
+    # equilibrium (Forsterite, Enstatite). These minerals are thermodynamically
+    # supersaturated in seawater so get_b_eq excludes them to prevent PHREEQC trying to
+    # precipitate them. However they do dissolve kinetically on the seafloor. Expressing
+    # their forward kinetic rate as k*A/J converts it to an effective b_eq increment, which
+    # keeps the Mg flux inside the transport-limited architecture (bounded by J * offset).
+    if not high_temperature:
+        _lt_excluded_mg = {'Forsterite', 'Enstatite'}
+        exc_comp = {m: f for m, f in crust_composition.items() if m in _lt_excluded_mg}
+        if exc_comp:
+            k_exc = get_k(P, T, pH, exc_comp)
+            b_eq_primary[mg_idx] += k_exc[mg_idx] * A_reactive / J
 
-    # Da = k*A / (J*b_eq): dimensionless ratio of transport to kinetic resistance.
-    # Da>>1 → thermodynamically limited (pore fluid near equilibrium with basalt);
-    # Da<<1 → kinetically limited.
-    b_eq_safe = np.where(b_eq_primary > 0, b_eq_primary, np.inf)
-    Da_primary = (k_primary * A_reactive) / (J * b_eq_safe)
-    b_pore = b_input + (b_eq_primary - b_input) * (1 - np.exp(-Da_primary))
+    with np.errstate(invalid='ignore', divide='ignore'):
+
+        # Flux formula: F = A*(b_eq - b_in) / (b_eq/k + A/J)
+        F_primary = A_reactive * (b_eq_primary - b_input) / (b_eq_primary / k_primary + A_reactive / J)
+        F_primary = np.where(k_nonzero, F_primary, 0.0)  # zero out elements with no basalt stoichiometry (e.g. C)
+
+        # Da = k*A / (J*b_eq): dimensionless ratio of transport to kinetic resistance.
+        # Da>>1 → thermodynamically limited (pore fluid near equilibrium with basalt);
+        # Da<<1 → kinetically limited.
+        b_eq_safe = np.where(b_eq_primary > 0, b_eq_primary, np.inf)
+        Da_primary = (k_primary * A_reactive) / (J * b_eq_safe)
+        b_pore = b_input + (b_eq_primary - b_input) * (1 - np.exp(-Da_primary))
 
     if 'Calcite' not in crust_composition:
         b_pore[c_idx] = b_input[c_idx]
