@@ -30,7 +30,7 @@ if presentation:
 else:
     plt.style.use('experiments/planetary-chem-paper.mplstyle')
 
-DEFAULT_OUTPUT_PATH = '/home/pavan/PhD/kamino_experiments/'
+DEFAULT_OUTPUT_PATH = '/data/pt426/kamino_experiments_fast_2/'
 
 TERM_LABELS = {
     'snowball':   'Snowball',
@@ -984,6 +984,113 @@ def plot_mineral_si(df, output_path):
         fig.suptitle(f'Mineral saturation indices — Crust = {c}× Earth')
         _save_fig(fig, os.path.join(output_path, f'mineral_si_crust_{c}.png'))
 
+def plot_habitability_phase_space(df, output_path):
+    """
+    Phase diagram mapping Instellation vs. Outgassing/Crust production ratio.
+    Aggregates overlapping data points to determine the dominant macro-state
+    at each coordinate, completely eliminating visual clutter.
+    """
+    base = _base(df).copy()
+    if base.empty:
+        print("No runs found — skipping phase space plot.")
+        return
+
+    base['ratio'] = base['outgassing'] / base['crust_production']
+
+    # 1. Define Boolean masks to strictly enforce state conditions
+    cond_acid = base['termination'] == 'acid_ocean'
+    
+    # Explicitly add 'co2_floor' to the Snowball conditions
+    cond_snow = ((base['termination'].isin(['snowball', 'co2_floor'])) | (base['T'] <= T_SNOWBALL)) & ~cond_acid
+    
+    cond_hot  = ((base['termination'] == 'hothouse') | (base['T'] >= T_RUNAWAY)) & ~cond_acid & ~cond_snow
+    cond_hab  = ~(cond_acid | cond_snow | cond_hot)
+
+    # 2. Assign a string label to each row based on its state
+    base['macro_state'] = None
+    base.loc[cond_snow, 'macro_state'] = 'Snowball'
+    base.loc[cond_hab,  'macro_state'] = 'Habitable'
+    base.loc[cond_hot,  'macro_state'] = 'Hothouse'
+    base.loc[cond_acid, 'macro_state'] = 'Acid Ocean'
+
+    # Drop any edge cases that missed categorization
+    base = base.dropna(subset=['macro_state'])
+
+    # 3. AGGREGATE: Group by grid coordinate and find the most frequent state
+    # This guarantees exactly ONE data point per (X, Y) coordinate
+    def get_dominant_state(s):
+        return s.value_counts().idxmax()
+    
+    agg_df = base.groupby(['ratio', 'instellation'])['macro_state'].agg(get_dominant_state).reset_index()
+
+    # 4. Map these conditions to our visual styling
+    macro_states = {
+        'Snowball': {
+            'name': 'Snowball',
+            'color': '#4ea8ff', # Icy Blue
+            'marker': 'v'
+        },
+        'Habitable': {
+            'name': 'Habitable',
+            'color': '#51c46f', # Lush Green
+            'marker': 'o'
+        },
+        'Hothouse': {
+            'name': 'Hothouse',
+            'color': '#ff5e5e', # Hot Red
+            'marker': '^'
+        },
+        'Acid Ocean (>5 bar CO₂)': {
+            'name': 'Acid Ocean',
+            'color': '#f39c12', # Acidic Yellow-Orange
+            'marker': 's'
+        }
+    }
+
+    # Use existing sizing conventions
+    figsize = (fig_width_half * 1.5, fig_subplot_height * 2.5) if presentation else (fig_width_half, fig_subplot_height * 2)
+    fig, ax = plt.subplots(1, 1, figsize=figsize)
+
+    legend_handles = []
+
+    for label, config in macro_states.items():
+        # Filter the AGGREGATED dataframe, not the base dataframe
+        grp = agg_df[agg_df['macro_state'] == config['name']]
+        if grp.empty:
+            continue
+
+        # Scatter the points for this state
+        # Markers are slightly larger now that they aren't overlapping
+        marker_size = 80 if presentation else 50
+        
+        ax.scatter(grp['ratio'], grp['instellation'],
+                   c=config['color'], marker=config['marker'],
+                   s=marker_size, edgecolors='k', linewidths=0.6, alpha=0.9, zorder=4)
+
+        # Build custom legend handle
+        legend_handles.append(Line2D([0], [0], marker=config['marker'], color='w',
+                                     markerfacecolor=config['color'], markeredgecolor='k',
+                                     markersize=9, label=label))
+
+    # Format the axes
+    ax.set_xscale('log')
+    ax.set_xlim([1e-3, 1e3])
+    
+    # Add a small margin to the Y-axis based on the data
+    y_min = agg_df['instellation'].min()
+    y_max = agg_df['instellation'].max()
+    margin = (y_max - y_min) * 0.05 if y_max != y_min else 0.1
+    ax.set_ylim([y_min - margin, y_max + margin])
+
+    ax.set_xlabel('Outgassing / Crust production rate')
+    ax.set_ylabel('Instellation (S/S₀)')
+    ax.grid(True, linestyle='--', alpha=0.4, zorder=0)
+
+    # Add the legend below the plot
+    fig.legend(handles=legend_handles, loc='outside lower center', ncol=2)
+
+    _save_fig(fig, os.path.join(output_path, 'ratio_phase_space.png'))
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Plot kamino parameter sweep results.')
@@ -996,11 +1103,12 @@ if __name__ == '__main__':
     if df.empty:
         print("No data found. Check --path.")
     else:
-        # plot_faceted_lines(df, args.path)
-        # plot_faceted_lines(df, args.path, all_results=False, split_panels=True)
-        # plot_ocean_depth_effect(df, args.path, split_panels=presentation)
-        # plot_ratio_scatter(df, args.path)
-        # plot_crust_composition(df, args.path, show_markers=False, split_panels=presentation)
-        # plot_damkohler_contour(df, args.path)
+        plot_faceted_lines(df, args.path)
+        plot_faceted_lines(df, args.path, all_results=False, split_panels=True)
+        plot_ocean_depth_effect(df, args.path, split_panels=presentation)
+        plot_ratio_scatter(df, args.path)
+        plot_crust_composition(df, args.path, show_markers=False, split_panels=presentation)
+        plot_damkohler_contour(df, args.path)
+        plot_habitability_phase_space(df, args.path)
         plot_continental_baseline(df, args.path)
         print("Done.")
