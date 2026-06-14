@@ -28,8 +28,8 @@ _M_OCEAN_REF = 1.4e21 # kg
 # (~6 Tmol/yr at modern [Ca]=10.3 mmol/kg). NET geological burial
 K_BIO_CA = 6e12 / (YR * 10.3e-3 * _M_OCEAN_REF)  # s⁻¹, residence time ~2.4 Myr
 
-# Opal: ~6 Tmol/yr net burial (Tréguer et al. 2021) at [Si]_ref = 1 mmol/kg
-K_BIO_SI = 6e12  / (YR * 1.0e-3  * _M_OCEAN_REF)  # s⁻¹, residence time ~233 kyr
+# Opal: ~6 Tmol/yr net burial (Tréguer et al. 2021) at [Si]_ref = 0.1 mmol/kg
+K_BIO_SI = 6e12  / (YR * 1.0e-4  * _M_OCEAN_REF)  # s⁻¹, residence time ~233 kyr
 
 _S_TERR_EARTH = 5 / (1e6 * YR)   # m/s at land_fraction = 0.3
 
