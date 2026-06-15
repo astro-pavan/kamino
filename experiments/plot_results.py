@@ -16,7 +16,7 @@ import cmasher as cmr
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../src'))
 from kamino.weathering import get_weathering_flux, J_ref_normalised, rate_ref, A_seafloor
-from kamino.constants import G, EARTH_CRUST_PRODUCTION_RATE_PER_AREA, YR
+from kamino.constants import G, EARTH_CRUST_PRODUCTION_RATE_PER_AREA, YR, SOLAR_CONSTANT, STEFAN_BOLTZMANN
 from kamino.chemistry import alk_idx
 from kamino.mineral_info import carbonate_minerals, clay_minerals, silica_minerals, reverse_weathering_minerals
 
@@ -30,7 +30,7 @@ if presentation:
 else:
     plt.style.use('experiments/planetary-chem-paper.mplstyle')
 
-DEFAULT_OUTPUT_PATH = '/data/pt426/kamino_experiments_fast_2/'
+DEFAULT_OUTPUT_PATH = '/home/pavan/PhD/kamino_experiments_fast_2/'
 
 TERM_LABELS = {
     'snowball':   'Snowball',
@@ -72,10 +72,13 @@ DA_LEGEND = [
     Line2D([0], [0], color='k', linestyle='-',  linewidth=1.8, label='Da < 1 (kinetic)'),
     Line2D([0], [0], color='k', linestyle='--', linewidth=1.8, label='Da ≥ 1 (thermodynamic)'),
     Line2D([0], [0], color='k', linestyle=':',  linewidth=1.8, label='$T_\\mathrm{sf}$ at floor (274 K)'),
+    Line2D([0], [0], color='k', linestyle='-.', linewidth=0.8, label='Equilibrium temperature'),
 ]
 
 PANEL_COLS = ['T', 'P_CO2', 'pH', 'salinity']
 
+def equilbrium_temperature(instellation, albedo=0.3, greenhouse=0.5):
+    return (((1-albedo) * instellation * SOLAR_CONSTANT)/(4 * STEFAN_BOLTZMANN * greenhouse)) ** 0.25
 
 # ---------------------------------------------------------------------------
 # Data loading
@@ -257,6 +260,9 @@ def _style_axes(axes, cols, x_lims=(0.25, 1.45)):
             ax.axhspan(T_SNOWBALL - 25, T_SNOWBALL, color='blue', alpha=0.12)
             ax.axhspan(T_RUNAWAY - 20,  T_RUNAWAY,  color='red',  alpha=0.12)
             ax.set_ylim(235, 360)
+            s_eq = np.linspace(x_lims[0], x_lims[1], 300)
+            ax.plot(s_eq, equilbrium_temperature(s_eq), color='k', linestyle='-.',
+                    linewidth=0.8, zorder=1, alpha=0.7)
         elif col == 'P_CO2':
             ax.set_ylabel('$P_{\\mathrm{CO_2}}$ (bar)')
             ax.set_yscale('log')
@@ -267,7 +273,7 @@ def _style_axes(axes, cols, x_lims=(0.25, 1.45)):
         elif col == 'salinity':
             ax.set_ylabel('Salinity (g/kg)')
             ax.set_yscale('log')
-            ax.set_ylim(1e-2, 1e3)
+            ax.set_ylim(1e-1, 1.1e2)
         elif col == 'calcite_si':
             ax.set_ylabel('Calcite SI')
             ax.axhline(0, color='k', linestyle='--', linewidth=0.8, alpha=0.5)
@@ -414,7 +420,7 @@ def _plot_group_on_axes(axes, group, color, linestyle='-', show_markers=True, co
 # Plotting functions
 # ---------------------------------------------------------------------------
 
-def plot_faceted_lines(df, output_path, all_results=True, split_panels=False):
+def plot_faceted_lines(df, output_path, all_results=True, multiple_plots=False, split_panels=False, sequence=False):
     """T, P_CO2, pH, salinity vs instellation per crust rate, coloured by outgassing."""
     base = _base(df)
     base = _add_diag_columns(base, output_path)
@@ -424,7 +430,7 @@ def plot_faceted_lines(df, output_path, all_results=True, split_panels=False):
         outgassing_vals = sorted(base['outgassing'].unique())
     else:
         crust_rates = [0.1, 1, 10]
-        outgassing_vals = sorted(base['outgassing'].unique())
+        outgassing_vals = [0.1, 0.3, 1, 3, 10]
 
     norm = mcolors.LogNorm(vmin=min(outgassing_vals), vmax=max(outgassing_vals))
     cmap = cmr.tropical
@@ -432,7 +438,7 @@ def plot_faceted_lines(df, output_path, all_results=True, split_panels=False):
     for cols, sfx in _panel_groups(split_panels):
         n_rows = len(cols)
 
-        if all_results:
+        if multiple_plots:
             for c in crust_rates:
                 subset_c = base[base['crust_production'] == c]
                 fig, axes = plt.subplots(n_rows, 1, figsize=(7, n_rows * 3), sharex=True)
@@ -472,6 +478,38 @@ def plot_faceted_lines(df, output_path, all_results=True, split_panels=False):
         fig_c.suptitle('Crust production rate')
         fname = f'lines_combined{"_full" if all_results else ""}{sfx}.png'
         _save_fig(fig_c, os.path.join(output_path, fname))
+
+        if sequence:
+            ref_crust, ref_out = 1.0, 1.0
+            seq_scenarios = [
+                ('single',      f'lines_seq_1{sfx}'),
+                ('out_sweep',   f'lines_seq_2{sfx}'),
+                ('crust_sweep', f'lines_seq_3{sfx}'),
+            ]
+            for scenario, seq_fname in seq_scenarios:
+                fig_s, axes_s = plt.subplots(n_rows, n_cols, figsize=full_figsize,
+                                              sharex=True, sharey='row', squeeze=False)
+                for ci, c in enumerate(crust_rates):
+                    for o in outgassing_vals:
+                        show = (
+                            (scenario == 'single'      and np.isclose(c, ref_crust) and np.isclose(o, ref_out)) or
+                            (scenario == 'out_sweep'   and np.isclose(c, ref_crust)) or
+                            (scenario == 'crust_sweep' and np.isclose(o, ref_out))
+                        )
+                        if not show:
+                            continue
+                        group = (base[(base['crust_production'] == c) & (base['outgassing'] == o)]
+                                 .sort_values('instellation'))
+                        if not group.empty:
+                            _plot_group_on_axes(axes_s[:, ci], group, cmap(norm(o)), cols=cols, show_markers=all_results)
+                    _style_combined_col(axes_s, ci, n_cols, title=f'{c}×', cols=cols)
+                _add_colorbar(fig_s, list(axes_s.ravel()), cmap, norm, 'Outgassing',
+                              ticks=outgassing_vals, ticklabels=[f'{v}×' for v in outgassing_vals],
+                              aspect=n_rows * 10)
+                _h = _make_legend_handles(show_markers=all_results)
+                fig_s.legend(handles=_h, loc='outside lower center', ncol=_legend_ncol(_h, 4))
+                fig_s.suptitle('Crust production rate')
+                _save_fig(fig_s, os.path.join(output_path, seq_fname + '.png'))
 
 
 def plot_ocean_depth_effect(df, output_path, show_markers=False, split_panels=False):
@@ -817,26 +855,36 @@ def plot_continental_baseline(df, output_path):
     )
     _save_fig(fig, os.path.join(output_path, 'continental_baseline.png'))
 
-    # --- figure 2: ion concentrations ---
-    fig2, ax_ions = plt.subplots(1, 1, figsize=(3.5, 3))
+    # --- figure 2: ion ratio bar chart (model vs Earth seawater at S ≈ 1) ---
+    figsize2 = (fig_width_half * 2, fig_subplot_height * 2) if presentation else (fig_width_half, fig_subplot_height * 1.5)
+    fig2, ax_ions = plt.subplots(1, 1, figsize=figsize2)
 
     if ion_rows:
-        s_vals = np.array([r[0] for r in ion_rows])
+        s_arr  = np.array([r[0] for r in ion_rows])
         b_mmol = np.array([r[1] for r in ion_rows]) * 1e3  # mol/kg → mmol/kg
+        closest = int(np.argmin(np.abs(s_arr - EARTH_S)))
+        b_model = b_mmol[closest]
 
-        for (idx, label, earth_val), color in zip(ION_SPEC, ION_COLORS):
-            ax_ions.plot(s_vals, b_mmol[:, idx], color=color, linewidth=1.5, label=label)
-            if earth_val is not None:
-                ax_ions.scatter(EARTH_S, earth_val, marker='*', s=150,
-                                color=color, edgecolors='k', linewidths=0.5, zorder=6)
+        labels    = [spec[1] for spec in ION_SPEC]
+        ratios    = [100 * (b_model[spec[0]] - spec[2]) / spec[2] for spec in ION_SPEC]
+        x         = np.arange(len(labels))
 
-    ax_ions.set_ylabel('Concentration (mmol/kg)')
-    ax_ions.set_yscale('log')
-    ax_ions.set_xlabel('Instellation ($S/S_0$)')
-    ax_ions.grid(True, linestyle='--', alpha=0.4)
-    ax_ions.set_xlim(0.25, 1.45)
-    ax_ions.legend(ncols=2, fontsize=7, loc='lower left',
-                   handlelength=1.2, columnspacing=0.8, labelspacing=0.3)
+        ax_ions.scatter(x, ratios, color=ION_COLORS, edgecolors='k', linewidths=0.6, s=80, zorder=3)
+        ax_ions.set_xticks(x)
+        ax_ions.set_xticklabels(labels)
+        ax_ions.axvline(3.5, color='gray', linestyle='--', linewidth=0.8, alpha=0.6, zorder=1)
+        trans = ax_ions.get_xaxis_transform()
+        ax_ions.text(1.5, 1.02, 'Biotically controlled', transform=trans,
+                     ha='center', va='bottom', fontsize=8)
+        ax_ions.text(5.0, 1.02, 'Abiotically controlled', transform=trans,
+                     ha='center', va='bottom', fontsize=8)
+
+    ax_ions.spines['bottom'].set_position(('data', 0))
+    ax_ions.spines['top'].set_visible(False)
+    ax_ions.spines['right'].set_visible(False)
+    ax_ions.set_ylabel('Model Difference (%)')
+    # ax_ions.set_yscale('symlog', linthresh=0.1)
+    ax_ions.grid(True, linestyle='--', alpha=0.4, axis='y')
     _save_fig(fig2, os.path.join(output_path, 'continental_baseline_ions.png'))
 
 
@@ -1105,6 +1153,7 @@ if __name__ == '__main__':
     else:
         plot_faceted_lines(df, args.path)
         plot_faceted_lines(df, args.path, all_results=False, split_panels=True)
+        plot_faceted_lines(df, args.path, split_panels=True, all_results=False, sequence=True)
         plot_ocean_depth_effect(df, args.path, split_panels=presentation)
         plot_ratio_scatter(df, args.path)
         plot_crust_composition(df, args.path, show_markers=False, split_panels=presentation)
