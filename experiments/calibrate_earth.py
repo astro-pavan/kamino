@@ -37,14 +37,15 @@ import sys
 import os
 import json
 import numpy as np
+from scipy.optimize import least_squares
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../src'))
 
 import kamino.planet as planet_module
 from kamino.planet import Planet
 from kamino.chemistry import elements, alk_idx, c_idx, si_idx, ca_idx, mg_idx, na_idx, cl_idx, so4_idx
-from kamino.weathering import get_weathering_flux, J_ref_normalised, rate_ref, A_seafloor, ALPHA_REF
-from kamino.constants import M_EARTH, R_EARTH, YR, EARTH_OUTGASSING, G
+from kamino.weathering import get_weathering_flux, J_ref_normalised, rate_ref, A_seafloor
+from kamino.constants import M_EARTH, R_EARTH, YR, EARTH_OUTGASSING, EARTH_ATM, G
 
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), '../output')
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -89,6 +90,37 @@ GRAVITY = G * M_EARTH / R_EARTH**2
 # ---------------------------------------------------------------------------
 K_CL_ANALYTIC = (EARTH_OUTGASSING / YR * CL_OUTGASSING_RATIO) / (T_Cl * J_ref_normalised)
 
+# ---------------------------------------------------------------------------
+# ALPHA_REF: calibrate seafloor weathering strength so that the alkalinity
+# flux from primary basalt dissolution equals 1 Tmol/yr at Earth steady-state
+# pore conditions with modern seawater as input.
+# T_surface=288K → T_seafloor=277K → T_pore=286K; depth=3000m.
+# Secondary precipitation excluded to isolate primary dissolution.
+# ---------------------------------------------------------------------------
+_alpha_T_pore    = 286.0
+_alpha_P_pore    = 1000.0 * 10.0 * 3000.0
+_alpha_P_CO2     = EARTH_ATM * 280e-6
+_alpha_flux_norm = (1e12 / YR) / A_seafloor   # 1 Tmol/yr normalised per m²
+
+_alpha_b = np.zeros(len(elements))
+_alpha_b[alk_idx]  = 2.3e-3
+_alpha_b[ca_idx]   = 10.3e-3
+_alpha_b[mg_idx]   = 52.8e-3
+_alpha_b[na_idx]   = 480e-3
+_alpha_b[cl_idx]   = 550e-3
+_alpha_b[so4_idx]  = 28e-3
+_alpha_b[si_idx]   = 0.1e-3
+_alpha_b[c_idx]    = 2.0e-3
+
+def _alpha_residual(a):
+    flux, _ = get_weathering_flux(
+        _alpha_P_pore, _alpha_T_pore, _alpha_P_CO2,
+        _alpha_b, alpha=float(a[0]), rate=rate_ref, precipitating_minerals=[],
+    )
+    return (flux[alk_idx] - _alpha_flux_norm) / _alpha_flux_norm
+
+ALPHA_REF = float(least_squares(_alpha_residual, [100.0]).x[0])
+
 # Starting points for iterated constants
 K_NA_INIT     = planet_module.K_NA_ALBITIZATION
 # KD_MG_HT: first-order Mg-Ca exchange at HT (scales with J_HT × [Mg]).
@@ -106,7 +138,7 @@ print(f"KD_MG_HT (starting)     = {KD_MG_INIT:.4e}  (Mg-Ca exchange, Mg balance)
 print(f"f_HT (starting)         = {F_HT_INIT:.4f}  (PHREEQC HT Ca source)")
 print(f"tau_prec (starting)     = {TAU_PREC_INIT/YR/1e6:.2f} Myr")
 print(f"tau_rw (starting)       = {TAU_RW_INIT/YR/1e6:.1f} Myr  (reverse weathering)")
-print(f"ALPHA_REF               = {ALPHA_REF:.4f}")
+print(f"ALPHA_REF (calibrated)  = {ALPHA_REF:.4f}  (target: 1 Tmol/yr seafloor Alk)")
 print()
 
 
@@ -384,6 +416,9 @@ print("="*70)
 print_state("Best result", r, best['K_na'], best['KD_mg'], best['f_HT'], best['tau_prec'], best['tau_rw'], best['f_bio']) # type: ignore
 print(f"\n  Seafloor Alk flux: {sf:.3f} Tmol/yr  (target ~1)")
 
+print("""
+  ── Paste into weathering.py ──────────────────────────────────────────""")
+print(f"  ALPHA_REF               = {ALPHA_REF:.6f}")
 print("""
   ── Paste into planet.py ──────────────────────────────────────────────""")
 print(f"  K_CL_SUBDUCTION         = {K_CL_ANALYTIC:.6e}")

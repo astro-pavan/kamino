@@ -1,6 +1,5 @@
 import numpy as np
 import numpy.typing as npt
-from scipy.optimize import least_squares 
 
 from kamino.chemistry import get_b_eq, get_k, elements, alk_idx, c_idx, ca_idx, mg_idx, si_idx, na_idx, cl_idx, so4_idx
 from kamino.precipitation import get_precipitation
@@ -135,38 +134,9 @@ def get_weathering_flux(
     
     return flux, weathering_diagnostics
 
-# Calibration at actual Earth pore conditions: T_surface=288K gives T_sf=277K, T_pore=286K.
-# Using modern seawater concentrations as b_input ensures ALPHA_REF produces the observed
-# ~1 Tmol/yr seafloor Alk flux at Earth steady state, not at an empty-ocean reference.
-# Secondary precipitation excluded (precipitating_minerals=[]) to isolate primary dissolution.
-_T_ref_calib = 286
-_P_ref_calib = 1000 * 10 * 3000
-_P_CO2_ref_calib = EARTH_ATM * 280e-6
-_seafloor_flux = 1e12 / YR
-_seafloor_flux_normalised = _seafloor_flux / A_seafloor
-
-_calib_b_input = np.zeros(elements.shape)
-_calib_b_input[alk_idx]  = 2.3e-3
-_calib_b_input[ca_idx]   = 10.3e-3
-_calib_b_input[mg_idx]   = 52.8e-3
-_calib_b_input[na_idx]   = 480e-3
-_calib_b_input[cl_idx]   = 550e-3
-_calib_b_input[so4_idx]  = 28e-3
-_calib_b_input[si_idx]   = 0.1e-3
-_calib_b_input[c_idx]    = 2.0e-3
-
-def _calibration_residual(a_array):
-    a_val = a_array[0]
-    flux, _ = get_weathering_flux(
-        _P_ref_calib, _T_ref_calib, _P_CO2_ref_calib,
-        _calib_b_input, alpha=a_val, rate=rate_ref, precipitating_minerals=[],
-    )
-    alkalinity_flux = flux[0]
-    return (alkalinity_flux - _seafloor_flux_normalised) / _seafloor_flux_normalised
-
-# Run the optimization
-_root = least_squares(_calibration_residual, [100.0])
-ALPHA_REF = float(_root.x[0])
+# Calibrated by experiments/calibrate_earth.py to give ~1 Tmol/yr seafloor Alk flux
+# at modern Earth pore conditions with modern seawater composition.
+ALPHA_REF = 1.43
 
 # Reference alkalinity flux per unit land area at modern Earth conditions.
 # Calibrated so that 0.3 land fraction gives ~8 Tmol eq/yr total, which
