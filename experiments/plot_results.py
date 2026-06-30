@@ -30,7 +30,7 @@ if presentation:
 else:
     plt.style.use('experiments/planetary-chem-paper.mplstyle')
 
-DEFAULT_OUTPUT_PATH = '/home/pavan/PhD/kamino_experiments_fast_2/'
+DEFAULT_OUTPUT_PATH = '/data/pt426/kamino_experiments_fast_3/'
 
 TERM_LABELS = {
     'snowball':   'Snowball',
@@ -266,7 +266,7 @@ def _style_axes(axes, cols, x_lims=(0.25, 1.45)):
         elif col == 'P_CO2':
             ax.set_ylabel('$P_{\\mathrm{CO_2}}$ (bar)')
             ax.set_yscale('log')
-            ax.set_ylim(1e-8, 20)
+            ax.set_ylim(1e-5, 20)
         elif col == 'pH':
             ax.set_ylabel('Ocean pH')
             ax.set_ylim(4.5, 12)
@@ -447,7 +447,7 @@ def plot_faceted_lines(df, output_path, all_results=True, multiple_plots=False, 
                     if not group.empty:
                         _plot_group_on_axes(axes, group, cmap(norm(o)), cols=cols)
                 _style_axes(axes, cols)
-                _add_colorbar(fig, list(axes), cmap, norm, 'Outgassing',
+                _add_colorbar(fig, list(axes), cmap, norm, 'Earth Outgassing',
                               ticks=outgassing_vals, ticklabels=[f'{v}×' for v in outgassing_vals],
                               aspect=n_rows * 7.5)
                 _h = _make_legend_handles()
@@ -472,10 +472,10 @@ def plot_faceted_lines(df, output_path, all_results=True, multiple_plots=False, 
 
         _h = _make_legend_handles(show_markers=all_results)
         fig_c.legend(handles=_h, loc='outside lower center', ncol=_legend_ncol(_h, 4))
-        _add_colorbar(fig_c, list(axes_c.ravel()), cmap, norm, 'Outgassing',
+        _add_colorbar(fig_c, list(axes_c.ravel()), cmap, norm, 'Earth Outgassing',
                       ticks=outgassing_vals, ticklabels=[f'{v}×' for v in outgassing_vals],
                       aspect=n_rows * 10)
-        fig_c.suptitle('Crust production rate')
+        fig_c.suptitle('Earth crust production rate')
         fname = f'lines_combined{"_full" if all_results else ""}{sfx}.png'
         _save_fig(fig_c, os.path.join(output_path, fname))
 
@@ -503,12 +503,12 @@ def plot_faceted_lines(df, output_path, all_results=True, multiple_plots=False, 
                         if not group.empty:
                             _plot_group_on_axes(axes_s[:, ci], group, cmap(norm(o)), cols=cols, show_markers=all_results)
                     _style_combined_col(axes_s, ci, n_cols, title=f'{c}×', cols=cols)
-                _add_colorbar(fig_s, list(axes_s.ravel()), cmap, norm, 'Outgassing',
+                _add_colorbar(fig_s, list(axes_s.ravel()), cmap, norm, 'Earth Outgassing',
                               ticks=outgassing_vals, ticklabels=[f'{v}×' for v in outgassing_vals],
                               aspect=n_rows * 10)
                 _h = _make_legend_handles(show_markers=all_results)
                 fig_s.legend(handles=_h, loc='outside lower center', ncol=_legend_ncol(_h, 4))
-                fig_s.suptitle('Crust production rate')
+                fig_s.suptitle('Earth crust production rate')
                 _save_fig(fig_s, os.path.join(output_path, seq_fname + '.png'))
 
 
@@ -519,7 +519,8 @@ def plot_ocean_depth_effect(df, output_path, show_markers=False, split_panels=Fa
         (df['crust_production'] == 1.0) &
         df['reverse_weathering'] &
         (df['comp_name'] == 'basalt_49') &
-        (df['crust_carbonate'] == 0.0)
+        (df['crust_carbonate'] == 0.0) & 
+        (df['land_fraction'] == 0.0)
     ]
     if subset.empty:
         print("No data for ocean depth sweep — skipping.")
@@ -567,7 +568,8 @@ def plot_crust_composition(df, output_path, split_panels=False, show_markers=Fal
         (df['ocean_depth'] == 3000) &
         (df['f_HT'] == 0.0) &
         (df['outgassing'] == 1.0) &
-        (df['crust_production'] == 1.0)
+        (df['crust_production'] == 1.0) &
+        (df['land_fraction'] == 0.0)
     ]
     if subset.empty:
         print("No crust composition sweep data found — skipping.")
@@ -805,7 +807,7 @@ def plot_continental_baseline(df, output_path):
     # (index, label, Earth mmol/kg or None) — Al(3), Fe(4), SO₄(9) excluded
     ION_SPEC = [
         (0, 'Alk',  2.3),
-        (1, 'DIC',  2.0),
+        (1, 'C',  2.0),
         (2, 'Si',   0.1),
         (5, 'Ca',  10.3),
         (6, 'Mg',  52.8),
@@ -869,7 +871,7 @@ def plot_continental_baseline(df, output_path):
         ratios    = [100 * (b_model[spec[0]] - spec[2]) / spec[2] for spec in ION_SPEC]
         x         = np.arange(len(labels))
 
-        ax_ions.scatter(x, ratios, color=ION_COLORS, edgecolors='k', linewidths=0.6, s=80, zorder=3)
+        ax_ions.scatter(x, ratios, color=ION_COLORS, edgecolors='k', linewidths=0.6, s=80, zorder=3, alpha=0.6)
         ax_ions.set_xticks(x)
         ax_ions.set_xticklabels(labels)
         ax_ions.axvline(3.5, color='gray', linestyle='--', linewidth=0.8, alpha=0.6, zorder=1)
@@ -1025,7 +1027,7 @@ def plot_mineral_si(df, output_path):
         axes[-1, 0].set_xlabel('Instellation (S/S₀)')
         axes[-1, 1].set_xlabel('Instellation (S/S₀)')
 
-        _add_colorbar(fig, list(axes.ravel()), cmap, norm, 'Outgassing',
+        _add_colorbar(fig, list(axes.ravel()), cmap, norm, 'Earth Outgassing',
                       ticks=outgassing_vals, ticklabels=[f'{v}×' for v in outgassing_vals],
                       aspect=n_min * 8)
         fig.legend(handles=DA_LEGEND, loc='outside lower center', ncol=_legend_ncol(DA_LEGEND, 3))
@@ -1096,7 +1098,7 @@ def plot_habitability_phase_space(df, output_path):
     }
 
     # Use existing sizing conventions
-    figsize = (fig_width_half * 1.5, fig_subplot_height * 2.5) if presentation else (fig_width_half, fig_subplot_height * 2)
+    figsize = (fig_width_half * 2, fig_subplot_height * 3) if presentation else (fig_width_half, fig_subplot_height * 2)
     fig, ax = plt.subplots(1, 1, figsize=figsize)
 
     legend_handles = []
