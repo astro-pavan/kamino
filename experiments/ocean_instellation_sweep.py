@@ -1,7 +1,8 @@
 """Ocean-only instellation sweep.
 
 Sweeps instellation × outgassing with no continents (land_fraction=0).
-Fixed: basalt_49, rw=True, depth=3000 m, crust=1×, f_HT=0.01.
+Fixed: basalt_49, rw=True, depth=3000 m, crust=1×.
+f_HT and tau_rw use Earth-calibrated values (iter-6 abiotic calibration).
 """
 
 import itertools
@@ -39,7 +40,8 @@ INSTELLATION = [
     0.8, 0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.15, 1.2, 1.25, 1.3, 1.35, 1.4,
 ]
 OUTGASSING = [0.3, 1.0, 3.0]
-F_HT = 0.01
+F_HT   = 0.039   # Earth-calibrated (iter-6 abiotic)
+TAU_RW = 5e6     # Myr — Earth-calibrated reverse weathering timescale
 
 # (b_ocean index, label, display unit, Earth reference value or None)
 # b_ocean: 0=Alk, 1=DIC, 2=Si, 3=Al, 4=Fe, 5=Ca, 6=Mg, 7=Na, 8=Cl, 9=S
@@ -90,6 +92,7 @@ def run_simulation(s, o, output_path):
             crust_composition=basalt_49,
             reverse_weathering=True,
             f_HT=F_HT,
+            tau_rw=TAU_RW * p_mod.YR,
             name=run_name,
         )
         p.time_evolve()
