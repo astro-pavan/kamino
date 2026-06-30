@@ -7,12 +7,12 @@ figure.figsize: 12, 6.5
 figure.constrained_layout.use: True
 
 font.family: sans-serif
-font.size: 8
+font.size: 14
 
-legend.fontsize: 7
+legend.fontsize: 14
 legend.frameon: False
 
-axes.labelsize: 9
+axes.labelsize: 14
 axes.spines.top: False
 axes.spines.right: False
 axes.linewidth: 1.2
@@ -26,8 +26,8 @@ ytick.major.width: 1.2
 xtick.major.pad: 6
 ytick.major.pad: 6
 
-xtick.labelsize: 7
-ytick.labelsize: 7
+xtick.labelsize: 12
+ytick.labelsize: 12
 
 xtick.minor.width: 0.8
 ytick.minor.width: 0.8
