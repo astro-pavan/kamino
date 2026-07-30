@@ -1,15 +1,21 @@
 import numpy as np
 import numpy.typing as npt
 
-from kamino.chemistry import get_b_eq, get_k, elements, alk_idx, c_idx, ca_idx, mg_idx, si_idx, na_idx, cl_idx, so4_idx
+from kamino.chemistry import get_b_eq, get_k, elements, alk_idx, ca_idx, mg_idx, si_idx, na_idx, c_idx
 from kamino.precipitation import get_precipitation
-from kamino.mineral_info import *
-from kamino.constants import YR, R_EARTH, EARTH_ATM
+from kamino.mineral_info import basalt_49, clay_minerals, carbonate_minerals
+from kamino.constants import (
+    YR,
+    EARTH_ATM,
+    EARTH_CRUST_PRODUCTION_RATE_PER_AREA,
+    EARTH_HYDROTHERMAL_FLUX_PER_AREA,
+    EARTH_CONTINENTAL_WEATHERING_REF,
+)
 
-rate_ref = 1 / (50e6 * YR)
-J_ref = 1.4e15 / YR # kg / yr
-A_seafloor = 0.7 * 4 * np.pi * R_EARTH ** 2
-J_ref_normalised = J_ref / A_seafloor
+# Seafloor reactive-surface-area scaling. Calibrated by experiments/calibrate_earth.py
+# to give ~1 Tmol/yr seafloor Alk flux at modern Earth pore conditions with modern
+# seawater composition.
+ALPHA_REF = 1.43
 
 def seafloor_reactive_area(T: float, pH: float, rate: float, alpha: float, clog: bool=True, cover: bool=True, sedimentation_rate: float | None = None) -> float:
 
@@ -52,16 +58,18 @@ def get_weathering_flux(
         clog: bool=False,
         fO2: float=0,
         water_rock_ratio: float | None=None,
+        full_equilibrium: bool=False,
         ) -> tuple[npt.NDArray[np.float64], dict[str, float]]:
 
     if alpha is None:
         alpha = ALPHA_REF
 
     if rate is None:
-        rate = rate_ref
+        rate = EARTH_CRUST_PRODUCTION_RATE_PER_AREA
 
     if J is None:
-        J = J_ref_normalised * (rate / rate_ref) # hydrothermal flux proportional to crust production rate
+        # hydrothermal flux proportional to crust production rate
+        J = EARTH_HYDROTHERMAL_FLUX_PER_AREA * (rate / EARTH_CRUST_PRODUCTION_RATE_PER_AREA)
 
     if len(b_input) == 0:
         b_input = np.zeros(elements.shape)
@@ -69,28 +77,26 @@ def get_weathering_flux(
     if precipitating_minerals is None:
         precipitating_minerals = []
 
-    if high_temperature:
-        diopside_fraction = crust_composition['Wollastonite'] + crust_composition['Enstatite']
+    # Converts wollastonite + enstatite to diopside
+    if high_temperature and ('Wollastonite' in crust_composition or 'Enstatite' in crust_composition):
+        diopside_fraction = crust_composition.get('Wollastonite', 0.0) + crust_composition.get('Enstatite', 0.0)
         ht_crust_composition = crust_composition.copy()
-        ht_crust_composition.pop('Wollastonite')
-        ht_crust_composition.pop('Enstatite')
-        ht_crust_composition['Diopside'] = diopside_fraction
+        ht_crust_composition.pop('Wollastonite', None)
+        ht_crust_composition.pop('Enstatite', None)
+        ht_crust_composition['Diopside'] = ht_crust_composition.get('Diopside', 0.0) + diopside_fraction
         crust_composition = ht_crust_composition
 
-    b_eq_primary, pH = get_b_eq(P, T, P_CO2, crust_composition, b_input=b_input, high_temperature=high_temperature, fO2=fO2, water_rock_ratio=water_rock_ratio)
+    # full_equilibrium only changes the LOW-temperature path (HT has no exclusions/offset and relies on back-precipitation for its Mg-Ca exchange, so leave it untouched).
+    _full_eq_lt = full_equilibrium and not high_temperature
+    b_eq_primary, pH = get_b_eq(P, T, P_CO2, crust_composition, b_input=b_input, high_temperature=high_temperature, fO2=fO2, water_rock_ratio=water_rock_ratio, exclude_primary=not _full_eq_lt, dissolve_only=True if _full_eq_lt else None)
     k_primary = get_k(P, T, pH, crust_composition)
     k_nonzero = k_primary != 0  # save before replacing zeros with inf
     k_primary = np.where(k_nonzero, k_primary, np.inf)
 
     A_reactive = seafloor_reactive_area(T, pH, rate, alpha, clog, cover, sedimentation_rate=sedimentation_rate)
 
-    # Kinetic dissolution offset for Mg-bearing minerals excluded from the LT PHREEQC
-    # equilibrium (Forsterite, Enstatite). These minerals are thermodynamically
-    # supersaturated in seawater so get_b_eq excludes them to prevent PHREEQC trying to
-    # precipitate them. However they do dissolve kinetically on the seafloor. Expressing
-    # their forward kinetic rate as k*A/J converts it to an effective b_eq increment, which
-    # keeps the Mg flux inside the transport-limited architecture (bounded by J * offset).
-    if not high_temperature:
+    # Runs minerals with just kinetics is they are excluded from equilbrium
+    if not high_temperature and not full_equilibrium:
         _lt_excluded_mg = {'Forsterite', 'Enstatite'}
         exc_comp = {m: f for m, f in crust_composition.items() if m in _lt_excluded_mg}
         if exc_comp:
@@ -104,8 +110,6 @@ def get_weathering_flux(
         F_primary = np.where(k_nonzero, F_primary, 0.0)  # zero out elements with no basalt stoichiometry (e.g. C)
 
         # Da = k*A / (J*b_eq): dimensionless ratio of transport to kinetic resistance.
-        # Da>>1 → thermodynamically limited (pore fluid near equilibrium with basalt);
-        # Da<<1 → kinetically limited.
         b_eq_safe = np.where(b_eq_primary > 0, b_eq_primary, np.inf)
         Da_primary = (k_primary * A_reactive) / (J * b_eq_safe)
         b_pore = b_input + (b_eq_primary - b_input) * (1 - np.exp(-Da_primary))
@@ -134,15 +138,18 @@ def get_weathering_flux(
     
     return flux, weathering_diagnostics
 
-# Calibrated by experiments/calibrate_earth.py to give ~1 Tmol/yr seafloor Alk flux
-# at modern Earth pore conditions with modern seawater composition.
-ALPHA_REF = 1.43
 
-# Reference alkalinity flux per unit land area at modern Earth conditions.
-# Calibrated so that 0.3 land fraction gives ~8 Tmol eq/yr total, which
-# balances modern volcanic outgassing after accounting for seafloor weathering.
-_CONT_LAND_AREA_EARTH = 0.3 * 4 * np.pi * R_EARTH ** 2   # m²
-EARTH_CONTINENTAL_WEATHERING_REF = (8e12 / YR) / _CONT_LAND_AREA_EARTH  # mol_eq / m² / s
+def get_weathering_flux_equilibrium(*args, **kwargs) -> tuple[npt.NDArray[np.float64], dict[str, float]]:
+    """Experimental weathering law: full-assemblage PHREEQC equilibrium.
+
+    The primary equilibrium is computed with NO mineral exclusions (olivine, pyroxene,
+    plagioclase all included) and PHREEQC's `dissolve_only` modifier to forbid
+    back-precipitation of supersaturated primaries; the kinetic Mg offset is disabled.
+    The thermodynamics alone sets b_eq. Same signature as get_weathering_flux.
+    """
+    kwargs['full_equilibrium'] = True
+    return get_weathering_flux(*args, **kwargs)
+
 
 _MG_FRACTION = 0.28  # Mg/(Ca+Mg) in continental silicate weathering — Gaillardet et al. (1999)
 _NA_CA_FRACTION = 0.67  # Na/Ca from silicate weathering — Gaillardet et al. (1999), global rivers
