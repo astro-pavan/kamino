@@ -1,19 +1,69 @@
-# Ocean Chemistry
+# Chemistry functions
 
-## Preciptation
+Geochemical calculations are primarily carried out by PHREEQC. 
 
-When calcite (CaCO3) precipitates out of the ocean, it removes dissolved carbon and twice as much alkalinity (as a carbonate ion is removed which is worth twice much alkalinity as bicarbonate). This calcite settles at the ocean floor or in the seafloor pore space and acts as a carbon sink.
+$b_{eq} = f_{\mathrm{eq,PHREEQC}}(P, T, P_{\mathrm{CO2}}, b_{in})$
 
-The precipitation rate of calcite in the ocean is calculated using [``PHREEQC``](https://www.usgs.gov/software/phreeqc-version-3). ``PHREEQC`` uses a modofed version of the Kinec_v3 database (containing a reduced number of phases) to calculate the ocean chemistry. ``PHREEQC`` can calculate the concentrations of all phases in the seawater with just temperature, pressure, dissolved inorganic carbon (DIC), alkalinity and the, molarity of the divalent cations (in the simplest case, only Calcium). These concentrations are used with the rate laws in the Kinec_v3 database to calculate the precipitation rate.
+$\mathrm{pH} = f_{\mathrm{pH,PHREEQC}}(P, T, b_{in})$
 
-To get the preciptation rate, a very small concentration starts in the solution ($10^{-10}\, \mathrm{mol}/\mathrm{kgw}$). The specific surface area is set at 0.01 $\mathrm{m} \mathrm{kg}^{-1}$ (NEED CITATION FOR THESE). The kitectics calulation is run for 1 second to get an instantaneous reaction rate. The reaction rate per unit mass of water from ``PHREEQC`` output is multiplied by the mass of the ocean to get the overal reaction rate (NOTE: this is a simplification and needs to be examined). 
+$P_\mathrm{CO2} = f_{\mathrm{pH,PHREEQC}}(P, T, b_{in})$
 
-The pressure and temperature of the precipiation reaction in the ocean is set at the seafloor pressure and temperature. 
+$k = f_{\mathrm{kinetics}}(T, \mathrm{pH})$
 
-By setting the ocean precipitaion rate with the seafloor conditions, if the bottom of the ocean is dissolving calcite instead of precipitating it, the precipiation rate is set to zero. This happens if the calcite compenstation depth is above the seafloor and hence no carbon can leave the ocean, stopping the carbon cycle until the ocean is saturated enough for calcite to precipitate again.
+$k$ is always calculated with $b_{eq}$ and uses the pH calculated from the equilbrium calculation.
 
-## Dissolution of CO2
+The precipitation rate is calculated as follows:
 
-``PHREEQC`` is also used to calculate the amount of CO2 in the atmosphere. ``PHREEQC`` calculates the saturation index of CO2 from the surface pressure, temperature, DIC, alkalinity and divalent cation molalities. The saturation index can be used to calculate CO2 partial pressure:
+$F_{\mathrm{prec}} = \frac{b_{eq} - b_{in}}{\tau_{prec}},$
 
-$$ P_{CO2} = P_{\mathrm{surface}} 10^{\mathrm{SI}_{CO2}} $$
+where $F_{\mathrm{prec}}$ is the precipiation rate per unit mass of water, $b_{eq}$ is the equilbrium concentration when all supersaturated minerals have precipiated, $b_{in}$ is the input concentrations, and $\tau_{prec}$ is the precipiation timescale and controls the strength of the precipitation.
+
+# Low Temperature Water rock interactions
+
+The low temperature weathering law is calculated as follows. The water enters the low temperature pore space at seawater concentrations. The primary baslat minerals dissolve, modifyoing the pore space concentrations. In this pore space water, secondary minerals precipitate out, such as clays and carbonate minerals. The rest of the water then re enters the ocean.
+
+## Primary Dissolution
+
+The water rock interactions are based on the weathering formula from Maher & Chamberlain (2014), which models a weathering flux in both the kinetic and thermodynamic limits. 
+
+The water rock reaction starts by modelling the dissolution of the primary minerals, given by the following formula,
+
+$F_p=\frac{A_r(b_{eq} - b_{in})}{\frac{b_{eq}}{k_p} + \frac{A_r}{J}},$
+
+where $F_p$ is the flux per unit area of seafloor from the dissolution, $A_r$ is the reactive area per unit area of seafloor, $b_{in}$ is the concentration from the incoming seawater, $b_{eq}$ is the equilbrium conecntration of the reaction, $k_p$ is the reaction rate per unit area of seafloor and $J$ is the hydrothermal flux per unit area seafloor. $b_{eq}$ and $k_p$ are both calculated by PHREEQC.
+
+## Secondary Mineral Formation
+
+After the primary dissolution, the pore space water concentration ($b_p$) is calculated as follows:
+
+$b_p = b_in + (b_{eq} - b_{in})\left(1 - e^{-\mathrm{Da}}\right),$
+
+where $\mathrm{Da}$ is the Damkohler coefficient of the weathering reaction and is given by,
+
+$\mathrm{Da} = \frac{k_p A_r}{J b_{eq}}.$
+
+The secondary precipitation is calculated from the concentration of the pore water. 
+
+## Seafloor Reactive Area
+
+The ion fluxes from 
+
+# Precipitation
+
+# Other Processes
+
+Cl subduction
+
+# Summary by Ion
+
+| Element | Source | Sink |
+| :--- | :--- | :--- |
+| **Alk** | weathering | carbonate precipitation |
+| **C** | outgassing | carbonate precipitation, (+ biogenic burial) |
+| **Ca** | weathering, hydrothermal systems | carbonate precipitation |
+| **Mg** | weathering | hydrothermal system, reverse weathering |
+| **Fe** | weathering | clay formation |
+| **Na** | weathering | reverse weathering, hydrothermal system, carbonate precipitation |
+| **Si** | weathering | silica precipitation, reverse weathering, (+ biogenic burial) |
+| **Al** | weathering | clay formation |
+| **Cl** | outgassing | subduction |
