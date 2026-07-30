@@ -44,7 +44,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../src'))
 import kamino.planet as planet_module
 from kamino.planet import Planet
 from kamino.chemistry import elements, alk_idx, c_idx, si_idx, ca_idx, mg_idx, na_idx, cl_idx, so4_idx
-from kamino.weathering import get_weathering_flux, J_ref_normalised, rate_ref, A_seafloor
+from kamino.weathering import get_weathering_flux
+from kamino.constants import (
+    EARTH_HYDROTHERMAL_FLUX_PER_AREA as J_ref_normalised,
+    EARTH_CRUST_PRODUCTION_RATE_PER_AREA as rate_ref,
+    A_SEAFLOOR_EARTH as A_seafloor,
+)
 from kamino.constants import M_EARTH, R_EARTH, YR, EARTH_OUTGASSING, EARTH_ATM, G
 
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), '../output')
@@ -176,11 +181,7 @@ def make_b0():
 
 
 def run_planet(K_na, KD_mg, f_HT, tau_prec, tau_rw, f_bio=0.0, name='calib'):
-    """Patch module constants, run from Cl-seeded blank ocean, return result dict."""
-    planet_module.K_CL_SUBDUCTION   = K_CL_ANALYTIC
-    planet_module.K_NA_ALBITIZATION = K_na
-    planet_module.KD_MG_HT          = KD_mg
-
+    """Run from a Cl-seeded blank ocean with the given calibration, return result dict."""
     p = Planet(
         mass=M_EARTH,
         radius=R_EARTH,
@@ -194,6 +195,10 @@ def run_planet(K_na, KD_mg, f_HT, tau_prec, tau_rw, f_bio=0.0, name='calib'):
         tau_prec=tau_prec,
         tau_rw=tau_rw,
         f_bio=f_bio,
+        f_HT=f_HT,
+        k_cl_subduction=K_CL_ANALYTIC,
+        k_na_albitization=K_na,
+        kd_mg_ht=KD_mg,
         name=name,
     )
 

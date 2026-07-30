@@ -15,7 +15,12 @@ from matplotlib.lines import Line2D
 import cmasher as cmr
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../src'))
-from kamino.weathering import get_weathering_flux, J_ref_normalised, rate_ref, A_seafloor
+from kamino.weathering import get_weathering_flux
+from kamino.constants import (
+    EARTH_HYDROTHERMAL_FLUX_PER_AREA as J_ref_normalised,
+    EARTH_CRUST_PRODUCTION_RATE_PER_AREA as rate_ref,
+    A_SEAFLOOR_EARTH as A_seafloor,
+)
 from kamino.constants import G, EARTH_CRUST_PRODUCTION_RATE_PER_AREA, YR, SOLAR_CONSTANT, STEFAN_BOLTZMANN
 from kamino.chemistry import alk_idx
 from kamino.mineral_info import carbonate_minerals, clay_minerals, silica_minerals, reverse_weathering_minerals

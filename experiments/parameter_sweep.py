@@ -13,7 +13,7 @@ from kamino.mineral_info import *
 
 RERUN = False
 
-def run_simulation(s, o, c, d, rw, cc, fht, output_path):
+def run_simulation(s, o, c, d, rw, cc, fht, output_path):   
     p2.output_path = output_path  # each subprocess imports a fresh module; set path here
 
     cc_name, cc_dict = cc
