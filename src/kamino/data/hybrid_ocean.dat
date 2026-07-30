@@ -639,6 +639,15 @@ Saponite-Mg
 	-delta_H	-210.822	kJ/mol
 	-analytic	9.8888e0 1.4320e-2 1.9418e4 -1.5259e1 -1.3716e6
 
+# Saponite-Na (ThermoChimie sit.dat v12a; Blanc/Vieillard 15BLA/VIE). H4(SiO4)->H4SiO4.
+# Reverse-weathering Na/Mg sink: trioctahedral Mg-smectite (basalt alteration clay),
+# least Al-limited Na-smectite. Replaces the Al-hungry Smectite-Na for reverse weathering.
+Saponite-Na
+	Na0.34Mg3Al0.34Si3.66O10(OH)2 + 7.36 H+ = 3 Mg+2 + 0.34 Na+ + 0.34 Al+3 + 3.66 H4SiO4 - 2.64 H2O
+	log_k		28.67
+	-delta_H	-261.39	kJ/mol
+	-analytic	-17.12356E+0 00E+0 13.65335E+3 00E+0 00E+0
+
 Smectite-Na
 	Ca.02Na.35Fe.29Fe.16Mg.9Al1.25Si3.75H2O12 + 7 H+ = 0.02 Ca+2 + 0.35 Na+ + 0.16 Fe+3 + 0.29 Fe+2 + 0.9 Mg+2 + 1.25 Al+3 - 3 H2O + 3.75 H4SiO4
 	log_k		11.0405
