@@ -141,6 +141,36 @@ def _carbonate_k(T: float, pH: float,
 # ══════════════════════════════════════════════════════════════════════════════
 
 @jit
+def nepheline_k(T: float, pH: float) -> float:
+    """
+    Nepheline (NaAlSiO4) effective rate constant k_eff [mol m⁻² s⁻¹].
+
+    Mechanism: acid + neutral + base  (σ = 1)
+    Source: Hermanska et al. (2022), Kinec_v3.dat
+
+    The feldspathoid counterpart of albite, produced by the CIPW desilication cascade in
+    silica-undersaturated (high mantle Mg/Si) crusts. ~17x faster than albite at 343 K / pH 6.6,
+    and — because its solubility product carries H4SiO4 to the first power rather than the
+    third — it is not suppressed by the high dissolved silica that pins albite at saturation.
+
+    Parameters
+    ----------
+    T   : temperature [K]
+    pH  : solution pH  (−log₁₀ activity of H⁺)
+
+    Returns
+    -------
+    k_eff : mol m⁻² s⁻¹
+    """
+    aH = 10.0 ** (-pH)
+    Aa, Ea, na = 5.0e7,   63_000.0, 1.00
+    An, En     = 1.0e-1,  58_500.0
+    Ab, Eb, nb = 7.5e-5,  58_000.0, -0.40
+    return (Aa * jnp.exp(-Ea / (R * T)) * aH**na
+          + An * jnp.exp(-En / (R * T))
+          + Ab * jnp.exp(-Eb / (R * T)) * aH**nb)
+
+
 def albite_k(T: float, pH: float) -> float:
     """
     Albite (NaAlSi3O8) effective rate constant k_eff [mol m⁻² s⁻¹].
@@ -1178,6 +1208,7 @@ from collections.abc import Callable
 K_FUNCTIONS: dict[str, Callable] = {
     # Primary silicates
     "Albite":        albite_k,
+    "Nepheline":     nepheline_k,
     "Anorthite":     anorthite_k,
     "K-Feldspar":    k_feldspar_k,
     "Enstatite":     enstatite_k,

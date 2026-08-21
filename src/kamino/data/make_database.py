@@ -74,6 +74,11 @@ ADDED_PHASES = {
                      ("PHREEQC_ThermoddemV1.10_15Dec2020.dat", "Wollastonite")],
     "Anorthite":    [("llnl.dat", "Anorthite")],
     "Albite":       [("llnl.dat", "Albite"), ("sit.dat", "Albite-low")],
+    # Feldspathoid produced by the CIPW desilication cascade in silica-undersaturated (high
+    # mantle Mg/Si) crusts. Its solubility product carries silica to the FIRST power, not the
+    # third as albite's does, so unlike albite it is not shut down by a silica-flooded pore
+    # fluid — see crust_composition.cipw_norm step 5b.
+    "Nepheline":    [("llnl.dat", "Nepheline")],
     "K-Feldspar":   [("llnl.dat", "K-Feldspar"), ("llnl.dat", "K-feldspar")],
     "SiO2(am)":     [("llnl.dat", "SiO2(am)"),
                      ("PHREEQC_ThermoddemV1.10_15Dec2020.dat", "SiO2(am)"),
@@ -139,6 +144,7 @@ RATES_MINERALS = {
     "Wollastonite": [("Kinec_v3.dat", "Wollastonite")],
     "Anorthite":    [("Kinec_v3.dat", "Anorthite")],
     "Albite":       [("Kinec_v3.dat", "Albite")],
+    "Nepheline":    [("Kinec_v3.dat", "Nepheline")],
     "K-Feldspar":   [("Kinec_v3.dat", "K-Feldspar")],
 }
 
@@ -260,7 +266,7 @@ def _resolve(model_name, candidates, retriever):
     or a warning if none matched.
     """
     for db_file, source_name in candidates:
-        db_path = os.path.join(phreeqc_path, db_file)
+        db_path = os.path.join(phreeqc_path, db_file) # type: ignore
         if not os.path.isfile(db_path):
             continue
         block = retriever(source_name, db_path)

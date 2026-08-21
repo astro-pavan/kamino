@@ -46,7 +46,11 @@ hydrothermal_minerals = [
 # Epidote / Clinozoisite (Ca-Al) buffer Ca. These replace Forsterite as the
 # unphysical Mg-sink proxy and add the Ca sinks the assemblage was missing.
 # Sulfate phases (anhydrite) are deliberately excluded (sulfur stays decoupled).
-ht_secondary_minerals = ['Quartz', 'Clinochlore', 'Epidote', 'Clinozoisite']
+# Epidote/Clinozoisite (Ca-Al) REMOVED: they consumed ~all the Ca released by
+# Diopside/Anorthite dissolution at HT (dCa/-dMg -> 0), starving calcite burial of its
+# Ca feedstock and breaking the intended Mg->Ca exchange. Without them the HT releases
+# Ca (flux ~0.02 -> ~3.7 Tmol/yr). Clinochlore keeps the Mg sink; Quartz buffers Si.
+ht_secondary_minerals = ['Quartz', 'Clinochlore']
 
 # Molar masses (g/mol) for primary crust minerals — used to convert
 # water-to-rock mass ratios into per-mineral mole amounts for PHREEQC.
@@ -58,33 +62,48 @@ MINERAL_MOLAR_MASS = {
     'Diopside':    216.55,   # CaMgSi2O6
     'Anorthite':   278.21,   # CaAl2Si2O8
     'Albite':      262.22,   # NaAlSi3O8
+    'Nepheline':   142.05,   # NaAlSiO4 (feldspathoid; CIPW desilication product of Albite)
     'K-Feldspar':  278.33,   # KAlSi3O8
     'Quartz':       60.08,   # SiO2 (only emitted for silica-oversaturated rocks)
 }
 
 hydrothermal_mineral_string = ' '.join(hydrothermal_minerals)
 
-carbonate_minerals = ['Calcite', 'Siderite'] # Ca and Fe sinks
+carbonate_minerals = ['Calcite', 'Siderite', 'Nahcolite'] # Ca, Fe, Na sinks
 clay_minerals = ['Kaolinite', 'Goethite'] # Al, Fe sinks
 silica_minerals = ['SiO2(am)'] # Si sink
 reverse_weathering_minerals = ['Sepiolite(d)', 'Saponite-Na', 'Greenalite'] # Mg, (Mg+Na), Fe sinks (via reverse weathering). Saponite-Na (trioctahedral Mg-smectite, basalt alteration clay) is the Na sink; least Al-limited Na-smectite.
 evaporite_minerals = ['Halite'] # Cl (and Na) sink; only active when land_fraction > 0
 
-# Primary (igneous) rock-forming minerals — the minerals that make up the crust
-# compositions above. In the model these are a SOURCE ONLY: they dissolve, but they do
-# not crystallise out of cold seawater. Several of them (Enstatite, Forsterite, Albite)
-# are supersaturated at seawater pH, so if PHREEQC is allowed to equilibrate them freely
-# it back-precipitates them and wrecks the cation budget (Mg -> ~0, Ca -> ~200 mM).
-# chemistry.py therefore tags exactly these with PHREEQC's `dissolve_only` modifier.
+# Secondary phases allowed to precipitate DURING the low-temperature primary equilibrium
+# (get_b_eq) rather than only afterwards. The HT path has always done this (get_b_eq appends
+# ht_secondary_minerals); the LT path never has. The wiring exists so the two paths CAN be made
+# consistent, but the list is EMPTY -- an empty list is behaviourally identical to not passing
+# it at all, so this is off, not merely defaulted.
 #
-# Secondary/authigenic phases (carbonates, clays, silica, evaporites, reverse-weathering
-# clays) are deliberately NOT listed here: they must be free to both precipitate and
-# dissolve. Quartz is likewise excluded — it is used as a precipitating Si buffer at HT.
+# History (fast_13). ['Kaolinite'] was tried and reverted. Al is the trace species in Albite's
+# solubility product (~1e-7 mol/kgw), so removing it un-saturates the feldspars, and sweep-wide
+# it worked: median ocean Na went 6.6e-7 -> 0.911 mM, runs with Na > 1 mM went 1 -> 434, and
+# clamp-pinned oceans halved (23% -> 9.5%).
+#
+# It was reverted because it does not help WHERE IT MATTERS. At the states near Da = 1 -- where
+# the kinetic/thermodynamic transition and the pCO2 reversal have to happen -- it moves the
+# delivered F[Na] essentially not at all (measured -0.013 to +0.009 Tmol/yr across w/r = 3-600,
+# with and without it). The sweep-wide gain came from the high water/rock ratio it required,
+# not from the buffer. And it cost convergence: it is the only configuration that fails
+# outright at water_rock_ratio = None (see the guard in weathering.py, and fast_13's first run,
+# which failed 100% of its chemistry and still reported 95% clean timeouts).
+#
+# If it is reinstated: ONLY the Al sink belongs here. Adding the Mg sinks
+# (reverse_weathering_minerals) forces the equilibrium to strip Mg from the through-flowing
+# seawater, and each mole of Mg2+ removed takes 2 eq of alkalinity with it -- measured
+# F[Alk] +2.5 -> -207 Tmol/yr. Those are ocean-facing sinks and stay in the post-equilibrium
+# precipitation step.
+lt_equilibrium_buffer_minerals = []  # OFF -- see above
+
+# Primary (igneous) rock-forming minerals - they generally only dissolve
 primary_minerals = {
-    'Anorthite', 'Albite', 'K-Feldspar',
+    'Anorthite', 'Albite', 'Nepheline', 'K-Feldspar',
     'Wollastonite', 'Enstatite', 'Diopside',
     'Forsterite', 'Fayalite',
 }
-
-# The CIPW norm and its oxide molar masses now live in crust_composition.py, which
-# builds crust_composition dicts from bulk-rock analyses / planetary parameters.
