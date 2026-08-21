@@ -87,7 +87,7 @@ def import_primelt_spreadsheet(path: str = PRIMELT_SPREADSHEET) -> tuple[dict[st
 
     def _num(x: object) -> float:
         try:
-            return float(x)
+            return float(x) # type: ignore
         except (TypeError, ValueError):
             return np.nan
 
@@ -113,7 +113,7 @@ def import_primelt_spreadsheet(path: str = PRIMELT_SPREADSHEET) -> tuple[dict[st
     oxides = {ox: np.asarray([oxide_rows[i][ox] for i in order]) for ox in PIPELINE_OXIDES}
 
     interpolators = {
-        ox: interp1d(T_p, oxides[ox], kind='linear', bounds_error=False, fill_value='extrapolate')
+        ox: interp1d(T_p, oxides[ox], kind='linear', bounds_error=False, fill_value='extrapolate') # type: ignore
         for ox in PIPELINE_OXIDES
     }
 
@@ -136,13 +136,11 @@ def oxide_composition(T_p: float, mg_si_ratio: float = MG_SI_REF) -> dict[str, f
     if _INTERPOLATORS is None:
         import_primelt_spreadsheet()
 
-    T_p_min, T_p_max = float(_ANCHORS['T_p'].min()), float(_ANCHORS['T_p'].max())
-    if not (T_p_min <= T_p <= T_p_max):
-        warnings.warn(
-            f'T_p={T_p} deg C is outside the PRIMELT anchor range '
-            f'[{T_p_min:.0f}, {T_p_max:.0f}]; extrapolating.', stacklevel=2)
+    T_p_min, T_p_max = float(_ANCHORS['T_p'].min()), float(_ANCHORS['T_p'].max()) # type: ignore
+    # if not (T_p_min <= T_p <= T_p_max):
+        # warnings.warn(f'T_p={T_p} deg C is outside the PRIMELT anchor range ' f'[{T_p_min:.0f}, {T_p_max:.0f}]; extrapolating.', stacklevel=2)
 
-    oxides = {ox: max(float(_INTERPOLATORS[ox](T_p)), 0.0) for ox in PIPELINE_OXIDES}
+    oxides = {ox: max(float(_INTERPOLATORS[ox](T_p)), 0.0) for ox in PIPELINE_OXIDES} # type: ignore
 
     if mg_si_ratio <= 0:
         raise ValueError('mg_si_ratio must be positive')
@@ -273,14 +271,33 @@ def cipw_norm(oxides: dict[str, float], emit_quartz: bool = False, kfeldspar: bo
     if Mg > 1e-12:
         if Si >= Mg:                    # silica-saturated: all orthopyroxene
             take('Enstatite', Mg); Si -= Mg
-        elif Si <= 0.5 * Mg:            # silica-deficient: all olivine
+        elif Si <= 0.5 * Mg:            # silica-deficient: all olivine, then desilicate (step 5b)
             take('Forsterite', Mg / 2.0); Si -= 0.5 * Mg
-            warn_msgs.append('silica-deficient (feldspathoid-normative); all Mg to olivine')
         else:                          # mixed opx + olivine set by silica balance
             en = 2 * Si - Mg
             take('Enstatite', en)
             take('Forsterite', (Mg - en) / 2.0)
             Si -= en + 0.5 * (Mg - en)
+
+    # 5b. Silica deficit -> desilicate Albite to Nepheline, the standard CIPW cascade.
+    # Converting olivine-normative Mg is already done above, so feldspar is the next donor:
+    # NaAlSi3O8 -> NaAlSiO4 + 2 SiO2 releases 2 mol Si per mol converted. Without this the
+    # deficit was silently discarded (step 6 only fires on Si > 0), which both violated mass
+    # balance -- the norm assigned more SiO2 to minerals than the rock contained -- and pinned
+    # every undersaturated composition onto one identical assemblage, erasing the Mg/Si signal.
+    if Si < -1e-12 and moles.get('Albite', 0.0) > 1e-12:
+        needed = -Si / 2.0
+        converted = min(needed, moles['Albite'])
+        moles['Albite'] -= converted
+        if moles['Albite'] <= 1e-12:
+            moles.pop('Albite')
+        take('Nepheline', converted)
+        Si += 2 * converted
+    if Si < -1e-12:
+        # Nothing left to desilicate: real CIPW would go on to leucite (no K here) and then
+        # larnite (not in the database), so the composition is beyond what this norm can express.
+        warn_msgs.append(f'silica-deficient: {-Si:.3g} mol SiO2 deficit remains after '
+                         f'albite->nepheline; composition is beyond the norm\'s range')
     # 6. Excess silica -> Quartz (optional)
     if Si > 1e-9:
         if emit_quartz:

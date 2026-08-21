@@ -654,6 +654,24 @@ Smectite-Na
 	-delta_H	-144.774	kJ/mol
 	-analytic	-1.7003e1 6.9848e-3 1.8359e4 -6.8896e0 -1.6637e6
 
+
+# --- Added for silica-undersaturated crusts (CIPW desilication, crust_composition.py 5b) ---
+# Nepheline, the feldspathoid formed when the norm runs out of silica and desilicates albite
+# (NaAlSi3O8 -> NaAlSiO4 + 2 SiO2). Without it the norm silently discarded the silica deficit
+# of a high-Mg/Si primary melt and clipped every undersaturated composition onto one identical
+# assemblage. Thermodynamics from llnl.dat (SUPCRT lineage, as for the other primary silicates),
+# rewritten from the llnl SiO2 basis onto this database's H4SiO4 basis via
+# SiO2 + 2 H2O = H4SiO4 (log_k 0, a_H2O ~ 1) exactly as the Albite entry was -- log_k, delta_H
+# and the analytic expression are unchanged by that substitution. Vm: Robie & Hemingway (1995).
+# MUST live inside this PHASES section: PHREEQC stops reading the file at END, so a block
+# appended after it parses fine in chemistry.parse_stoichiometry but is invisible to PHREEQC.
+Nepheline
+	NaAlSiO4 + 4 H+ = Al+3 + Na+ + H4SiO4
+	log_k		13.8006
+	-delta_H	-135.068	kJ/mol
+	-analytic	-2.4856e+1 -8.8171e-3 8.5653e+3 6.0904e+0 -2.2786e+5
+	Vm		54.16
+
 PITZER
 -B0
   B(OH)4-     K+      0.035
