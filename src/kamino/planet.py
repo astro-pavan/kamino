@@ -9,30 +9,30 @@ import os
 from kamino.constants import (
     G, YR, SOLAR_CONSTANT, M_EARTH, R_EARTH,
     EARTH_OUTGASSING, EARTH_CRUST_PRODUCTION_RATE_PER_AREA,
-    EARTH_HYDROTHERMAL_FLUX_PER_AREA,
+    EARTH_HYDROTHERMAL_FLUX_PER_AREA, EARTH_MANTLE_POTENTIAL_TEMPERATURE
 )
 from kamino.chemistry import elements, get_ocean_state, c_idx, si_idx, alk_idx, ca_idx, mg_idx, na_idx, cl_idx, so4_idx, ChemistryError
 from kamino.weathering import get_weathering_flux, get_continental_weathering_flux, ALPHA_REF
 from kamino.precipitation import get_precipitation
 from kamino.mineral_info import (
-    basalt_49, carbonate_minerals, clay_minerals, silica_minerals,
+    carbonate_minerals, clay_minerals, silica_minerals,
     reverse_weathering_minerals, evaporite_minerals,
 )
 
+from kamino.crust_composition import mineral_composition
 
-from kamino.climate.clima_interpolator import get_T_surface as _get_T_interp
-from kamino.climate.analytic import get_T_surface_analytic as _get_T_analytic
+from kamino.climate.clima_interpolator import get_T_surface
+from kamino.climate.analytic import get_T_surface_analytic, maximum_greenhouse
 from kamino.utils import august_roche_magnus_formula
 
 output_path = os.path.join(os.path.dirname(__file__), '../../output/')
 os.makedirs(output_path, exist_ok=True)
 
-# Default values for the calibrated model parameters, fitted by
-# experiments/calibrate_earth.py. They are Planet constructor defaults, not
-# physical constants — pass them explicitly to override (do NOT monkeypatch).
-KD_MG_HT = 1.197244e-02
+KD_MG_HT = 0.07
 K_CL_SUBDUCTION = 1.373251e-04
-K_NA_ALBITIZATION = 2.194806e-03
+K_NA_CONT_REMOVAL = 2.194806e-03
+
+ALPHA = 20
 
 _S_TERR_EARTH = 5 / (1e6 * YR)   # m/s at land_fraction = 0.3
 
@@ -43,6 +43,19 @@ _TAU_PREC_REF_K    = 3e6 * YR
 TAU_ATM = 1e4 * YR
 
 tau_r_avg = 3e7 * YR   # EMA timescale for convergence rate smoothing (~30 Myr)
+
+WATER_ROCK_RATIO_LT = 3
+
+# Surface albedo. Module-level so plot_results.py can recompute T from a stored final
+# state using the exact same formula Planet.__init__ uses, instead of duplicating the
+# numbers (which would silently drift if these ever change here).
+OCEAN_ALBEDO = 0.3
+LAND_ALBEDO = 0.3
+
+
+class ChemistryFallbackLimitExceeded(RuntimeError):
+    pass
+
 
 class Planet:
 
@@ -56,16 +69,17 @@ class Planet:
             outgassing: float,
             ocean_depth: float,
             land_fraction: float=0.0,
-            crust_composition: dict[str, float]=basalt_49,
             reverse_weathering: bool=True,
-            alpha: float=1.43,
+            alpha: float=ALPHA,
+            water_rock_ratio: float=WATER_ROCK_RATIO_LT,
             f_HT: float=0.0,
             cl_outgassing_ratio: float=0.02,
+            mantle_potential_temperature: float=EARTH_MANTLE_POTENTIAL_TEMPERATURE, # NOTE: this is currently in C (not K)
+            mg_si_ratio: float=1,
             tau_prec: float=100e3 * YR,
             tau_rw: float=5e6 * YR,
-            f_bio: float=0.0,
             kd_mg_ht: float=KD_MG_HT,
-            k_na_albitization: float=K_NA_ALBITIZATION,
+            k_na_cont_removal: float=K_NA_CONT_REMOVAL,
             k_cl_subduction: float=K_CL_SUBDUCTION,
             verbose: bool=False,
             name: str='planet',
@@ -79,25 +93,28 @@ class Planet:
             "background_pressure": background_pressure,
             "ocean_depth": ocean_depth,
             "land_fraction": land_fraction,
-            "crust_composition": crust_composition.copy(),
+            "mantle_potential_temperature": mantle_potential_temperature,
+            "mg_si_ratio": mg_si_ratio,
             "instellation": instellation(0.0) if callable(instellation) else instellation,
             "crust_production_rate": crust_production_rate,
             "outgassing": outgassing,
             "reverse_weathering": reverse_weathering,
             "alpha": alpha,
+            "water_rock_ratio": water_rock_ratio,
             "f_HT": f_HT,
             "climate_model": climate_model,
             "cl_outgassing_ratio": cl_outgassing_ratio,
             "tau_prec": tau_prec,
             "tau_rw": tau_rw,
-            "f_bio": f_bio,
             "kd_mg_ht": kd_mg_ht,
-            "k_na_albitization": k_na_albitization,
+            "k_na_cont_removal": k_na_cont_removal,
             "k_cl_subduction": k_cl_subduction,
         }
 
-        self._get_T_surface = _get_T_analytic if climate_model == 'analytic' else _get_T_interp
+        # Setting up climate model
+        self._get_T_surface = get_T_surface_analytic if climate_model == 'analytic' else get_T_surface
 
+        # Planet properties
         self.name = name
         self.mass = mass
         self.radius = radius
@@ -105,152 +122,139 @@ class Planet:
         self.surface_area = 4 * np.pi * self.radius ** 2
         self.P_background = background_pressure
 
+        # Ocean properties
         self.ocean_depth = ocean_depth
         self.ocean_water_mass = self.ocean_depth * self.surface_area * 1000
 
+        # Tectonic properties
+        self.crust_composition = mineral_composition(mantle_potential_temperature, mg_si_ratio)
         self.crust_production_rate = EARTH_CRUST_PRODUCTION_RATE_PER_AREA * crust_production_rate
         self.hydrothermal_flux = EARTH_HYDROTHERMAL_FLUX_PER_AREA * crust_production_rate
 
-        self.crust_composition = crust_composition.copy()
-
+        # Mineral precipiation properties
         self.pore_precipitating_minerals = clay_minerals
         self.fast_ocean_precipitating_minerals = carbonate_minerals + clay_minerals + silica_minerals + evaporite_minerals
         self.rw_ocean_precipitating_minerals = list(reverse_weathering_minerals) if reverse_weathering else []
         self.ocean_precipitating_minerals = self.fast_ocean_precipitating_minerals + self.rw_ocean_precipitating_minerals
-        self.shelf_depth = 1000.0  # m — representative continental shelf depth for carbonate burial
-        self.shelf_precipitating_minerals = carbonate_minerals
 
+        # Outgassing properties
         self.outgassing_flux = np.zeros(elements.shape)
         self.outgassing_flux[c_idx]  = (EARTH_OUTGASSING / YR) * self.surface_area * outgassing
         self.outgassing_flux[cl_idx] = (EARTH_OUTGASSING / YR) * self.surface_area * outgassing * cl_outgassing_ratio
-        # HCl outgassing acidifies the ocean: H+ + HCO3- → CO2 + H2O, consuming 1 eq Alk per mol Cl.
-        self.outgassing_flux[alk_idx] -= self.outgassing_flux[cl_idx]
+        self.outgassing_flux[alk_idx] -= self.outgassing_flux[cl_idx] # HCl outgassing acidifies the ocean: H+ + HCO3- → CO2 + H2O, consuming 1 eq Alk per mol Cl.
 
+        # Biogenic flux properties (doesn't do anything)
+        self.k_biogenic = np.zeros(elements.shape)
+
+        # Chemistry properties
         self.cl_subduction_k = k_cl_subduction
-        self.na_albit_k = k_na_albitization
-        self.kd_mg_ht = kd_mg_ht
         self.tau_prec = tau_prec
         self.tau_rw = tau_rw
-        self.f_bio = f_bio
-
-        self.tidally_locked = False
-
+        self.alpha = alpha
+        self.water_rock_ratio = water_rock_ratio
         self.f_HT = f_HT
+        self.kd_mg_ht = kd_mg_ht
 
+        # Land properties
         self.land_fraction = land_fraction
         self.land_area = land_fraction * self.surface_area
         self._s_terr = _S_TERR_EARTH * (land_fraction / 0.3)
+        self.shelf_depth = 1000.0  # m — representative continental shelf depth for carbonate burial
+        self.shelf_precipitating_minerals = carbonate_minerals
+        self.na_cont_k = k_na_cont_removal
 
-        _bio_ca_target = _EARTH_CA_SOURCES - _ABIOTIC_CA_3MYR * (_TAU_PREC_REF_K / self.tau_prec)
-        self._K_BIO_CA = max(_bio_ca_target, 0.0) / (10.3e-3 * self.ocean_water_mass)
-        self._K_BIO_SI = 6e12 / (YR * 1.0e-3 * self.ocean_water_mass)
-
-        ocean_albedo = 0.3
-        land_albedo = 0.3
-
+        # Climate calculation parameters
+        ocean_albedo = OCEAN_ALBEDO
+        land_albedo = LAND_ALBEDO
         self.relative_humidity = 0.5
 
         if callable(instellation):
             self._instellation_fn = lambda t: instellation(t) * SOLAR_CONSTANT
         else:
             self._instellation_fn = lambda t: instellation * SOLAR_CONSTANT
+
         self.instellation = self._instellation_fn(0.0)  # t=0 value for config/logging
         self.albedo = land_albedo * land_fraction + ocean_albedo * (1 - land_fraction)
 
-        self.alpha = alpha
-
+        # Output parameters
         self._output_filename = f"{output_path}{self.name}.json"
         with open(self._output_filename, 'w') as f:
             json.dump(planet_config, f, indent=0)
-
         self.verbose = verbose
 
     def dY_dt(self, t, Y):
 
+        # Extract state vector
         P_CO2 = Y[0]
         P_H2O = Y[1]
         b_ocean = Y[2:-1]   # Y[-1] is r_avg, excluded from chemistry
 
         # Input safety
-
         P_CO2 = np.clip(P_CO2, 0, 1e6)
         P_H2O = np.maximum(0, P_H2O)
         b_ocean = np.maximum(b_ocean, 0.0)
 
-        # Atmosphere properties
-
+        # Update atmosphere properties
         P_surface = self.P_background + P_CO2 + P_H2O
-        T_surface = self._get_T_surface(self._instellation_fn(t), max(P_CO2, 1.0), self.albedo, self.tidally_locked)
+        T_surface = self._get_T_surface(self._instellation_fn(t), P_CO2, self.albedo, False)
         P_H2O_new = august_roche_magnus_formula(T_surface)
 
-        # Seafloor physical properties
-
+        # Update seafloor physical properties
         T_seafloor = 1.02 * T_surface - 16.7
         P_pore = (self.P_background + P_CO2 + P_H2O) + 1000 * self.gravity * self.ocean_depth
         T_seafloor = np.maximum(T_seafloor, 274)
         T_pore = T_seafloor + 9
         self._T = T_surface
+        ocean_water_per_area = self.ocean_depth * 1000.0
 
         # Volcanic outgassing fluxes
-
         F_vol = self.outgassing_flux / self.ocean_water_mass
 
         try:
 
-            # Single solve: get_P_CO2 and get_pH send identical input to PHREEQC.
-            # pH_surface is the surface-condition pH (not pore conditions).
+            # Ocean surface conditions
             P_CO2_new, pH_surface = get_ocean_state(P_surface, T_surface, b_ocean)
             assert P_CO2_new > 0
+            self._pH_surface = pH_surface
 
             # Fast precipitation: carbonates, clays, silica, evaporites (tau_prec ~100 kyr)
             F_prec_fast, pH_seafloor, SI = get_precipitation(P_pore, T_seafloor, b_ocean, precipitating_minerals=self.fast_ocean_precipitating_minerals, precipitation_timescale=self.tau_prec)
             F_prec = F_prec_fast
             F_prec_rw = np.zeros(elements.shape)
+
             # Slow precipitation: reverse weathering clays (tau_rw ~10-100 Myr)
             if self.rw_ocean_precipitating_minerals:
                 F_prec_rw, _, SI_rw = get_precipitation(P_pore, T_seafloor, b_ocean, precipitating_minerals=self.rw_ocean_precipitating_minerals, precipitation_timescale=self.tau_rw)
                 F_prec = F_prec + F_prec_rw
                 SI.update(SI_rw)
+
+            # SI Diagnostics
+            self._SI = SI
+            
+            # Sedimentation rate
             F_carb_abiotic = max(0.0, -F_prec[c_idx])
             F_sil_abiotic  = max(0.0, -F_prec[si_idx])
+            S_sed = (F_carb_abiotic * 0.100 / 2710.0 + F_sil_abiotic * 0.060 / 2650.0) * ocean_water_per_area + self._s_terr
 
-            self._pH_surface = pH_surface
-            self._SI = SI
-            ocean_water_per_area = self.ocean_depth * 1000.0
-            
-            # Biogenic rates with sigmoid gate on Calcite SI
-            _calcite_si = SI.get('Calcite', -1.0)
-            _bio_calcite_gate = 1.0 / (1.0 + np.exp(-5.0 * _calcite_si))  # ~0 at SI=-1, ~1 at SI=+1
-            _bio_ca = self.f_bio * self._K_BIO_CA * b_ocean[ca_idx] * _bio_calcite_gate if self.f_bio > 0 else 0.0
-            _bio_si = self.f_bio * self._K_BIO_SI * b_ocean[si_idx] if self.f_bio > 0 else 0.0
-
-            S_sed = ((F_carb_abiotic + _bio_ca) * 0.100 / 2710.0 + (F_sil_abiotic  + _bio_si) * 0.060 / 2650.0) * ocean_water_per_area + self._s_terr
+            # Hydrothermal flux
             J_total = EARTH_HYDROTHERMAL_FLUX_PER_AREA * (self.crust_production_rate / EARTH_CRUST_PRODUCTION_RATE_PER_AREA)
-            J_LT = J_total * (1 - self.f_HT)
-            J_HT = J_total * self.f_HT
 
-            # Off axis hydrothermal weathering
-            flux_LT, diag_LT = get_weathering_flux(P_pore, T_pore, P_CO2, b_ocean, alpha=self.alpha, rate=self.crust_production_rate, J=J_LT, crust_composition=self.crust_composition, sedimentation_rate=S_sed, precipitating_minerals=self.pore_precipitating_minerals)
-            
-            # High temperature hydrothermal weathering
+            # Off axis (low-temperature) hydrothermal weathering
+            flux_LT, diag_LT = get_weathering_flux(P_pore, T_pore, P_CO2, b_ocean, alpha=self.alpha, rate=self.crust_production_rate, J=J_total, crust_composition=self.crust_composition, sedimentation_rate=S_sed, precipitating_minerals=self.pore_precipitating_minerals, water_rock_ratio=self.water_rock_ratio)
+            F_diss = (flux_LT * self.surface_area) / self.ocean_water_mass
 
-            if self.f_HT > 0:
-                flux_HT, diag_HT = get_weathering_flux(P_pore, 473, P_CO2, b_ocean, high_temperature=True, alpha=self.alpha, rate=self.crust_production_rate, J=J_HT, crust_composition=self.crust_composition, sedimentation_rate=S_sed, precipitating_minerals=self.pore_precipitating_minerals, water_rock_ratio=2.0)
-            else:
-                flux_HT = np.zeros_like(flux_LT)
-                diag_HT = {}
+            # HT Mg->Ca exchange (parameterized)
+            _ht_rate = self.kd_mg_ht * b_ocean[mg_idx] * J_total * self.surface_area / self.ocean_water_mass
+            F_ht_exchange = np.zeros(elements.shape)
+            F_ht_exchange[mg_idx] = -_ht_rate
+            F_ht_exchange[ca_idx] = +_ht_rate
 
-            # Balanced-Na correction (Coogan 2022): at LT, 1 mol Na from Albite
-            # dissolution comes with ~1 mol HCO3-, which is cancelled when Na
-            # eventually leaves the ocean. Apply only to the LT flux.
-            # At HT (200°C, pH~6.7), the Na/Alk ratio from Albite dissolution is
-            # ~0.05, so PHREEQC already gives the correct, much smaller Alk; the
-            # LT convention would over-subtract Alk by ~20x.
-            F_diss_LT = (flux_LT * self.surface_area) / self.ocean_water_mass
-            F_diss_LT[alk_idx] -= F_diss_LT[na_idx]
-            F_diss_HT = (flux_HT * self.surface_area) / self.ocean_water_mass
-            F_diss = F_diss_LT + F_diss_HT
+            # Na sink (parameterized)
+            F_na_rw = np.zeros(elements.shape)
+            F_na_rw[na_idx] = -self.na_cont_k * b_ocean[na_idx] * J_total * self.surface_area / self.ocean_water_mass
+            F_na_rw[alk_idx] = F_na_rw[na_idx]
 
+            # Land based fluxes
             F_cont = np.zeros_like(F_diss)
             F_shelf_prec = np.zeros_like(F_diss)
 
@@ -258,62 +262,32 @@ class Planet:
 
                 # Continental silicate weathering
                 F_sil_cont = get_continental_weathering_flux(T_surface, P_CO2).copy()
-                
-                # Continetal carbonate weathering: CaCO3 + CO2 + H2O -> Ca2+ + 2HCO3-
-                F_carb_w = np.zeros(elements.shape) # switched off
-                # if self.f_carb > 0:
-                #     F_carb_w[ca_idx]  = self.f_carb * F_sil_cont[ca_idx]
-                #     F_carb_w[alk_idx] = 2.0 * self.f_carb * F_sil_cont[ca_idx]
-                #     F_carb_w[c_idx]   = self.f_carb * F_sil_cont[ca_idx]
 
-                F_cont = (F_sil_cont + F_carb_w) * self.land_area / self.ocean_water_mass
+                F_cont = F_sil_cont * self.land_area / self.ocean_water_mass
 
                 # Shallow carbonate precipitation on continental shelves
                 P_shelf = P_surface + 1000 * self.gravity * self.shelf_depth
                 F_shelf_prec, _, _ = get_precipitation(P_shelf, T_seafloor, b_ocean, precipitating_minerals=self.shelf_precipitating_minerals, precipitation_timescale=self.tau_prec)
 
-            # HT Mg->Ca exchange (scales with J_HT: Mg removal is a HT-only process)
-            _ht_rate = self.kd_mg_ht * b_ocean[mg_idx] * J_LT * self.surface_area / self.ocean_water_mass
-            F_ht_exchange = np.zeros(elements.shape)
-            F_ht_exchange[mg_idx] = -_ht_rate
-            F_ht_exchange[ca_idx] = +_ht_rate
-
             # Cl subduction
             F_cl_subduct = np.zeros(elements.shape)
             F_cl_subduct[cl_idx] = -self.cl_subduction_k * b_ocean[cl_idx] * J_total * self.surface_area / self.ocean_water_mass
+            F_cl_subduct[alk_idx] = -F_cl_subduct[cl_idx]
 
-            # Na sink: albitization in HT crust + LT reverse weathering (zeolites/clays).
-            F_na_rw = np.zeros(elements.shape)
-            F_na_rw[na_idx] = -self.na_albit_k * b_ocean[na_idx] * J_total * self.surface_area / self.ocean_water_mass
+            # Total final flux
+            F_net = F_vol + F_prec + F_shelf_prec + F_diss + F_ht_exchange + F_cont + F_cl_subduct + F_na_rw
 
-            # Biogenic burial
-            F_bio = np.zeros(elements.shape)
-            if self.f_bio > 0:
-                F_bio[ca_idx]  = -_bio_ca
-                F_bio[alk_idx] = -2.0 * _bio_ca
-                # CaCO3 burial + organic carbon burial (f_bio fraction of C outgassing)
-                F_bio[c_idx]   = -_bio_ca - self.f_bio * F_vol[c_idx]
-                F_bio[si_idx]  = -_bio_si
-
-            F_net = F_vol + F_prec + F_shelf_prec + F_diss + F_cont + F_ht_exchange + F_cl_subduct + F_na_rw + F_bio
-
-            # Diagnostic record: the individual terms summed above, keyed by process, plus
-            # the scalar state they were evaluated at. Written every call (including from
-            # macro_jacobian), so it is only meaningful straight after an explicit dY_dt
-            # call on the state you care about — see kamino.diagnostics.diagnose.
-            # Units are mol/kgw/s (eq/kgw/s for Alkalinity), sign convention: + source, - sink.
+            # Diagnostic record
             self._flux_terms = {
                 'outgassing':         F_vol,
-                'seafloor LT':        F_diss_LT,
-                'seafloor HT':        F_diss_HT,
+                'seafloor LT':        F_diss,
+                'HT Mg-Ca exchange':  F_ht_exchange,
                 'continental':        F_cont,
                 'precipitation':      F_prec_fast,
                 'shelf carbonate':    F_shelf_prec,
                 'reverse weathering': F_prec_rw,
-                'HT Mg-Ca exchange':  F_ht_exchange,
                 'Cl subduction':      F_cl_subduct,
                 'Na albitization':    F_na_rw,
-                'biogenic':           F_bio,
             }
             self._state = {
                 'T_surface':   T_surface,
@@ -325,7 +299,6 @@ class Planet:
                 'pH_surface':  pH_surface,
                 'pH_seafloor': pH_seafloor,
                 'Da':          diag_LT.get('Da', np.nan),
-                'Da_HT':       diag_HT.get('Da', np.nan),
                 'A_reactive':  diag_LT.get('A_reactive', np.nan),
                 'supply_efficiency': diag_LT.get('supply_efficiency', np.nan),
                 'pore_SI':     diag_LT.get('secondary_SI', {}),
@@ -334,7 +307,33 @@ class Planet:
 
         except (ChemistryError, AssertionError): # Chemistry has left the valid domain (typically high P_CO2 where PHREEQC cannot converge).
 
-            dYdt = np.zeros_like(Y) # Return pure outgassing so LSODA gets a finite derivative and the acid_ocean event can terminate cleanly.
+            # LSODA needs a finite derivative. Count the event either way -- a run that spent
+            # time in a degraded state must not look like a clean termination (see
+            # 'chemistry_fallbacks' in the output JSON). Jacobian probes are excluded from the
+            # count because they only perturb a Jacobian column, not the trajectory.
+            if not getattr(self, '_jac_active', False):
+                self._chem_fallbacks = getattr(self, '_chem_fallbacks', 0) + 1
+
+                # Abandon the run once the budget is gone. Checked here rather than after
+                # solve_ivp returns, because the whole point is to stop paying: a check on
+                # the finished run would save nothing. Jacobian probes are outside this
+                # branch, so they can neither spend the budget nor trip the limit.
+                _limit = getattr(self, '_fallback_limit', None)
+                if _limit is not None and self._chem_fallbacks > _limit:
+                    self._abort_t = t
+                    self._abort_Y = np.asarray(Y).copy()
+                    raise ChemistryFallbackLimitExceeded(
+                        f'{self._chem_fallbacks} chemistry fallbacks exceeded the limit of '
+                        f'{_limit} at t = {t / YR:.3e} yr'
+                    )
+
+            # Reuse the last derivative that DID converge
+            if getattr(self, '_dYdt_last_good', None) is not None:
+                return self._dYdt_last_good.copy() # type: ignore
+
+            # Nothing has converged yet (failure on the very first evaluation), so there is no
+            # previous derivative to hold: fall back to pure outgassing.
+            dYdt = np.zeros_like(Y)
             dYdt[2:-1] = F_vol
             self._F_net = dYdt[2:-1]
             return dYdt
@@ -358,6 +357,8 @@ class Planet:
             max_frac_rate = 0.0
         dYdt[-1] = (max_frac_rate - Y[-1]) / tau_r_avg
 
+
+        # Diagnostic output
         carbon_flux = dYdt[3]
         carbon = Y[3]
         calcite_SI = SI['Calcite']
@@ -370,9 +371,35 @@ class Planet:
 
         self._pH = pH_seafloor
 
+        # Held for the ChemistryError path above, so a failed evaluation can return a
+        # continuous derivative instead of a fabricated outgassing-only one. Recorded from
+        # Jacobian probes too: those sit within jac_epsilon (~1%) of the trajectory, which is
+        # far closer to the truth than switching every sink off.
+        self._dYdt_last_good = dYdt.copy()
+
+        # Successful trajectory evaluations, counted on the same basis as _chem_fallbacks
+        # (Jacobian probes excluded) so the two are directly comparable. Their ratio is what
+        # says how much of a trajectory is real -- see the void check in time_evolve.
+        if not getattr(self, '_jac_active', False):
+            self._chem_ok = getattr(self, '_chem_ok', 0) + 1
+
         return dYdt
 
-    def time_evolve(self, t_end=2e9 * YR, jac_epsilon=0.01, b0=None, initial_pco2=1000, convergence_threshold=0.1):
+    def time_evolve(self, t_end=2e9 * YR, jac_epsilon=0.01, b0=None, initial_pco2=1000,
+                    convergence_threshold=0.05, max_chemistry_fallbacks=None,
+                    void_fraction=0.5):
+        """Integrate to steady state, or until the state leaves the model's validity box.
+
+        max_chemistry_fallbacks: abandon the run once this many trajectory derivative
+            evaluations have fallen back to a held derivative (see FallbackLimitExceeded).
+            None (the default) means no limit, so existing callers are unaffected. Sweeps
+            should set it -- the fallback tail is what makes them slow.
+        void_fraction: if more than this fraction of trajectory derivative evaluations fell
+            back to a held derivative, the run is reported as 'chemistry_void' instead of its
+            nominal termination. Catches the failure mode an absolute fallback cap cannot:
+            chemistry that fails outright is cheap, so it never trips the cap (see the void
+            check below). The nominal outcome is kept as 'termination_raw'.
+        """
 
         Y0 = np.zeros(elements.shape[0] + 3)  # +2 for P_CO2/P_H2O, +1 for r_avg
 
@@ -382,66 +409,55 @@ class Planet:
         if b0 is not None:
             Y0[2:-1] = np.asarray(b0)
 
-        T_runaway = 350
-        T_snowball = 260
-        P_CO2_acid_threshold = 5e5   # Pa (5 bar)
-        P_CO2_floor = 1.0            # Pa — below this the planet is unambiguously going snowball
+        # pCO2 ceiling: the maximum-greenhouse pCO2 for this planet's instellation, not a flat
+        # 10 bar. Beyond this pCO2 more CO2 COOLS the planet (past maximum greenhouse) and the
+        # OLR fit is extrapolating outside its 1-10 bar range, so this is the true edge of where
+        # the climate model means anything -- and it IS the physical inner-habitable-zone limit,
+        # rather than an artifact of the fit's domain.
+        #
+        # Computed ONCE here, not inside _domain_margins. maximum_greenhouse() scans ~60 pCO2
+        # values (each a full get_T_surface_analytic root-find) plus an optimizer refinement --
+        # call it every event evaluation (every solver step) and it dominates the run cost.
+        # Uses self.instellation (the t=0 value), matching how the rest of _domain_margins
+        # already treats a time-varying instellation_fn as fixed for the ceiling.
+        P_CO2_HI, _ = maximum_greenhouse(self.instellation, self.albedo)
+        T_LO, T_HI = 181.0, 389.0          # K, one degree inside the analytic scan bracket
+
         min_time = 2e6 * YR
-        min_time_co2_floor = 1e6 * YR  # guard against initial CO2 transient: blank ocean recovers in ~300 kyr
         convergence_rate = convergence_threshold / (1e9 * YR)
 
         self._T = np.nan
         self._pH = np.nan
+        self._chem_fallbacks = 0
+        self._chem_ok = 0
+        self._fallback_limit = max_chemistry_fallbacks   # read by dY_dt; None disables the cap
+        self._dYdt_last_good = None   # no converged derivative to hold yet
 
-        def event_snowball(t, Y):
-            if t < min_time:
-                return -1.0  # negative guard: direction=-1 won't trigger on the guard→actual transition
-            P_CO2 = np.clip(Y[0], 0, 1e6)
-            T_surface = self._get_T_surface(self._instellation_fn(t), max(P_CO2, 1.0), self.albedo, self.tidally_locked)
-            return T_surface - T_snowball
-        event_snowball.terminal, event_snowball.direction = True, -1 # type: ignore
+        def _domain_margins(t, Y):
+            P = max(float(np.clip(Y[0], 0.0, None)), 1e-12)
+            T = self._get_T_surface(self._instellation_fn(t), P, self.albedo, False)
+            return {
+                'co2_high': np.log10(P_CO2_HI / P),
+                'cold':     (T - T_LO) / 100.0,
+                'hot':      (T_HI - T) / 100.0,
+            }
 
-        def event_hothouse(t, Y):
-            if t < min_time:
-                return -1.0  # negative guard: direction=+1 won't trigger on the guard→actual transition
-            T = self._get_T_surface(self._instellation_fn(t), max(Y[0], 1.0), self.albedo, self.tidally_locked)
-            return T - T_runaway
-        event_hothouse.terminal, event_hothouse.direction = True, +1 # type: ignore
+        min_time_domain = 1e4 * YR
 
-        def event_acid_ocean(t, Y):
-            if t < min_time:
-                return 1.0
-            return P_CO2_acid_threshold - np.clip(Y[0], 0, None)
-        event_acid_ocean.terminal, event_acid_ocean.direction = True, -1 # type: ignore
-
-        def event_co2_floor(t, Y):
-            P_CO2 = np.clip(Y[0], 0, 1e6)
-            T_surface = self._get_T_surface(self._instellation_fn(t), max(P_CO2, 1.0), self.albedo, self.tidally_locked)
-            if T_surface < T_snowball:
-                return 1.0  # snowball handles this case
-            # Smooth guard: linearly decreasing offset keeps function positive during the initial transient (first min_time_co2_floor). This avoids the discontinuous guard that confused Brent's root finder and fired spuriously at the guard boundary.
-            guard_offset = max(0.0, 1.0 - t / min_time_co2_floor) * 1000.0
-            return np.clip(Y[0], 0, None) - P_CO2_floor + guard_offset
-        event_co2_floor.terminal, event_co2_floor.direction = True, -1 # type: ignore
+        def event_domain(t, Y):
+            if t < min_time_domain:
+                return 1.0  # same side as the real signal, so the crossing is always detectable
+            return min(_domain_margins(t, Y).values())
+        event_domain.terminal, event_domain.direction = True, -1 # type: ignore
 
         atol = np.ones_like(Y0) * 1e-6
         atol[0] = 1.0   # P_CO2 in Pa
         atol[1] = 1.0   # P_H2O in Pa
         atol[-1] = convergence_rate * 0.1  # r_avg: resolve to 10% of the convergence threshold
 
-        chem_significant = 1e-7  # mol/kgw
-        min_time_frozen = 1e8 * YR  # 100 Myr: if no carbonate cycle by here, ocean is frozen
-
         def event_converged(t, Y):
             if t < min_time:
                 return 1.0
-            P_CO2 = np.clip(Y[0], 0, 1e6)
-            T_surface = self._get_T_surface(self._instellation_fn(t), max(P_CO2, 1e-2), self.albedo, self.tidally_locked)
-            if T_surface < T_snowball:
-                return 1.0  # snowball conditions — defer to event_snowball
-            b = Y[2:-1]
-            if not np.any(b > chem_significant):
-                return min_time_frozen - t
             return Y[-1] - convergence_rate  # r_avg vs threshold; pure function of (t, Y)
         event_converged.terminal, event_converged.direction = True, -1 # type: ignore
 
@@ -486,21 +502,46 @@ class Planet:
 
         start = time.time()
 
-        sol = solve_ivp(
-            self.dY_dt,
-            (0, t_end),
-            Y0,
-            method='LSODA',
-            max_step=1e7 * YR,
-            rtol=1e-3,
-            atol=atol,
-            jac=macro_jacobian,
-            events=[event_snowball, event_hothouse, event_acid_ocean, event_converged, event_co2_floor],
-        )
+        try:
+            sol = solve_ivp(
+                self.dY_dt,
+                (0, t_end),
+                Y0,
+                method='LSODA',
+                max_step=1e7 * YR,
+                rtol=1e-3,
+                atol=atol,
+                jac=macro_jacobian,
+                events=[event_domain, event_converged],
+            )
+        except ChemistryFallbackLimitExceeded as exc:
+
+            end = time.time()
+            if self.verbose:
+                print()
+                print(f'Aborted: fallback_limit -- {exc}')
+
+            with open(self._output_filename, 'r') as f:
+                output_data = json.load(f)
+            output_data.update({
+                "simulation_time_seconds": end - start,
+                "termination": "fallback_limit",
+                "domain_wall": None,
+                "chemistry_fallbacks": self._chem_fallbacks,
+                "fallback_limit": self._fallback_limit,
+                "end_time_yr": getattr(self, '_abort_t', np.nan) / YR,
+                "T": self._T,
+                "P_CO2": float(np.clip(self._abort_Y[0], 0.0, None)) / 1e5,
+                "pH": self._pH,
+                "data": {"time": [], "y": []},
+            })
+            with open(self._output_filename, 'w') as f:
+                json.dump(output_data, f, indent=0)
+            return
 
         end = time.time()
 
-        event_names = ['snowball', 'hothouse', 'acid_ocean', 'converged', 'co2_floor']
+        event_names = ['out_of_domain', 'converged']
 
         sol.y = np.maximum(sol.y, 0.0)
         time_steps = sol.t.tolist()
@@ -513,11 +554,55 @@ class Planet:
         else:
             termination = "solver_failure"
 
+        # Void check: what fraction of the trajectory is fabricated?
+        _fab_total = self._chem_fallbacks + self._chem_ok
+        fabricated_fraction = (self._chem_fallbacks / _fab_total) if _fab_total else 0.0
+        termination_raw = termination
+        if fabricated_fraction > void_fraction:
+            termination = "chemistry_void"
+
+        # Which wall was hit
+        domain_wall = None
+        if termination == "out_of_domain":
+            _m = _domain_margins(sol.t[-1], sol.y[:, -1])
+            domain_wall = min(_m, key=lambda k: _m[k])
+
         if self.verbose:
             print()
             print(f'Terminated: {termination} at t = {sol.t[-1]/YR:.3e} yr')
             print(f'Simulation time: {end - start:.0f} s')
             print(f'Y: {sol.y[2:, -1]} mol/kgw')
+
+        # Recompute T and pH from the ACTUAL final accepted state. self._T/self._pH are set as
+        # a side effect on EVERY call to dY_dt -- including Jacobian finite-difference probes
+        # and solve_ivp's internal event-root-finding trials -- so whichever call happened to
+        # run LAST is not guaranteed to be the accepted (sol.t[-1], sol.y[:, -1]) state also
+        # used for "P_CO2" below. Near a domain wall this matters: the climate response can be
+        # a genuine cliff (e.g. approaching the runaway threshold at high instellation), so a
+        # routine 1% Jacobian perturbation is enough to flip between a real ~389 K state and the
+        # analytic model's literal 400.0 "no equilibrium found" sentinel -- corrupting the
+        # reported T/pH with a value that has nothing to do with the reported P_CO2. Verified:
+        # at one S=1.15 'hot' termination this reported T=400.0 while the true final P_CO2
+        # (0.07644 bar) evaluates to T=388.99 K; a +1% Jacobian probe of that P_CO2 lands
+        # exactly on the 400.0 rail, which is what got left in self._T.
+        #
+        # Must not perturb the run's own diagnostics: this is a re-evaluation of a state already
+        # reached, not a new trajectory step. fallback_limit is suspended so it cannot trip the
+        # abort budget, and the fallback/ok counters + last-good derivative are snapshotted and
+        # restored so this extra call is invisible to fabricated_fraction and every other
+        # trajectory statistic. Any failure (state genuinely unsolvable at the exact final point)
+        # just leaves self._T/self._pH at whatever the solver's last call set -- no worse than
+        # before this fix.
+        _saved_diag_state = (self._fallback_limit, self._chem_fallbacks, self._chem_ok,
+                             self._dYdt_last_good)
+        self._fallback_limit = None
+        try:
+            self.dY_dt(sol.t[-1], sol.y[:, -1])
+        except Exception:
+            pass
+        finally:
+            (self._fallback_limit, self._chem_fallbacks, self._chem_ok,
+             self._dYdt_last_good) = _saved_diag_state
 
         with open(self._output_filename, 'r') as f:
             output_data = json.load(f)
@@ -525,6 +610,11 @@ class Planet:
         output_data.update({
             "simulation_time_seconds": end - start,
             "termination": termination,
+            "domain_wall": domain_wall,
+            "chemistry_fallbacks": self._chem_fallbacks,
+            "chemistry_ok": self._chem_ok,
+            "fabricated_fraction": fabricated_fraction,
+            "termination_raw": termination_raw,
             "end_time_yr": sol.t[-1] / YR,
             "T": self._T,
             "P_CO2": sol.y[0, -1] / 1e5,
