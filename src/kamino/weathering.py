@@ -1,9 +1,10 @@
 import numpy as np
 import numpy.typing as npt
 
-from kamino.chemistry import get_b_eq, get_k, elements, alk_idx, ca_idx, mg_idx, si_idx, na_idx, c_idx
+from kamino.chemistry import get_b_eq, get_k, elements, ION_CHARGE, alk_idx, ca_idx, mg_idx, si_idx, na_idx, al_idx, c_idx
 from kamino.precipitation import get_precipitation
-from kamino.mineral_info import basalt_49, clay_minerals, carbonate_minerals
+from kamino.mineral_info import (basalt_49, clay_minerals, carbonate_minerals,
+                                 lt_equilibrium_buffer_minerals)
 from kamino.constants import (
     YR,
     EARTH_ATM,
@@ -12,9 +13,7 @@ from kamino.constants import (
     EARTH_CONTINENTAL_WEATHERING_REF,
 )
 
-# Seafloor reactive-surface-area scaling. Calibrated by experiments/calibrate_earth.py
-# to give ~1 Tmol/yr seafloor Alk flux at modern Earth pore conditions with modern
-# seawater composition.
+# Seafloor reactive-surface-area scaling. Calibrated by experiments/calibrate_earth.py to give ~1 Tmol/yr seafloor Alk flux at modern Earth pore conditions with modern seawater composition.
 ALPHA_REF = 1.43
 
 def seafloor_reactive_area(T: float, pH: float, rate: float, alpha: float, clog: bool=True, cover: bool=True, sedimentation_rate: float | None = None) -> float:
@@ -58,7 +57,6 @@ def get_weathering_flux(
         clog: bool=False,
         fO2: float=0,
         water_rock_ratio: float | None=None,
-        full_equilibrium: bool=False,
         ) -> tuple[npt.NDArray[np.float64], dict[str, float]]:
 
     if alpha is None:
@@ -77,31 +75,14 @@ def get_weathering_flux(
     if precipitating_minerals is None:
         precipitating_minerals = []
 
-    # Converts wollastonite + enstatite to diopside
-    if high_temperature and ('Wollastonite' in crust_composition or 'Enstatite' in crust_composition):
-        diopside_fraction = crust_composition.get('Wollastonite', 0.0) + crust_composition.get('Enstatite', 0.0)
-        ht_crust_composition = crust_composition.copy()
-        ht_crust_composition.pop('Wollastonite', None)
-        ht_crust_composition.pop('Enstatite', None)
-        ht_crust_composition['Diopside'] = ht_crust_composition.get('Diopside', 0.0) + diopside_fraction
-        crust_composition = ht_crust_composition
+    primary_equilibrium_buffer = ([] if (high_temperature or water_rock_ratio is None) else list(lt_equilibrium_buffer_minerals)) 
 
-    # full_equilibrium only changes the LOW-temperature path (HT has no exclusions/offset and relies on back-precipitation for its Mg-Ca exchange, so leave it untouched).
-    _full_eq_lt = full_equilibrium and not high_temperature
-    b_eq_primary, pH = get_b_eq(P, T, P_CO2, crust_composition, b_input=b_input, high_temperature=high_temperature, fO2=fO2, water_rock_ratio=water_rock_ratio, exclude_primary=not _full_eq_lt, dissolve_only=True if _full_eq_lt else None)
+    b_eq_primary, pH = get_b_eq(P, T, P_CO2, crust_composition, b_input=b_input, precipitating_minerals=primary_equilibrium_buffer, high_temperature=high_temperature, fO2=fO2, water_rock_ratio=water_rock_ratio, dissolve_only=True)
     k_primary = get_k(P, T, pH, crust_composition)
     k_nonzero = k_primary != 0  # save before replacing zeros with inf
     k_primary = np.where(k_nonzero, k_primary, np.inf)
 
     A_reactive = seafloor_reactive_area(T, pH, rate, alpha, clog, cover, sedimentation_rate=sedimentation_rate)
-
-    # Runs minerals with just kinetics is they are excluded from equilbrium
-    if not high_temperature and not full_equilibrium:
-        _lt_excluded_mg = {'Forsterite', 'Enstatite'}
-        exc_comp = {m: f for m, f in crust_composition.items() if m in _lt_excluded_mg}
-        if exc_comp:
-            k_exc = get_k(P, T, pH, exc_comp)
-            b_eq_primary[mg_idx] += k_exc[mg_idx] * A_reactive / J
 
     with np.errstate(invalid='ignore', divide='ignore'):
 
@@ -112,7 +93,8 @@ def get_weathering_flux(
         # Da = k*A / (J*b_eq): dimensionless ratio of transport to kinetic resistance.
         b_eq_safe = np.where(b_eq_primary > 0, b_eq_primary, np.inf)
         Da_primary = (k_primary * A_reactive) / (J * b_eq_safe)
-        b_pore = b_input + (b_eq_primary - b_input) * (1 - np.exp(-Da_primary))
+
+        b_pore = b_input + F_primary / J
 
     if 'Calcite' not in crust_composition:
         b_pore[c_idx] = b_input[c_idx]
@@ -122,7 +104,6 @@ def get_weathering_flux(
     supply_efficiency = 1 - np.exp(-Da_primary[0])
 
     weathering_diagnostics = {
-        'Da': Da_primary[0],
         'A_reactive': A_reactive,
         'supply_efficiency': supply_efficiency,
         'b_pore': b_pore,
@@ -135,20 +116,21 @@ def get_weathering_flux(
         b_pore = b_pore + d_b_secondary
         weathering_diagnostics['secondary_SI'] = SI_dict
         weathering_diagnostics['b_pore'] = b_pore
-    
+
+    flux[alk_idx] = float(np.dot(ION_CHARGE, flux))
+
+    # Charge-consistent alkalinity Damkohler
+    q_alk = np.where(ION_CHARGE > 0, ION_CHARGE, 0.0)
+    q_alk[al_idx] = 0.0
+    k_finite = np.where(k_nonzero, k_primary, 0.0)
+    k_alk = float(np.dot(q_alk, k_finite))
+    b_alk = float(np.dot(q_alk, b_eq_primary))
+
+    Da_alk = (k_alk * A_reactive) / (J * b_alk) if b_alk > 0 else np.nan
+
+    weathering_diagnostics['Da'] = Da_alk
+
     return flux, weathering_diagnostics
-
-
-def get_weathering_flux_equilibrium(*args, **kwargs) -> tuple[npt.NDArray[np.float64], dict[str, float]]:
-    """Experimental weathering law: full-assemblage PHREEQC equilibrium.
-
-    The primary equilibrium is computed with NO mineral exclusions (olivine, pyroxene,
-    plagioclase all included) and PHREEQC's `dissolve_only` modifier to forbid
-    back-precipitation of supersaturated primaries; the kinetic Mg offset is disabled.
-    The thermodynamics alone sets b_eq. Same signature as get_weathering_flux.
-    """
-    kwargs['full_equilibrium'] = True
-    return get_weathering_flux(*args, **kwargs)
 
 
 _MG_FRACTION = 0.28  # Mg/(Ca+Mg) in continental silicate weathering — Gaillardet et al. (1999)
@@ -181,14 +163,19 @@ def get_continental_weathering_flux(
 
     flux = np.zeros(len(elements))
 
-    # Mixed CaSiO3 + MgSiO3 — same total Alk, cation split Ca/Mg.
-    flux[alk_idx] = F_alk
+    # Mixed CaSiO3 + MgSiO3 (WHK thermostat sets the Ca+Mg silicate weathering rate),
+    # cation split Ca/Mg; F_alk is the Ca+Mg alkalinity (2 per cation -> Ca+Mg = F_alk/2).
     flux[ca_idx]  = F_alk / 2 * (1 - _MG_FRACTION)
     flux[mg_idx]  = F_alk / 2 * _MG_FRACTION
     flux[si_idx]  = F_alk / 2
-    # Na from continental feldspar (albite) weathering. No Alk added: balanced Na cycle assumption
-    # (Coogan 2022) — the HCO3- produced when Na-silicate weathers is consumed when Na is
-    # eventually removed from the ocean via reverse weathering or subduction.
+    # Na from continental feldspar (albite) weathering.
     flux[na_idx]  = flux[ca_idx] * _NA_CA_FRACTION
+
+    # Alkalinity = charge the weathering delivers (2 Ca + 2 Mg + Na). Na is now INCLUDED
+    # (was excluded under the balanced-Na assumption), so continental weathering is
+    # charge-consistent with the seafloor weathering and ocean alkalinity stays equal to
+    # the ion charge balance. Na-silicate weathering is thus an alkalinity source here, to
+    # be balanced by the alkalinity removed when Na is sunk (F_na_cont, reverse weathering).
+    flux[alk_idx] = float(np.dot(ION_CHARGE, flux))
 
     return flux
