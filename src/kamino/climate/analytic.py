@@ -30,6 +30,8 @@ T_ref = 288
 
 alb_ref = 0.3
 
+pco2_floor = 1 # Pa
+
 def albedo_funtion(pCO2: float, ag: float, cos_zeta: float=0.6666) -> float:
 
    tau_ray = 0.19513 * pCO2 # pCO2 in bar
@@ -85,7 +87,7 @@ def get_T_surface_v0(S, P_CO2, albedo, tidally_locked=False) -> float:
 
 def get_T_surface_analytic(S, P_CO2, albedo, tidally_locked=False):
 
-    pCO2_bar = P_CO2 / 1e5
+    pCO2_bar = max(P_CO2, 1) / 1e5 # implmented 1 Pa CO2 floor
     A_bond = albedo_funtion(pCO2_bar, albedo)
 
     f_geo = 0.66 if tidally_locked else 0.25
@@ -94,24 +96,58 @@ def get_T_surface_analytic(S, P_CO2, albedo, tidally_locked=False):
     def residual(T):
         return F_in - OLR(np.clip(T, 180, 400), pCO2_bar)
 
-    # The Bl polynomial (low pCO2) has a local OLR maximum near T~360 K and
-    # drops sharply toward T=400 K (Komabayashi-Ingersoll saturation plus
-    # polynomial boundary artefact). Using T=400 K as the upper bracket end
-    # can make residual(400) > 0 even when a stable equilibrium exists at
-    # ~300-360 K, hiding the root from brentq. Using T=400 K can also create
-    # spurious secondary roots from the OLR dip.
-    #
-    # Fix: scan [180, 390] K in coarse steps and take the first + -> - sign
-    # change (stable equilibrium). This reliably finds the physical root without
-    # being confused by the boundary artefact or the unstable branch above the
-    # OLR maximum.
     T_nodes = np.linspace(180, 390, 22)   # ~10 K spacing
     r_nodes = [residual(T) for T in T_nodes]
 
     for i in range(len(T_nodes) - 1):
         if r_nodes[i] >= 0 and r_nodes[i + 1] < 0:
-            return float(brentq(residual, T_nodes[i], T_nodes[i + 1]))
+            return float(brentq(residual, T_nodes[i], T_nodes[i + 1])) # type: ignore
 
     if r_nodes[0] <= 0:
         return 180.0   # Snowball: OLR > F_in even at 180 K
     return 400.0       # Runaway: OLR < F_in everywhere in [180, 390] K
+
+
+def maximum_greenhouse(S, albedo, tidally_locked=False, pco2_lo=1.0, pco2_hi=1e6, n_scan=60):
+    """pCO2 (Pa) and surface T (K) at maximum greenhouse for the analytic climate model.
+
+    Scans the valid pCO2 range and returns the pCO2 that MAXIMISES surface temperature.
+    Beyond this pCO2, adding CO2 *cools* the planet (past maximum greenhouse) and the OLR
+    parameterisation is extrapolating outside its 1-10 bar fit, so this pCO2 is the natural
+    upper edge of where the climate model is physically meaningful.
+
+    Parameters
+    ----------
+    S : instellation in W/m^2 (same units get_T_surface_analytic expects, i.e. S/S0 * SOLAR_CONSTANT).
+    albedo : surface/reference albedo, passed straight through -- the peak moves with albedo,
+        because a brighter surface needs more greenhouse to reach the same T and the Rayleigh
+        term in albedo_funtion also shifts, so the maximum sits at a different pCO2.
+    tidally_locked : geometry flag forwarded to the climate model.
+    pco2_lo, pco2_hi : Pa, the search bracket. Default 1 Pa (the model's own low-pCO2 floor,
+        below which the OLR polynomial degrades) to 1e6 Pa = 10 bar (top of the OLR fit and the
+        clima grid).
+    n_scan : coarse log-grid resolution before refinement.
+
+    Returns
+    -------
+    (P_CO2_peak_Pa, T_peak_K).
+    If T rises monotonically to pco2_hi (warm stars whose peak is at/above the fitted range),
+    the upper edge (pco2_hi) is returned. If the planet is already in runaway across the range
+    (T railed to 400 K), the smallest pCO2 at which that occurs is returned -- the hot-T domain
+    wall handles termination in that case, so the exact value is not critical.
+    """
+    log_lo, log_hi = np.log10(pco2_lo), np.log10(pco2_hi)
+    logP = np.linspace(log_lo, log_hi, n_scan)
+    Ts = np.array([get_T_surface_analytic(S, 10.0 ** lp, albedo, tidally_locked) for lp in logP])
+    i = int(np.argmax(Ts))
+
+    # Refine within the interval bracketing the coarse max. The bracket includes the neighbours
+    # (clamped at the ends) so a flat peak sitting between the last two grid points -- common near
+    # the 10 bar edge at mid instellation -- is not missed; if T really is monotonic to an edge,
+    # the refinement just returns that edge. Maximise T by minimising -T.
+    lo = logP[max(i - 1, 0)]
+    hi = logP[min(i + 1, n_scan - 1)]
+    res = minimize(lambda lp: -get_T_surface_analytic(S, 10.0 ** float(lp[0]), albedo, tidally_locked),
+                   x0=[logP[i]], bounds=[(lo, hi)], method='L-BFGS-B')
+    log_peak = float(res.x[0])
+    return float(10.0 ** log_peak), float(-res.fun)
