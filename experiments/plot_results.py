@@ -4,6 +4,7 @@ import glob
 import json
 import re
 import argparse
+import functools
 import numpy as np
 import pandas as pd
 import matplotlib
@@ -21,9 +22,16 @@ from kamino.constants import (
     EARTH_CRUST_PRODUCTION_RATE_PER_AREA as rate_ref,
     A_SEAFLOOR_EARTH as A_seafloor,
 )
-from kamino.constants import G, EARTH_CRUST_PRODUCTION_RATE_PER_AREA, YR, SOLAR_CONSTANT, STEFAN_BOLTZMANN
-from kamino.chemistry import alk_idx
-from kamino.mineral_info import carbonate_minerals, clay_minerals, silica_minerals, reverse_weathering_minerals
+from kamino.constants import (G, EARTH_CRUST_PRODUCTION_RATE_PER_AREA, YR, SOLAR_CONSTANT,
+                              STEFAN_BOLTZMANN, EARTH_MANTLE_POTENTIAL_TEMPERATURE)
+from kamino.chemistry import alk_idx, elements
+from kamino.mineral_info import (carbonate_minerals, clay_minerals, silica_minerals,
+                                 reverse_weathering_minerals, evaporite_minerals)
+from kamino.crust_composition import mineral_composition, MG_SI_REF
+from kamino.climate.analytic import get_T_surface_analytic
+from kamino.planet import OCEAN_ALBEDO, LAND_ALBEDO, KD_MG_HT, K_NA_CONT_REMOVAL
+from kamino.weathering import ALPHA_REF
+from kamino.planet import _S_TERR_EARTH
 
 fig_width_half = 3.5
 fig_subplot_height = 1.5
@@ -35,25 +43,50 @@ if presentation:
 else:
     plt.style.use('experiments/planetary-chem-paper.mplstyle')
 
-DEFAULT_OUTPUT_PATH = '/data/pt426/kamino_experiments_fast_3/'
+DEFAULT_OUTPUT_PATH = '/data/pt426/kamino_experiments_fast_18/'
 
 TERM_LABELS = {
-    'snowball':   'Snowball',
-    'hothouse':   'Hothouse',
-    'acid_ocean': 'Acid Ocean (>5 bar CO₂)',
-    'converged':  'Converged',
-    'co2_floor':  'CO₂ floor (depleted)',
-    'timeout':    'Timeout (2 Gyr)',
+    'converged':     'Converged',
+    'timeout':       'Timeout (2 Gyr)',
+    'out_of_domain': 'Outside model domain',
+    # Legacy terminations, kept so pre-domain-event runs in output/ still plot.
+    'snowball':      'Snowball (legacy)',
+    'hothouse':      'Hothouse (legacy)',
+    'co2_ceiling':   'Outside model domain (legacy)',
+    'acid_ocean':    'Outside model domain (legacy)',
+    'co2_floor':     'CO₂ floor (legacy)',
 }
+
+# Where the run left the validity box. Only meaningful for 'out_of_domain'; this is
+# recovered from the final state in Planet.time_evolve, not from a dedicated event.
+WALL_LABELS = {
+    'cold':     'Frozen (T → 181 K)',
+    'hot':      'Runaway (T → 389 K)',
+    'co2_high': 'CO₂ ceiling (10 bar)',
+    'co2_low':  'CO₂ depleted (0.1 Pa)',
+}
+
+# Terminations that mean "the model ran out of validity", not "the planet did something".
+# Not a habitability verdict: a run cut off at a wall has no known fate.
+OUT_OF_DOMAIN = {'out_of_domain', 'co2_ceiling', 'acid_ocean'}
 HABITABLE = {'converged', 'timeout', 'co2_floor'}
 T_SNOWBALL = 260.0
 T_RUNAWAY  = 360.0
 
-# Molar masses for b_ocean elements (g/mol), skipping Alkalinity (index 2 of y):
-# y[3]=C×61, y[4]=Si×60.1, y[5]=Al×27, y[6]=Fe×55.8, y[7]=Ca×40.1, y[8]=Mg×24.3,
-# y[9]=Na×23.0, y[10]=Cl×35.45  (added with NaCl chemistry)
-_SAL_INDICES = [3, 4, 5, 6, 7, 8, 9, 10]
-_SAL_MASSES  = [61.0, 60.1, 27.0, 55.8, 40.1, 24.3, 23.0, 35.45]
+# Molar masses (g/mol) for the b_ocean elements, used to turn the final state into a
+# salinity. C is carried as HCO₃⁻ (61) and S as SO₄²⁻ (96.06); Alkalinity is a charge
+# balance rather than a mass, so it is skipped. Indices are derived from
+# kamino.chemistry.elements so the mapping follows the model's element list:
+# y = [P_CO2, P_H2O, *elements, r_avg], i.e. elements[i] lives at y[2 + i].
+_ELEMENT_MASSES = {'C': 61.0, 'Si': 60.1, 'Al': 27.0, 'Fe': 55.8, 'Ca': 40.1,
+                   'Mg': 24.3, 'Na': 23.0, 'Cl': 35.45, 'S': 96.06}
+_SAL_INDICES = [2 + i for i, e in enumerate(elements) if e in _ELEMENT_MASSES]
+_SAL_MASSES  = [_ELEMENT_MASSES[e] for e in elements if e in _ELEMENT_MASSES]
+
+# Reference crust: the model now derives the mineralogy from the mantle potential
+# temperature and Mg/Si (CIPW norm) instead of a named composition like 'basalt_49'.
+REF_TP    = float(EARTH_MANTLE_POTENTIAL_TEMPERATURE)
+REF_MG_SI = float(MG_SI_REF)
 
 COMP_COLORS = {
     'komatiite_42': '#7b2d8b',
@@ -71,7 +104,8 @@ COMP_LABELS = {
 }
 
 HAB_MARKERS    = {'converged': 'o', 'timeout': 's', 'co2_floor': 'P'}
-FAILED_MARKERS = {'snowball': 'v', 'hothouse': '^', 'acid_ocean': 's'}
+FAILED_MARKERS = {'out_of_domain': 's', 'snowball': 'v', 'hothouse': '^',
+                  'co2_ceiling': 's', 'acid_ocean': 's'}
 
 DA_LEGEND = [
     Line2D([0], [0], color='k', linestyle='-',  linewidth=1.8, label='Da < 1 (kinetic)'),
@@ -100,7 +134,100 @@ def _salinity_from_y(y_list):
         return np.nan
 
 
-_DIAG_NAN = {'da': np.nan, 'calcite_si': np.nan, 'ocean_si': np.nan, 'alk_flux': np.nan}
+_DIAG_NAN = {'da': np.nan, 'calcite_si': np.nan, 'ocean_si': np.nan, 'alk_flux': np.nan, 'pH': np.nan}
+
+
+def _recompute_T(instellation, P_CO2_bar, land_fraction=0.0):
+    """Surface temperature from (instellation, final P_CO2), NOT from the JSON's stored 'T'.
+
+    The stored 'T' is planet.py's self._T, a side effect set on EVERY call to dY_dt --
+    including Jacobian finite-difference probes and solve_ivp's internal event root-finding
+    trials -- so whichever call happened to run last is not guaranteed to correspond to the
+    accepted final state that P_CO2 (also in the JSON) is taken from. Near a domain wall this
+    can matter a lot: the climate response can be a genuine cliff, so a routine 1% Jacobian
+    perturbation is enough to flip between a real state and the analytic model's literal 400.0
+    "no equilibrium found" sentinel, producing a T that has nothing to do with the reported
+    P_CO2 -- visible as a spurious temperature drop right at high-instellation domain-wall
+    terminations. planet.py now recomputes T from the true final state before writing new
+    output (see Planet.time_evolve), but this fixes it for JSONs already on disk, and is cheap
+    (pure function, no PHREEQC) so it is applied to every row unconditionally.
+
+    P_CO2 itself does NOT need this treatment: it is read directly from sol.y[0, -1], not from
+    a side-effect channel, so it was never corrupted by the same mechanism.
+    """
+    albedo = LAND_ALBEDO * land_fraction + OCEAN_ALBEDO * (1 - land_fraction)
+    P_CO2_Pa = float(np.clip(P_CO2_bar * 1e5, 0.0, 1e6))
+    return float(get_T_surface_analytic(instellation * SOLAR_CONSTANT, P_CO2_Pa, albedo, False))
+
+
+@functools.lru_cache(maxsize=None)
+def _crust_composition(T_p, mg_si_ratio):
+    """CIPW-norm crust mineralogy for a mantle potential temperature and Mg/Si (cached)."""
+    return mineral_composition(T_p, mg_si_ratio)
+
+
+def _crust_composition_of(d):
+    """Crust mineralogy for a run, from the stored composition (old sweeps) or T_p/Mg-Si."""
+    stored = d.get('crust_composition')
+    if stored:
+        return stored
+    return _crust_composition(float(d.get('mantle_potential_temperature', REF_TP)),
+                              float(d.get('mg_si_ratio', REF_MG_SI)))
+
+
+def _pore_conditions(d):
+    """Reconstruct the seafloor/pore-space state of a run's final step from its JSON.
+
+    Returns (b_ocean, P_pore, T_pore, T_seafloor, P_CO2, crust_rate, J_total) matching
+    what Planet.dY_dt saw on the last evaluation.
+    """
+    y_list = d['data']['y']
+    n_elements = len(y_list) - 3  # y = [P_CO2, P_H2O, *elements, r_avg]
+    b_ocean = np.maximum(np.array([float(y_list[i][-1]) for i in range(2, 2 + n_elements)]), 0.0)
+
+    mass    = float(d.get('mass',   5.972e24))
+    radius  = float(d.get('radius', 6.371e6))
+    gravity = G * mass / radius**2
+
+    P_CO2     = float(d['P_CO2']) * 1e5             # bar → Pa
+    T_surface = _recompute_T(float(d['instellation']), float(d['P_CO2']),
+                             float(d.get('land_fraction', 0.0)))
+    P_H2O     = float(y_list[1][-1]) if y_list[1] else 0.0
+    P_surface = float(d['background_pressure']) + P_CO2 + P_H2O
+
+    T_seafloor = max(1.02 * T_surface - 16.7, 274.0)
+    T_pore     = T_seafloor + 9
+    P_pore     = P_surface + 1000 * gravity * float(d['ocean_depth'])
+
+    # Hydrothermal flux scales with crust production (planet.py no longer splits out f_HT).
+    crust_rate = EARTH_CRUST_PRODUCTION_RATE_PER_AREA * float(d['crust_production_rate'])
+    J_total    = J_ref_normalised * (crust_rate / rate_ref)
+
+    return b_ocean, P_pore, T_pore, T_seafloor, P_CO2, crust_rate, J_total
+
+
+def _sedimentation_rate(d, b_ocean, P_pore, T_seafloor):
+    """Sediment accumulation rate (m/s) from abiotic carbonate + silica burial, as in dY_dt."""
+    from kamino.precipitation import get_precipitation
+    from kamino.chemistry import c_idx as _c_idx, si_idx as _si_idx
+
+    rw = bool(d.get('reverse_weathering', False))
+    fast_minerals = carbonate_minerals + clay_minerals + silica_minerals + evaporite_minerals
+    try:
+        F_prec, _, _ = get_precipitation(P_pore, T_seafloor, b_ocean, fast_minerals,
+                                         precipitation_timescale=float(d.get('tau_prec', 1e5 * YR)))
+        if rw:
+            F_rw, _, _ = get_precipitation(P_pore, T_seafloor, b_ocean, list(reverse_weathering_minerals),
+                                           precipitation_timescale=float(d.get('tau_rw', 5e6 * YR)))
+            F_prec = F_prec + F_rw
+    except Exception:
+        return None  # fall back to the reference sedimentation rate inside the weathering law
+
+    F_carb = max(0.0, -float(F_prec[_c_idx]))
+    F_sil  = max(0.0, -float(F_prec[_si_idx]))
+    ocean_water_per_area = float(d['ocean_depth']) * 1000.0
+    s_terr = _S_TERR_EARTH * (float(d.get('land_fraction', 0.0)) / 0.3)
+    return (F_carb * 0.100 / 2710.0 + F_sil * 0.060 / 2650.0) * ocean_water_per_area + s_terr
 
 
 def _diag_from_json(d):
@@ -119,45 +246,56 @@ def _diag_from_json(d):
         n_elements = len(y_list) - 3  # y_list = [P_CO2, P_H2O, *elements, r_avg]
         if not y_list or n_elements < 7:
             return _DIAG_NAN
-        b_ocean = np.maximum(np.array([float(y_list[i][-1]) for i in range(2, 2 + n_elements)]), 0.0)
 
-        mass      = float(d.get('mass',   5.972e24))
-        radius    = float(d.get('radius', 6.371e6))
-        gravity   = G * mass / radius**2
-        ocean_depth  = float(d['ocean_depth'])
-        P_background = float(d['background_pressure'])
-        T_surface    = float(d['T'])
-        P_CO2        = float(d['P_CO2']) * 1e5          # bar → Pa
-        P_H2O        = float(y_list[1][-1]) if y_list[1] else 0.0
+        b_ocean, P_pore, T_pore, T_seafloor, P_CO2, crust_rate, J_total = _pore_conditions(d)
 
-        P_surface  = P_background + P_CO2 + P_H2O
-        T_seafloor = max(1.02 * T_surface - 16.7, 274.0)
-        T_pore     = T_seafloor + 9
-        P_pore     = P_surface + 1000 * gravity * ocean_depth
-
-        crust_rate = EARTH_CRUST_PRODUCTION_RATE_PER_AREA * float(d['crust_production_rate'])
-        f_HT       = float(d.get('f_HT', 0.0))
-        J_LT       = J_ref_normalised * (crust_rate / rate_ref) * (1 - f_HT)
-
-        crust_composition = d.get('crust_composition', {})
-        rw = bool(d.get('reverse_weathering', False))
-        pore_minerals = carbonate_minerals + clay_minerals  # reverse weathering is in ocean sediments, not pore space
+        # Pore space precipitates clays only (planet.pore_precipitating_minerals);
+        # carbonates and reverse-weathering clays form in the ocean sediments.
+        pore_minerals = list(clay_minerals)
 
         flux, diag = get_weathering_flux(
             P_pore, T_pore, P_CO2, b_ocean,
-            rate=crust_rate, J=J_LT,
-            crust_composition=crust_composition,
+            alpha=float(d.get('alpha', 1.43)),
+            rate=crust_rate, J=J_total,
+            crust_composition=_crust_composition_of(d),
+            sedimentation_rate=_sedimentation_rate(d, b_ocean, P_pore, T_seafloor),
             precipitating_minerals=pore_minerals,
         )
 
-        # Pore SI: taken from secondary_SI which holds the pre-precipitation SI.
-        # This is always the relevant metric for pore-space calcite precipitation.
-        calcite_si = float(diag.get('secondary_SI', {}).get('Calcite', np.nan))
+        from kamino.precipitation import get_precipitation
+        from kamino.chemistry import ChemistryError, ca_idx as _ca_idx
+
+        # Recompute pH the same way T is recomputed (see _recompute_T): self._pH in the JSON
+        # is planet.py's side-effect value, subject to the identical last-call-wins corruption.
+        # This reuses T_seafloor/P_pore from _pore_conditions, which are now correct because
+        # they are built from the recomputed T_surface -- so this pH is the equilibrium pH of
+        # the ACTUAL final ocean composition, matching exactly what dY_dt computes on a real
+        # (non-probe) trajectory step: get_precipitation with the fast-precipitating assemblage
+        # at seafloor conditions. Costs one more PHREEQC solve, on top of the several this
+        # function already does, so it is only applied where diagnostics are already paid for
+        # (_add_diag_columns callers), not in the cheap load_data() pass.
+        try:
+            fast_minerals = carbonate_minerals + clay_minerals + silica_minerals + evaporite_minerals
+            _, pH_recomputed, _ = get_precipitation(
+                P_pore, T_seafloor, b_ocean, fast_minerals,
+                precipitation_timescale=float(d.get('tau_prec', 1e5 * YR)))
+            pH_recomputed = float(pH_recomputed)
+        except (ChemistryError, Exception):
+            pH_recomputed = np.nan
+
+        # Pore SI: the pore space now precipitates clays only, so Calcite no longer
+        # appears in secondary_SI. Evaluate it directly on the post-weathering pore
+        # fluid (b_pore) — the driving force for pore-space calcite.
+        try:
+            b_pore = np.asarray(diag['b_pore'], dtype=float)
+            _, _, si_p = get_precipitation(P_pore, T_pore, np.maximum(b_pore, 0.0), ['Calcite'],
+                                           precipitation_timescale=1e6 * YR)
+            calcite_si = float(si_p.get('Calcite', np.nan))
+        except (ChemistryError, Exception):
+            calcite_si = np.nan
 
         # Ocean SI: only reliable when Ca_ocean > 0; set to NaN otherwise to avoid
         # the spurious -∞ that results when ocean Ca has been depleted to the ODE floor.
-        from kamino.precipitation import get_precipitation
-        from kamino.chemistry import ChemistryError, ca_idx as _ca_idx
         if b_ocean[_ca_idx] > 1e-6:
             try:
                 _, _, si_o = get_precipitation(P_pore, T_seafloor, b_ocean, ['Calcite'],
@@ -171,24 +309,44 @@ def _diag_from_json(d):
         alk_flux = float(flux[alk_idx]) * A_seafloor * YR / 1e12  # Tmol eq/yr
 
         return {'da': float(diag['Da']), 'calcite_si': calcite_si,
-                'ocean_si': ocean_si, 'alk_flux': alk_flux}
+                'ocean_si': ocean_si, 'alk_flux': alk_flux, 'pH': pH_recomputed}
     except Exception:
         return _DIAG_NAN.copy()
 
 
+_DIAG_CACHE = {}
+
+
 def _add_diag_columns(df, output_path):
-    """Add da, calcite_si, and alk_flux columns by re-reading each JSON file."""
+    """Add da, calcite_si, alk_flux and (corrected) pH columns by re-reading each JSON file.
+
+    Results are cached per run because several plots request diagnostics for
+    overlapping subsets, and each one costs a couple of PHREEQC solves.
+
+    Overwrites the 'pH' column (loaded from the JSON's possibly-corrupted stored value, see
+    _recompute_T) with the recomputed one wherever _diag_from_json succeeded -- callers of this
+    function already pay the PHREEQC cost the recompute needs, so the correction is free here.
+    Rows where the recompute itself failed keep the original stored 'pH' rather than becoming
+    NaN, since a stale-but-present value is more useful than none for a plot.
+    """
     records = []
     for name in df['name']:
         fpath = os.path.join(output_path, f'{name}.json')
+        if fpath in _DIAG_CACHE:
+            records.append(_DIAG_CACHE[fpath])
+            continue
         try:
             with open(fpath) as fh:
                 d = json.load(fh)
-            records.append(_diag_from_json(d))
+            rec = _diag_from_json(d)
         except Exception:
-            records.append(_DIAG_NAN.copy())
+            rec = _DIAG_NAN.copy()
+        _DIAG_CACHE[fpath] = rec
+        records.append(rec)
     diag_df = pd.DataFrame(records, index=df.index)
-    return df.assign(**diag_df)
+    df = df.assign(**diag_df.drop(columns=['pH']))
+    df['pH'] = diag_df['pH'].where(diag_df['pH'].notna(), df['pH'])
+    return df
 
 
 def load_data(output_path):
@@ -217,13 +375,26 @@ def load_data(output_path):
             'crust_carbonate':    float(d.get('crust_carbonate_content', 0.0)),
             'ocean_depth':        float(d['ocean_depth']),
             'comp_name':          comp_name,
+            'T_p':                float(d.get('mantle_potential_temperature', REF_TP)),
+            'mg_si':              float(d.get('mg_si_ratio', REF_MG_SI)),
             'f_HT':               float(d.get('f_HT', 0.0)),
+            # Chemistry constants are swept axes (parameter_sweep.py). Runs differing only in
+            # these must not be pooled into one line -- see _ref_chem.
+            'alpha':              float(d.get('alpha', ALPHA_REF)),
+            'kd_mg':              float(d.get('kd_mg_ht', KD_MG_HT)),
+            'k_na':               float(d.get('k_na_cont_removal', K_NA_CONT_REMOVAL)),
             'land_fraction':      float(d.get('land_fraction', 0.0)),
             'termination':        d['termination'],
+            'domain_wall':        d.get('domain_wall'),   # None for pre-domain-event runs
             'end_time_yr':        d.get('end_time_yr', np.nan),
-            'T':                  d.get('T', np.nan),
+            # 'T' recomputed from (instellation, P_CO2) rather than trusting the JSON's
+            # stored 'T' -- see _recompute_T's docstring. Falls back to the stored value
+            # when P_CO2 is missing (e.g. a run that errored before any state existed).
+            'T':                  (_recompute_T(float(d['instellation']), float(d['P_CO2']),
+                                                float(d.get('land_fraction', 0.0)))
+                                    if d.get('P_CO2') is not None else d.get('T', np.nan)),
             'P_CO2':              d.get('P_CO2', np.nan),
-            'pH':                 d.get('pH', np.nan),
+            'pH':                 d.get('pH', np.nan),  # corrected in _diag_from_json when available
             'salinity':           salinity,
         })
     df = pd.DataFrame(rows)
@@ -231,11 +402,72 @@ def load_data(output_path):
     return df
 
 
+def _ref_crust(df):
+    """Mask for the reference crust.
+
+    Old sweeps tagged a named composition in the run name (`_comp_basalt_49`); the
+    current model derives the mineralogy from T_p and Mg/Si, so select Earth values.
+    """
+    named = df['comp_name'].astype(bool)
+    legacy_ref  = named & (df['comp_name'] == 'basalt_49')
+    derived_ref = (~named) & np.isclose(df['T_p'], REF_TP) & np.isclose(df['mg_si'], REF_MG_SI)
+    return legacy_ref | derived_ref
+
+
+# Chemistry constants that parameter_sweep.py can vary, with axis labels for the sweep plots.
+CHEM_KNOBS = {
+    'alpha': r'Reactive area scaling $\alpha$',
+    'kd_mg': r'Mg$\rightarrow$Ca exchange $k_{Mg}$',
+    'k_na':  r'Na sink $k_{Na}$',
+}
+
+CHEM_SHIPPED = {'alpha': ALPHA_REF, 'kd_mg': KD_MG_HT, 'k_na': K_NA_CONT_REMOVAL}
+
+CHEM_OVERRIDE = {}     # set from the CLI to choose which chemistry the main plots show
+_chem_pinned = set()   # (column, value) already reported, so repeated _base calls print once
+
+
+def _chem_reference(df, col):
+    """Which value of a swept chemistry constant the main plots should show.
+
+    Most runs wins; ties break away from a disabled term (k_mg=0 / k_na=0 are ablations and
+    should never become the headline chemistry) and then toward the shipped default.
+    """
+    if col in CHEM_OVERRIDE:
+        return CHEM_OVERRIDE[col]
+    counts = df[col].value_counts()
+    best = counts.max()
+    tied = [v for v, n in counts.items() if n == best]
+    return min(tied, key=lambda v: (v == 0, abs(v - CHEM_SHIPPED[col])))
+
+
+def _ref_chem(df):
+    """Mask pinning each chemistry constant to a single value.
+
+    Everything except plot_chemistry_constants shows ONE chemistry. Without this, runs that
+    differ only in alpha/kd_mg/k_na fall into the same (instellation, outgassing, crust) group
+    and get drawn as a single line through several different models.
+    """
+    mask = pd.Series(True, index=df.index)
+    for col in CHEM_KNOBS:
+        if col not in df.columns or df[col].nunique() <= 1:
+            continue
+        ref = _chem_reference(df, col)
+        mask &= (df[col] == ref)
+        if (col, ref) not in _chem_pinned:
+            _chem_pinned.add((col, ref))
+            others = sorted(v for v in df[col].unique() if v != ref)
+            print(f"  Pinning {col} = {ref:g} for the main plots "
+                  f"(also present: {', '.join(f'{v:g}' for v in others)}).")
+    return mask
+
+
 def _base(df):
-    """Sweep 1: basalt_49, rw=True, depth=3000, f_HT=0, outgassing>0, ocean world."""
+    """Sweep 1: reference crust and chemistry, rw=True, depth=3000, outgassing>0, ocean world."""
     return df[
         df['reverse_weathering'] &
-        (df['comp_name'] == 'basalt_49') &
+        _ref_crust(df) &
+        _ref_chem(df) &
         (df['crust_carbonate'] == 0.0) &
         (df['ocean_depth'] == 3000) &
         (df['land_fraction'] == 0.0) &
@@ -418,7 +650,7 @@ def _plot_group_on_axes(axes, group, color, linestyle='-', show_markers=True, co
             val = row[col]
             if np.isfinite(val):
                 ax.scatter(row['instellation'], val, marker=marker, s=55,
-                           facecolors='none', edgecolors=color, zorder=4, linewidths=1.4)
+                           facecolors='none', color=color, zorder=4, linewidths=1.4)
 
 
 # ---------------------------------------------------------------------------
@@ -454,7 +686,7 @@ def plot_faceted_lines(df, output_path, all_results=True, multiple_plots=False, 
                 _style_axes(axes, cols)
                 _add_colorbar(fig, list(axes), cmap, norm, 'Earth Outgassing',
                               ticks=outgassing_vals, ticklabels=[f'{v}×' for v in outgassing_vals],
-                              aspect=n_rows * 7.5)
+                              aspect=n_rows * 7.5) # type: ignore
                 _h = _make_legend_handles()
                 fig.legend(handles=_h, loc='outside lower center', ncol=_legend_ncol(_h, 4))
                 fig.suptitle(f'Crust production = {c}× Earth')
@@ -519,17 +751,28 @@ def plot_faceted_lines(df, output_path, all_results=True, multiple_plots=False, 
 
 def plot_ocean_depth_effect(df, output_path, show_markers=False, split_panels=False):
     """T, P_CO2, pH, salinity vs instellation for Earth-like tectonics, coloured by ocean depth."""
-    subset = df[
-        (df['outgassing'] == 1.0) &
-        (df['crust_production'] == 1.0) &
+    # The depth sweep fixes (outgassing, crust) at their sweep defaults and varies ocean_depth.
+    # That default changed over time (outgassing 1.0 -> 0.1), so instead of hardcoding a value
+    # (which silently produced an empty/one-depth plot), pick whichever (outgassing, crust) pair
+    # actually spans the most distinct depths.
+    pool = df[
         df['reverse_weathering'] &
-        (df['comp_name'] == 'basalt_49') &
-        (df['crust_carbonate'] == 0.0) & 
+        _ref_crust(df) &
+        _ref_chem(df) &
+        (df['crust_carbonate'] == 0.0) &
         (df['land_fraction'] == 0.0)
     ]
-    if subset.empty:
+    if pool.empty:
         print("No data for ocean depth sweep — skipping.")
         return
+    ndepth = pool.groupby(['outgassing', 'crust_production'])['ocean_depth'].nunique()
+    if ndepth.max() < 2:
+        print("No ocean-depth variation in the data — skipping depth plot.")
+        return
+    best_o, best_c = ndepth.idxmax()
+    subset = pool[(pool['outgassing'] == best_o) & (pool['crust_production'] == best_c)]
+    print(f"Ocean-depth plot: using outgassing={best_o:g}, crust={best_c:g} "
+          f"({subset['ocean_depth'].nunique()} depths).")
     subset = _add_diag_columns(subset, output_path)
 
     depths = sorted(subset['ocean_depth'].unique())
@@ -557,48 +800,169 @@ def plot_ocean_depth_effect(df, output_path, show_markers=False, split_panels=Fa
                 _plot_group_on_axes(axes, group, cmap(norm(d)), show_markers=show_markers, cols=cols)
         _style_axes(axes, cols, x_lims=x_lims)
         _add_colorbar(fig, list(axes), cmap, norm, 'Ocean Depth (m)',
-                      ticks=ticks, ticklabels=ticklabels, aspect=n_rows * 7.5)
+                      ticks=ticks, ticklabels=ticklabels, aspect=n_rows * 7.5) # type: ignore
         _h = _make_legend_handles(show_markers=show_markers)
         fig.legend(handles=_h, loc='outside lower center', ncol=_legend_ncol(_h, 2 if show_markers else 1))
         _save_fig(fig, os.path.join(output_path, f'lines_ocean_depth{sfx}.png'))
 
 
-def plot_crust_composition(df, output_path, split_panels=False, show_markers=False):
-    """Sweep 3: T, P_CO2, pH, salinity vs instellation for each crust composition (Earth-like baseline)."""
-    compositions = ['komatiite_44', 'basalt_47', 'basalt_49', 'basalt_51']
+def plot_chemistry_constants(df, output_path, show_markers=False, split_panels=False):
+    """Sweeps 4/5: T, P_CO2, pH, salinity vs instellation for each chemistry-constant value.
 
-    subset = df[
-        df['comp_name'].isin(compositions) &
+    One figure per constant that actually varies (alpha, kd_mg, k_na); the other two are held
+    at their most common value so each figure isolates a single knob.
+    """
+    pool_all = df[
         df['reverse_weathering'] &
+        _ref_crust(df) &
+        (df['crust_carbonate'] == 0.0) &
         (df['ocean_depth'] == 3000) &
-        (df['f_HT'] == 0.0) &
-        (df['outgassing'] == 1.0) &
-        (df['crust_production'] == 1.0) &
         (df['land_fraction'] == 0.0)
     ]
-    if subset.empty:
+    if pool_all.empty:
+        print("No data for chemistry-constant sweep — skipping.")
+        return
+
+    varying = [c for c in CHEM_KNOBS if pool_all[c].nunique() > 1]
+    if not varying:
+        print("No chemistry-constant variation in the data — skipping.")
+        return
+
+    for col in varying:
+        # Hold the other knobs fixed so this figure varies one thing only.
+        held = pd.Series(True, index=pool_all.index)
+        for other in varying:
+            if other != col:
+                held &= (pool_all[other] == _chem_reference(pool_all, other))
+        pool = pool_all[held]
+
+        # Don't hardcode the (outgassing, crust) the constants were swept at -- pick whichever
+        # pair actually spans the most values, as the depth and crust plots do.
+        nvals = pool.groupby(['outgassing', 'crust_production'])[col].nunique()
+        if nvals.empty or nvals.max() < 2:
+            print(f"No {col} variation at a fixed (outgassing, crust) — skipping {col}.")
+            continue
+        best_o, best_c = nvals.idxmax()
+        subset = pool[(pool['outgassing'] == best_o) & (pool['crust_production'] == best_c)]
+        print(f"{col} plot: using outgassing={best_o:g}, crust={best_c:g} "
+              f"({subset[col].nunique()} values).")
+        subset = _add_diag_columns(subset, output_path)
+
+        values = sorted(subset[col].unique())
+        # Log scale where the values span decades, but only if none is zero (k_mg/k_na can be 0,
+        # which is the 'term switched off' ablation).
+        if min(values) > 0 and max(values) / min(values) >= 10:
+            norm = mcolors.LogNorm(vmin=min(values), vmax=max(values))
+        else:
+            span = max(values) - min(values)
+            norm = mcolors.Normalize(vmin=min(values) - 0.05 * span if span else min(values) - 1,
+                                     vmax=max(values) + 0.05 * span if span else max(values) + 1)
+        cmap = cmr.ember
+
+        min_x, max_x = subset['instellation'].min(), subset['instellation'].max()
+        margin = (max_x - min_x) * 0.05 if not pd.isna(min_x) and max_x != min_x else 0.1
+        x_lims = (min_x - margin, max_x + margin) if not pd.isna(min_x) else (0.25, 1.45)
+
+        ticks = values if len(values) <= 10 else None
+        ticklabels = [f'{v:g}' for v in values] if len(values) <= 10 else None
+
+        for cols, sfx in _panel_groups(split_panels):
+            n_rows = len(cols)
+            figsize = (fig_width_half * 2, n_rows * fig_subplot_height * 2) if presentation else (fig_width_half, n_rows * fig_subplot_height)
+            fig, axes = plt.subplots(n_rows, 1, figsize=figsize, sharex=True)
+            for v in values:
+                group = subset[subset[col] == v].sort_values('instellation')
+                if not group.empty:
+                    _plot_group_on_axes(axes, group, cmap(norm(v)), show_markers=show_markers, cols=cols)
+            _style_axes(axes, cols, x_lims=x_lims)
+            _add_colorbar(fig, list(axes), cmap, norm, CHEM_KNOBS[col],
+                          ticks=ticks, ticklabels=ticklabels, aspect=n_rows * 7.5) # type: ignore
+            _h = _make_legend_handles(show_markers=show_markers)
+            fig.legend(handles=_h, loc='outside lower center', ncol=_legend_ncol(_h, 2 if show_markers else 1))
+            _save_fig(fig, os.path.join(output_path, f'lines_{col}{sfx}.png'))
+
+
+def plot_crust_composition(df, output_path, split_panels=False, show_markers=False):
+    """Sweep 3: T, P_CO2, pH, salinity vs instellation for each crust composition.
+
+    Crust mineralogy is set by the mantle potential temperature (hotter mantle → more
+    olivine-rich, lower-SiO₂ melt), so runs are grouped and coloured by T_p; at fixed
+    T_p the mantle Mg/Si is used instead. Legacy sweeps that varied a named composition
+    are grouped by that name.
+    """
+    pool = df[
+        df['reverse_weathering'] &
+        _ref_chem(df) &
+        (df['ocean_depth'] == 3000) &
+        (df['f_HT'] == 0.0) &
+        (df['land_fraction'] == 0.0)
+    ].copy()
+
+    # The crust sweep fixes (outgassing, crust) at their sweep defaults and varies the crust
+    # knob (T_p / Mg-Si / named composition). That default drifted over time (outgassing 1.0 ->
+    # 0.1), so don't hardcode it: pick the (outgassing, crust) pair that spans the most distinct
+    # crust values. crust_knob is whichever of comp_name/T_p/mg_si actually varies.
+    def _knobcol(g):
+        for k in ['comp_name', 'T_p', 'mg_si']:
+            col = g[k].astype(str) if k == 'comp_name' else g[k]
+            if col.nunique() > 1:
+                return k
+        return None
+    if _knobcol(pool) is None:
         print("No crust composition sweep data found — skipping.")
         return
+    kc = _knobcol(pool)
+    nvals = pool.groupby(['outgassing', 'crust_production'])[kc].nunique()
+    best_o, best_c = nvals.idxmax()
+    subset = pool[(pool['outgassing'] == best_o) & (pool['crust_production'] == best_c)]
+    print(f"Crust-composition plot: knob={kc}, using outgassing={best_o:g}, crust={best_c:g} "
+          f"({subset[kc].nunique()} values).")
+
+    # Pick whichever crust knob actually varies in this sweep.
+    if subset['comp_name'].astype(bool).any() and subset['comp_name'].nunique() > 1:
+        key, label, fmt = 'comp_name', 'Crust composition', lambda v: COMP_LABELS.get(v, v)
+        values = [c for c in ['komatiite_42', 'komatiite_44', 'basalt_47', 'basalt_49', 'basalt_51']
+                  if c in set(subset['comp_name'])]
+    elif subset['T_p'].nunique() > 1:
+        key, label, fmt = 'T_p', 'Mantle potential temperature (°C)', lambda v: f'{v:g}'
+        values = sorted(subset['T_p'].unique())
+    elif subset['mg_si'].nunique() > 1:
+        key, label, fmt = 'mg_si', 'Mantle Mg/Si', lambda v: f'{v:g}'
+        values = sorted(subset['mg_si'].unique())
+    else:
+        print("No crust composition sweep data found — skipping.")
+        return
+
     subset = _add_diag_columns(subset, output_path)
 
-    sio2_vals = [int(c.split('_')[-1]) for c in compositions]  # [44, 47, 49, 51]
     cmap = cmr.gem
-    norm = mcolors.Normalize(vmin=42, vmax=53)
+    if key == 'comp_name':
+        # Colour by the SiO₂ content encoded in the name
+        numeric = [int(c.split('_')[-1]) for c in values]
+        norm = mcolors.Normalize(vmin=42, vmax=53)
+        cbar_label = 'SiO₂ content (%)'
+        ticklabels = [f'{v}%' for v in numeric]
+    else:
+        numeric = [float(v) for v in values]
+        span = max(numeric) - min(numeric)
+        norm = mcolors.Normalize(vmin=min(numeric) - 0.05 * span if span else min(numeric) - 1,
+                                 vmax=max(numeric) + 0.05 * span if span else max(numeric) + 1)
+        cbar_label = label
+        ticklabels = [fmt(v) for v in values]
 
     for cols, sfx in _panel_groups(split_panels):
         n_rows = len(cols)
         figsize = (fig_width_half * 2, n_rows * fig_subplot_height * 2) if presentation else (fig_width_half, n_rows * fig_subplot_height)
         fig, axes = plt.subplots(n_rows, 1, figsize=figsize, sharex=True)
-        for comp, sio2 in zip(compositions, sio2_vals):
-            group = subset[subset['comp_name'] == comp].sort_values('instellation')
+        for value, num in zip(values, numeric):
+            group = subset[subset[key] == value].sort_values('instellation')
             if not group.empty:
-                _plot_group_on_axes(axes, group, cmap(norm(sio2)), cols=cols, show_markers=show_markers)
+                _plot_group_on_axes(axes, group, cmap(norm(num)), cols=cols, show_markers=show_markers)
         _style_axes(axes, cols)
-        _add_colorbar(fig, list(axes), cmap, norm, 'SiO₂ content (%)',
-                      ticks=sio2_vals, ticklabels=[f'{v}%' for v in sio2_vals])
+        _add_colorbar(fig, list(axes), cmap, norm, cbar_label,
+                      ticks=numeric, ticklabels=ticklabels)
         _h = _make_legend_handles(show_markers=show_markers)
         fig.legend(handles=_h, loc='outside lower center', ncol=_legend_ncol(_h, 2 if show_markers else 1))
-        # fig.suptitle('Crust Composition Effect (out=1×, crust=1×, depth=3000 m, rw=True)')
         _save_fig(fig, os.path.join(output_path, f'lines_crust_composition{sfx}.png'))
 
 
@@ -675,18 +1039,25 @@ def plot_ratio_scatter(df, output_path, s_vals=(0.4, 0.6, 0.8, 1.0, 1.2)):
 # Mineral SI plot
 # ---------------------------------------------------------------------------
 
-# All minerals that can precipitate, in display order
-_PORE_MINERALS  = carbonate_minerals + clay_minerals + reverse_weathering_minerals
-_OCEAN_MINERALS = carbonate_minerals + clay_minerals + silica_minerals + reverse_weathering_minerals
+# All minerals that can precipitate, in display order. These mirror the sets used by
+# Planet: clays in the pore space; carbonates, clays, silica, evaporites (+ reverse
+# weathering clays when enabled) in the ocean.
+_PORE_MINERALS  = list(clay_minerals)
+_OCEAN_MINERALS = (carbonate_minerals + clay_minerals + silica_minerals +
+                   evaporite_minerals + list(reverse_weathering_minerals))
 _ALL_MINERALS   = list(dict.fromkeys(_PORE_MINERALS + _OCEAN_MINERALS))  # ordered, unique
 
 _MINERAL_LABELS = {
-    'Calcite':     'Calcite',
-    'Siderite':    'Siderite (FeCO₃)',
-    'Kaolinite':   'Kaolinite',
-    'Goethite':    'Goethite',
-    'SiO2(am)':   'Amorphous SiO₂',
-    'Saponite-Mg': 'Saponite-Mg',
+    'Calcite':      'Calcite',
+    'Siderite':     'Siderite (FeCO₃)',
+    'Nahcolite':    'Nahcolite (NaHCO₃)',
+    'Kaolinite':    'Kaolinite',
+    'Goethite':     'Goethite',
+    'SiO2(am)':     'Amorphous SiO₂',
+    'Halite':       'Halite (NaCl)',
+    'Sepiolite(d)': 'Sepiolite (Mg)',
+    'Saponite-Na':  'Saponite-Na',
+    'Greenalite':   'Greenalite (Fe)',
 }
 
 
@@ -695,10 +1066,10 @@ def plot_damkohler_contour(df, output_path, out_targets=(0.1, 1.0, 10.0)):
 
     One panel per outgassing rate (vertically stacked), coloured by log10(Da).
     The Da = 1 boundary is drawn as a black contour.
-    Uses the basalt_49, rw=True, depth=3000, f_HT=0 baseline.
+    Uses the reference-crust, rw=True, depth=3000, f_HT=0 baseline.
     """
     subset = df[
-        (df['comp_name'] == 'basalt_49') &
+        _ref_crust(df) &
         df['reverse_weathering'] &
         (df['ocean_depth'] == 3000) &
         (df['f_HT'] == 0.0)
@@ -762,7 +1133,7 @@ def plot_damkohler_contour(df, output_path, out_targets=(0.1, 1.0, 10.0)):
 
         pos_top = axes[0, 0].get_position()
         pos_bot = axes[-1, 0].get_position()
-        cbar_ax = fig.add_axes([0.85, pos_bot.y0, 0.03, pos_top.y1 - pos_bot.y0])
+        cbar_ax = fig.add_axes([0.85, pos_bot.y0, 0.03, pos_top.y1 - pos_bot.y0]) # type: ignore
         sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
         sm.set_array([])
         cbar = fig.colorbar(sm, cax=cbar_ax, label=r'$\log_{10}(\mathrm{Damkohler Coefficient})$')
@@ -776,11 +1147,11 @@ def plot_continental_baseline(df, output_path):
     """T, P_CO2, pH, salinity, and individual ion concentrations vs instellation
     for the Earth-like continental baseline.
 
-    Runs with land_fraction=0.3, basalt_49, rw=True, out=1×, crust=1×, depth=3000 m.
+    Runs with land_fraction=0.3, reference crust, rw=True, out=1×, crust=1×, depth=3000 m.
     """
     subset = df[
         (df['land_fraction'] == 0.3) &
-        (df['comp_name'] == 'basalt_49') &
+        _ref_crust(df) &
         df['reverse_weathering'] &
         (df['outgassing'] == 1.0) &
         (df['crust_production'] == 1.0) &
@@ -819,7 +1190,7 @@ def plot_continental_baseline(df, output_path):
         (7, 'Na', 480.0),
         (8, 'Cl', 550.0),
     ]
-    ION_COLORS = [plt.cm.tab10(k / 10) for k in range(len(ION_SPEC))]
+    ION_COLORS = [plt.cm.tab10(k / 10) for k in range(len(ION_SPEC))] # type: ignore
 
     # Load final b_ocean for each run from the JSON files
     ion_rows = []
@@ -903,34 +1274,28 @@ def _get_mineral_si(d):
     nan_result = {'pore': {}, 'ocean': {}, 'da': np.nan, 'T': np.nan}
     try:
         y_list = d.get('data', {}).get('y', [])
-        if not y_list or len(y_list) < 9:
+        if not y_list or len(y_list) - 3 < 7:
             return nan_result
-        b_ocean = np.maximum(np.array([float(y_list[i][-1]) for i in range(2, 9)]), 0.0)
 
-        mass      = float(d.get('mass',   5.972e24))
-        radius    = float(d.get('radius', 6.371e6))
-        gravity   = G * mass / radius**2
-        P_bg      = float(d['background_pressure'])
-        T_surface = float(d['T'])
-        P_CO2     = float(d['P_CO2']) * 1e5
-        P_H2O     = float(y_list[1][-1]) if y_list[1] else 0.0
-        P_surface = P_bg + P_CO2 + P_H2O
-        T_seafloor = max(1.02 * T_surface - 16.7, 274.0)
-        T_pore     = T_seafloor + 9
-        P_pore     = P_surface + 1000 * gravity * float(d['ocean_depth'])
+        b_ocean, P_pore, T_pore, T_seafloor, P_CO2, crust_rate, J_total = _pore_conditions(d)
+        # T_seafloor/T_pore above are already derived from the recomputed T_surface (see
+        # _pore_conditions); recover it rather than re-reading the JSON's raw (possibly
+        # corrupted) 'T', which _pore_conditions no longer trusts. T_seafloor = max(1.02*T-16.7, 274).
+        T_surface = _recompute_T(float(d['instellation']), float(d['P_CO2']),
+                                 float(d.get('land_fraction', 0.0)))
 
-        crust_rate = EARTH_CRUST_PRODUCTION_RATE_PER_AREA * float(d['crust_production_rate'])
-        J_LT       = J_ref_normalised * (crust_rate / rate_ref) * (1 - float(d.get('f_HT', 0.0)))
-        cc         = d.get('crust_composition', {})
-        rw         = bool(d.get('reverse_weathering', False))
-        pore_min   = carbonate_minerals + clay_minerals + (reverse_weathering_minerals if rw else [])
-        ocean_min  = carbonate_minerals + clay_minerals + silica_minerals + (reverse_weathering_minerals if rw else [])
+        rw        = bool(d.get('reverse_weathering', False))
+        pore_min  = list(clay_minerals)  # planet.pore_precipitating_minerals
+        ocean_min = (carbonate_minerals + clay_minerals + silica_minerals + evaporite_minerals +
+                     (list(reverse_weathering_minerals) if rw else []))
 
         _, diag = get_weathering_flux(
             P_pore, T_pore, P_CO2, b_ocean,
-            rate=crust_rate, J=J_LT,
-            crust_composition=cc,
-            precipitating_minerals=pore_min,
+            alpha=float(d.get('alpha', 1.43)),
+            rate=crust_rate, J=J_total,
+            crust_composition=_crust_composition_of(d),
+            sedimentation_rate=_sedimentation_rate(d, b_ocean, P_pore, T_seafloor),
+            precipitating_minerals=pore_min
         )
         pore_si = diag.get('secondary_SI', {})
 
@@ -1052,21 +1417,34 @@ def plot_habitability_phase_space(df, output_path):
 
     base['ratio'] = base['outgassing'] / base['crust_production']
 
-    # 1. Define Boolean masks to strictly enforce state conditions
-    cond_acid = base['termination'] == 'acid_ocean'
-    
-    # Explicitly add 'co2_floor' to the Snowball conditions
-    cond_snow = ((base['termination'].isin(['snowball', 'co2_floor'])) | (base['T'] <= T_SNOWBALL)) & ~cond_acid
-    
-    cond_hot  = ((base['termination'] == 'hothouse') | (base['T'] >= T_RUNAWAY)) & ~cond_acid & ~cond_snow
-    cond_hab  = ~(cond_acid | cond_snow | cond_hot)
+    # 1. Define Boolean masks to strictly enforce state conditions.
+    #
+    # Classification is driven by the FINAL STATE, not by which event stopped the run:
+    # terminations no longer encode outcomes (see Planet.time_evolve). Final T decides
+    # snowball vs hothouse vs habitable; only a run stopped at a CO2 wall has a genuinely
+    # unknown fate, because there the model quit while the climate was still evolving.
+    wall = base.get('domain_wall')
+    if wall is None:
+        wall = pd.Series([None] * len(base), index=base.index)
+
+    cond_unknown = (
+        (base['termination'].isin(OUT_OF_DOMAIN) & wall.isin(['co2_high', 'co2_low']))
+        # Legacy runs: pre-domain-event output has no domain_wall, and the old ceiling /
+        # acid_ocean cutoffs stopped mid-evolution, so their fate is likewise unknown.
+        | base['termination'].isin(['co2_ceiling', 'acid_ocean'])
+    )
+
+    cond_snow = ((base['T'] <= T_SNOWBALL) | base['termination'].isin(['snowball', 'co2_floor'])) & ~cond_unknown
+    cond_hot  = ((base['T'] >= T_RUNAWAY)  | (base['termination'] == 'hothouse')) & ~cond_unknown & ~cond_snow
+    cond_hab  = ~(cond_unknown | cond_snow | cond_hot)
+    cond_acid = cond_unknown  # name kept: downstream code below still refers to it
 
     # 2. Assign a string label to each row based on its state
     base['macro_state'] = None
     base.loc[cond_snow, 'macro_state'] = 'Snowball'
     base.loc[cond_hab,  'macro_state'] = 'Habitable'
     base.loc[cond_hot,  'macro_state'] = 'Hothouse'
-    base.loc[cond_acid, 'macro_state'] = 'Acid Ocean'
+    base.loc[cond_acid, 'macro_state'] = 'Unknown'
 
     # Drop any edge cases that missed categorization
     base = base.dropna(subset=['macro_state'])
@@ -1095,8 +1473,8 @@ def plot_habitability_phase_space(df, output_path):
             'color': '#ff5e5e', # Hot Red
             'marker': '^'
         },
-        'Acid Ocean (>5 bar CO₂)': {
-            'name': 'Acid Ocean',
+        'Unknown (stopped at CO₂ wall)': {
+            'name': 'Unknown',
             'color': '#f39c12', # Acidic Yellow-Orange
             'marker': 's'
         }
@@ -1129,13 +1507,13 @@ def plot_habitability_phase_space(df, output_path):
 
     # Format the axes
     ax.set_xscale('log')
-    ax.set_xlim([1e-3, 1e3])
+    ax.set_xlim([1e-3, 1e3]) # type: ignore
     
     # Add a small margin to the Y-axis based on the data
     y_min = agg_df['instellation'].min()
     y_max = agg_df['instellation'].max()
     margin = (y_max - y_min) * 0.05 if y_max != y_min else 0.1
-    ax.set_ylim([y_min - margin, y_max + margin])
+    ax.set_ylim([y_min - margin, y_max + margin]) # type: ignore
 
     ax.set_xlabel('Outgassing / Crust production rate')
     ax.set_ylabel('Instellation (S/S₀)')
@@ -1151,7 +1529,16 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Plot kamino parameter sweep results.')
     parser.add_argument('--path', default=DEFAULT_OUTPUT_PATH,
                         help='Directory containing planet_*.json files.')
+    for _knob in CHEM_KNOBS:
+        parser.add_argument(f'--{_knob.replace("_", "-")}', type=float, default=None,
+                            help=f'Pin {_knob} to this value in the main plots '
+                                 f'(default: the most-run value).')
     args = parser.parse_args()
+
+    for _knob in CHEM_KNOBS:
+        _v = getattr(args, _knob)
+        if _v is not None:
+            CHEM_OVERRIDE[_knob] = _v
 
     df = load_data(args.path)
 
@@ -1162,6 +1549,7 @@ if __name__ == '__main__':
         plot_faceted_lines(df, args.path, all_results=False, split_panels=True)
         plot_faceted_lines(df, args.path, split_panels=True, all_results=False, sequence=True)
         plot_ocean_depth_effect(df, args.path, split_panels=presentation)
+        plot_chemistry_constants(df, args.path, split_panels=presentation)
         plot_ratio_scatter(df, args.path)
         plot_crust_composition(df, args.path, show_markers=False, split_panels=presentation)
         plot_damkohler_contour(df, args.path)
