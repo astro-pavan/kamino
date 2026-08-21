@@ -61,15 +61,19 @@ _SAL_SPEC = [(1, 61.0), (2, 60.1), (3, 27.0), (4, 55.8),
 
 HABITABLE = {'converged', 'timeout', 'co2_floor'}
 TERM_LABELS = {
-    'converged':  'Converged',
-    'timeout':    'Timeout (2 Gyr)',
-    'co2_floor':  'CO₂ floor',
-    'snowball':   'Snowball',
-    'hothouse':   'Hothouse',
-    'acid_ocean': 'Acid Ocean',
+    'converged':     'Converged',
+    'timeout':       'Timeout (2 Gyr)',
+    'out_of_domain': 'Outside model domain',
+    # Legacy terminations, kept so pre-domain-event runs still plot.
+    'co2_floor':     'CO₂ floor (legacy)',
+    'snowball':      'Snowball (legacy)',
+    'hothouse':      'Hothouse (legacy)',
+    'co2_ceiling':   'Outside model domain (legacy)',
+    'acid_ocean':    'Outside model domain (legacy)',
 }
 HAB_MARKERS    = {'converged': 'o', 'timeout': 's', 'co2_floor': 'P'}
-FAILED_MARKERS = {'snowball': 'v', 'hothouse': '^', 'acid_ocean': 's'}
+FAILED_MARKERS = {'out_of_domain': 's', 'snowball': 'v', 'hothouse': '^',
+                  'co2_ceiling': 's', 'acid_ocean': 's'}
 
 
 # ---------------------------------------------------------------------------
