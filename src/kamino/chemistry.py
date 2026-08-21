@@ -54,9 +54,25 @@ ca_idx  = int(np.where(elements == 'Ca')[0][0])
 mg_idx  = int(np.where(elements == 'Mg')[0][0])
 c_idx   = int(np.where(elements == 'C')[0][0])
 si_idx  = int(np.where(elements == 'Si')[0][0])
+al_idx  = int(np.where(elements == 'Al')[0][0])
+fe_idx  = int(np.where(elements == 'Fe')[0][0])
 na_idx  = int(np.where(elements == 'Na')[0][0])
 cl_idx  = int(np.where(elements == 'Cl')[0][0])
 so4_idx = int(np.where(elements == 'S')[0][0])
+
+# Conservative-ion charge per element (signed), for deriving alkalinity as the charge
+# balance of the tracked ions: Alk = sum(ION_CHARGE * concentration). Fe is +2 (Fe2+,
+# soluble/conservative under the anoxic conditions where it is mobile; oxic Fe
+# precipitates as Goethite and is removed with its charge). Al nominal +3 (trace).
+# C/Si are 0 (the carbonate system C is solved via alkalinity+DIC, not counted here).
+ION_CHARGE = np.zeros(elements.shape)
+ION_CHARGE[ca_idx] = 2.0
+ION_CHARGE[mg_idx] = 2.0
+ION_CHARGE[na_idx] = 1.0
+ION_CHARGE[fe_idx] = 2.0
+ION_CHARGE[al_idx] = 3.0
+ION_CHARGE[cl_idx] = -1.0
+ION_CHARGE[so4_idx] = -2.0
 
 # PHREEQC reports Alkalinity under its own key, not as a -totals element.
 element_string = ' '.join(elements[elements != 'Alkalinity'])
@@ -256,6 +272,29 @@ def _load_database(path: str) -> Phreeqc:
 p_LT = _load_database(database_path)
 p_HT = _load_database(_hydrothermal_path)
 
+def _knobs_block() -> list[str]:
+    """PHREEQC KNOBS block: Newton solver settings.
+
+    On stock defaults, carbon-rich ocean compositions (C > 0.1 mol/kgw, i.e. pCO2 above
+    a few bar) routinely exhaust PHREEQC's iteration limit and hand back a non-converged
+    iterate, which solve_solution then has to reject as a ChemistryError. That is a
+    solver-tuning failure, not a thermodynamic one: on 200 inputs captured from a failing
+    high-pCO2 trajectory, the defaults converged 144/200 while the settings below
+    converged 200/200. Over a full run at S=0.7 they cut ChemistryErrors 2785 -> 393.
+
+    -step_size / -pe_step_size are the load-bearing pair; raising -iterations alone only
+    reaches ~90%. Smaller Newton steps are what the stiff, high-ionic-strength carbonate
+    systems need.
+    """
+    return [
+        'KNOBS',
+        '    -iterations 1000',
+        '    -diagonal_scale true',
+        '    -step_size 5',
+        '    -pe_step_size 5',
+        '',
+    ]
+
 def _solution_block(P: float, T: float, b: npt.NDArray[np.float64],
                     pH: float | None, trace_approximation: bool) -> list[str]:
     """PHREEQC SOLUTION block: bulk composition at (P, T)."""
@@ -333,7 +372,8 @@ def solve_solution(P: float, T: float, b: npt.NDArray[np.float64], pH: float | N
     do_primary = DISSOLVE_ONLY_PRIMARY if dissolve_only_primary is None else dissolve_only_primary
 
     input_lines = (
-        _solution_block(P, T, b, pH, trace_approximation)
+        _knobs_block()
+        + _solution_block(P, T, b, pH, trace_approximation)
         + _equilibrium_block(P_CO2, fO2, equilibriating_minerals, equilibriating_amounts,
                              precipitating_minerals, precipitation_SI, do_primary)
         + _output_block(high_temperature, equilibriating_minerals + precipitating_minerals)
@@ -346,21 +386,22 @@ def solve_solution(P: float, T: float, b: npt.NDArray[np.float64], pH: float | N
 
     p = p_HT if high_temperature else p_LT
 
-    if p.RunString(input_string) == 1:
-        raise ChemistryError(
-            f"PHREEQC returned an error:\n{p.GetErrorString()}\n"
-            f"--- input ---\n{input_string}"
-        )
+    def _attempt() -> tuple[bool, str]:
+        """Submit input_string once. Returns (converged, non_convergence_warnings)."""
+        if p.RunString(input_string) == 1:
+            raise ChemistryError(
+                f"PHREEQC returned an error:\n{p.GetErrorString()}\n"
+                f"--- input ---\n{input_string}"
+            )
+        warnings = p.GetWarningString() or ''
+        return (not any(s in warnings for s in _NON_CONVERGENCE_WARNINGS)), warnings
 
-    # PHREEQC signals a failed Newton solve via WARNINGS, not the RunString return code:
-    # it exhausts its iterations, retries with other convergence parameters, gives up, and
-    # still returns 0 while handing back the last (non-converged) iterate. Those iterates
-    # violate mass balance -- e.g. reporting a 10x rise in Na with zero Albite dissolved --
-    # so they must never be treated as a solution. GetWarningString resets on each run.
-    warnings = p.GetWarningString() or ''
-    if any(s in warnings for s in _NON_CONVERGENCE_WARNINGS):
+    converged, warnings = _attempt()
+    if not converged:
+        converged, warnings = _attempt()   # one retry, from PHREEQC's post-failure state
+    if not converged:
         raise ChemistryError(
-            f"PHREEQC failed to converge (returned a non-converged iterate):\n"
+            f"PHREEQC failed to converge (returned a non-converged iterate, twice):\n"
             f"{warnings.strip()}\n--- input ---\n{input_string}"
         )
 
@@ -391,24 +432,12 @@ def get_k(P: float, T: float, pH: float, composition: dict[str, float]) -> npt.N
 
     return k
 
-def get_b_eq(P: float, T: float, P_CO2: float, composition: dict[str, float], b_input: npt.NDArray[np.float64] | None=None, precipitating_minerals: list[str]=[], high_temperature: bool=False, fO2: float=0, water_rock_ratio: float | None=None, exclude_primary: bool=True, dissolve_only: bool | None=None) -> tuple[npt.NDArray[np.float64], float]:
+def get_b_eq(P: float, T: float, P_CO2: float, composition: dict[str, float], b_input: npt.NDArray[np.float64] | None=None, precipitating_minerals: list[str]=[], high_temperature: bool=False, fO2: float=0, water_rock_ratio: float | None=None, dissolve_only: bool | None=None) -> tuple[npt.NDArray[np.float64], float]:
 
     b_eq = np.zeros(elements.shape)
 
     # Carbonate minerals are excluded: CO2(g) already constrains carbonate chemistry
     _excluded = set(carbonate_minerals)
-
-    # Anorthite / Forsterite / Enstatite are excluded at low T. They are supersaturated at
-    # seawater pH, and PHREEQC back-precipitates them, driving b_eq[Mg] to ~0.
-    #
-    # `dissolve_only` (see _equilibrium_block) stops the back-precipitation, but it is NOT
-    # sufficient to let them back in: with the default 100 mol/kgw of each mineral available
-    # (a water/rock ratio of ~0.1 -- rock-dominated, backwards for off-axis seafloor) the
-    # equilibrium problem is numerically pathological and PHREEQC fails to converge. Including
-    # them needs a realistic water_rock_ratio at LT plus secondary phases that can buffer
-    # Mg/Ca/Si; with those, it converges cleanly. Until that is settled, keep them excluded.
-    if not high_temperature and exclude_primary:
-        _excluded |= {'Anorthite', 'Forsterite', 'Enstatite'}
 
     # These minerals cause problems with oxic conditions
     if fO2 > 0:
@@ -418,8 +447,7 @@ def get_b_eq(P: float, T: float, P_CO2: float, composition: dict[str, float], b_
 
     b = b_input if b_input is not None else np.array([])
 
-    # If a water-to-rock mass ratio is given, compute physically constrained
-    # per-mineral mole amounts: amount_i = (1000 g/kgw / w_r) * fraction_i / M_i
+    # If a water-to-rock mass ratio is given, compute physically constrained per-mineral mole amounts: amount_i = (1000 g/kgw / w_r) * fraction_i / M_i
     # This prevents PHREEQC from dissolving unrealistically large amounts of crust.
     eq_amounts: dict[str, float] | None = None
     if water_rock_ratio is not None:
@@ -429,10 +457,7 @@ def get_b_eq(P: float, T: float, P_CO2: float, composition: dict[str, float], b_
             for m in equilibrium_minerals
         }
 
-    # At HT conditions, the greenschist secondary assemblage precipitates: Quartz
-    # buffers Si, Clinochlore (Mg-chlorite) is the Mg sink, Epidote/Clinozoisite
-    # (Ca-Al) buffer Ca. This replaces Forsterite as the unphysical Mg-sink proxy
-    # and supplies the Ca sinks the assemblage previously lacked.
+    # At HT conditions, the greenschist secondary assemblage precipitates: Quartz buffers Si, Clinochlore (Mg-chlorite) is the Mg sink.
     if high_temperature:
         precipitating_minerals = list(precipitating_minerals) + ht_secondary_minerals
 
