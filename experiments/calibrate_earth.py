@@ -2,36 +2,56 @@
 """
 Iterative calibration of Earth-reference ocean chemistry constants.
 
-Adjusts K_CL_SUBDUCTION, K_NA_ALBITIZATION, f_HT, and tau_prec so
-that Planet.time_evolve() reaches modern seawater concentrations at steady state,
-starting from a blank ocean (b0=None) with no pre-seeding.
+Adjusts K_NA_CONT_REMOVAL, ALPHA_REF and KD_MG_HT so that Planet.time_evolve()
+holds modern seawater at steady state, from a charge-balanced seawater seed.
 
 Key design choices
 ------------------
 K_cl is determined analytically from the Cl flux balance and never updated from
-the simulation.  Cl has a residence time of ~10 Gyr so it cannot equilibrate from
-a blank ocean within a realistic integration time.  More importantly, Cl is the
-dominant charge-balancing anion: if [Cl] is far below its target the carbonate
-system compensates with ~400 mEq/kg of spurious alkalinity, making Alk/C/pCO2
-calibration impossible.  The initial condition therefore seeds [Cl] to its
-analytically-known steady-state value while leaving all other species at zero.
-All other target species (Na τ~500 Myr, Mg τ~50 Myr, Ca τ~1 Myr, Alk τ~0.1 Myr)
-do equilibrate within 2.5 Gyr from a blank start.
+the simulation.  Cl has a residence time of ~10 Gyr so it cannot equilibrate
+within a realistic integration time, and it is the dominant charge-balancing
+anion, so it is seeded to its analytically-known steady-state value.
 
-Because Cl's high fractional rate of change prevents the convergence event from
-firing, simulations typically terminate with "timeout" rather than "converged".
-This is expected and acceptable; the fast species are at steady state by t_end.
+The initial condition is modern seawater with alkalinity set to the exact ion
+charge sum -- NOT the "blank ocean" (Cl and SO4 only, cations zero) this script
+used previously.  That seed violated Alk = ION_CHARGE.b by 592.9 mEq/kg at t=0
+and the run could never repair it, poisoning every result.  See make_b0().
 
-Phase 1: abiotic (f_carb=0, f_bio=0) — calibrate K_na, f_HT, tau_prec.
-Phase 2: scan f_bio to close the C budget and any residual Ca error.
-         f_bio controls both biogenic CaCO3 burial and organic C burial
-         (f_bio × F_C_outgas removed as organic matter).  The literature
-         value for the organic burial fraction is f_org ≈ 0.32–0.41
-         (Kipp et al. 2021; Derry 2024), consistent with what is needed
-         to balance the carbon budget at EARTH_OUTGASSING = 0.0147 mol/m²/yr.
+This makes the script a stability test ("does the model HOLD modern seawater?")
+rather than a from-scratch assembly test.  That is the more useful question, and
+the only tractable one: Na needs ~500 Myr to accumulate and Ca/Mg never reach
+target from zero, so a blank start spends the whole integration far from Earth.
+
+Runs typically terminate "converged"; Cl's residual drift is small enough at the
+seeded value that it no longer blocks the convergence event.
+
+Scope: abiotic only
+-------------------
+This script previously had a Phase 2 that scanned `f_bio` (biogenic CaCO3 +
+organic C burial) to close the carbon budget.  That has been REMOVED, because
+the capability it targeted no longer exists in the model:
+
+  * `Planet.__init__` has no `f_bio` parameter (passing one raises TypeError).
+  * `self.k_biogenic` is hard-zeroed in planet.py and never read by `dY_dt`.
+
+So the model is abiotic by construction, and pCO2 should be expected to sit
+ABOVE the 280 ppm pre-industrial target -- an abiotic ocean has no biogenic
+carbonate pump.  That offset is a known scope limitation, not a calibration
+failure.  Reinstating Phase 2 requires first reinstating a biogenic flux in
+planet.py.
+
+`f_HT` is likewise no longer calibrated here.  It is still accepted by the
+Planet constructor and stored as `self.f_HT`, but nothing in the model reads it
+(verified: the only occurrence in planet.py is the assignment itself), so
+scanning it did nothing.  The Ca budget is now set by the LT seafloor source and
+the carbonate sink alone.
+
+Three constants are iterated: K_na (Na balance), alpha (total Ca+Mg supply) and
+KD_MG_HT (the Ca:Mg split).  They are close to orthogonal on those three targets
+-- see calibrate().  tau_prec / tau_rw are held at their literature values.
 
 Usage:
-    /data/pt426/big-venv/bin/python tests/calibrate_earth.py
+    /data/pt426/big-venv/bin/python experiments/calibrate_earth.py
 """
 import sys
 import os
@@ -42,9 +62,9 @@ from scipy.optimize import least_squares
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../src'))
 
 import kamino.planet as planet_module
-from kamino.planet import Planet
-from kamino.chemistry import elements, alk_idx, c_idx, si_idx, ca_idx, mg_idx, na_idx, cl_idx, so4_idx
-from kamino.weathering import get_weathering_flux
+from kamino.planet import Planet, WATER_ROCK_RATIO_LT
+from kamino.chemistry import elements, ION_CHARGE, alk_idx, c_idx, si_idx, ca_idx, mg_idx, na_idx, cl_idx, so4_idx
+from kamino.weathering import get_weathering_flux, ALPHA_REF as ALPHA_REF_CODE
 from kamino.constants import (
     EARTH_HYDROTHERMAL_FLUX_PER_AREA as J_ref_normalised,
     EARTH_CRUST_PRODUCTION_RATE_PER_AREA as rate_ref,
@@ -80,6 +100,16 @@ CRUST_RATE       = 1.0
 INSTELLATION     = 1.0
 CL_OUTGASSING_RATIO = 0.02   # matches Planet constructor default
 
+# 4 Gyr: Na (tau~500 Myr) is the slowest calibrated species and needs many
+# e-foldings from a blank start. The convergence audit of fast_17 showed
+# unconverged runs needed only ~1.1-1.8x more time than 2 Gyr, so 4 Gyr is
+# comfortably past that for a single run.
+T_END = 4e9 * YR
+
+# Abandon a run whose chemistry has collapsed rather than let it burn hours
+# fabricating derivatives; also surfaces 'chemistry_void' in the output.
+MAX_CHEM_FALLBACKS = 5000
+
 GRAVITY = G * M_EARTH / R_EARTH**2
 
 # ---------------------------------------------------------------------------
@@ -96,11 +126,24 @@ GRAVITY = G * M_EARTH / R_EARTH**2
 K_CL_ANALYTIC = (EARTH_OUTGASSING / YR * CL_OUTGASSING_RATIO) / (T_Cl * J_ref_normalised)
 
 # ---------------------------------------------------------------------------
-# ALPHA_REF: calibrate seafloor weathering strength so that the alkalinity
-# flux from primary basalt dissolution equals 1 Tmol/yr at Earth steady-state
-# pore conditions with modern seawater as input.
-# T_surface=288K → T_seafloor=277K → T_pore=286K; depth=3000m.
-# Secondary precipitation excluded to isolate primary dissolution.
+# ALPHA_REF diagnostic: the seafloor reactive-area scaling that would make the
+# primary-dissolution alkalinity flux equal 1 Tmol/yr at Earth pore conditions
+# with modern seawater as input.
+#
+# This is a SEPARATE anchor from the alpha the loop below calibrates, and the two
+# answer different questions. This one asks "what alpha reproduces a 1 Tmol/yr
+# seafloor flux at fixed modern seawater?"; the loop asks "what alpha reproduces
+# modern Ca+Mg at steady state?". They need not agree -- at Earth pore conditions
+# the system is transport-limited, so the flux saturates and alpha has far more
+# authority over the flux target than over the ocean. Reported for comparison;
+# the loop's value is the one to paste into weathering.py.
+#
+# The residual now uses water_rock_ratio=WATER_ROCK_RATIO_LT to match what
+# Planet actually passes to get_weathering_flux. It previously left it at None,
+# which selects a different equilibrium branch in get_b_eq (the
+# lt_equilibrium_buffer_minerals guard), so the old number was calibrated under
+# conditions the model never runs in.
+# T_surface=288K -> T_seafloor=277K -> T_pore=286K; depth=3000m.
 # ---------------------------------------------------------------------------
 _alpha_T_pore    = 286.0
 _alpha_P_pore    = 1000.0 * 10.0 * 3000.0
@@ -121,29 +164,35 @@ def _alpha_residual(a):
     flux, _ = get_weathering_flux(
         _alpha_P_pore, _alpha_T_pore, _alpha_P_CO2,
         _alpha_b, alpha=float(a[0]), rate=rate_ref, precipitating_minerals=[],
+        water_rock_ratio=WATER_ROCK_RATIO_LT,
     )
     return (flux[alk_idx] - _alpha_flux_norm) / _alpha_flux_norm
 
-ALPHA_REF = float(least_squares(_alpha_residual, [100.0]).x[0])
+ALPHA_REF_FITTED = float(least_squares(_alpha_residual, [1.43]).x[0])
 
 # Starting points for iterated constants
-K_NA_INIT     = planet_module.K_NA_ALBITIZATION
+K_NA_INIT     = planet_module.K_NA_CONT_REMOVAL
 # KD_MG_HT: first-order Mg-Ca exchange at HT (scales with J_HT × [Mg]).
-# Balances Mg: larger KD → more Mg removal → lower steady-state [Mg].
+# Iterated against the Ca:Mg split -- see calibrate().
 KD_MG_INIT    = planet_module.KD_MG_HT
-# f_HT: controls Ca from HT PHREEQC (Anorthite/Diopside dissolution).
-F_HT_INIT     = 0
+ALPHA_INIT    = ALPHA_REF_CODE   # start from the value the model ships with
 TAU_PREC_INIT = 100e3 * YR   # literature alkalinity residence time ~100 kyr
 TAU_RW_INIT   = 5e6 * YR     # reverse weathering timescale (secondary Mg control)
 
 print(f"K_CL (analytic)         = {K_CL_ANALYTIC:.4e}  "
       f"(current in planet.py: {planet_module.K_CL_SUBDUCTION:.4e})")
 print(f"K_NA (starting)         = {K_NA_INIT:.4e}")
-print(f"KD_MG_HT (starting)     = {KD_MG_INIT:.4e}  (Mg-Ca exchange, Mg balance)")
-print(f"f_HT (starting)         = {F_HT_INIT:.4f}  (PHREEQC HT Ca source)")
-print(f"tau_prec (starting)     = {TAU_PREC_INIT/YR/1e6:.2f} Myr")
-print(f"tau_rw (starting)       = {TAU_RW_INIT/YR/1e6:.1f} Myr  (reverse weathering)")
-print(f"ALPHA_REF (calibrated)  = {ALPHA_REF:.4f}  (target: 1 Tmol/yr seafloor Alk)")
+print(f"KD_MG_HT (fixed)        = {KD_MG_INIT:.4e}  (Mg-Ca exchange; not iterated)")
+print(f"tau_prec                = {TAU_PREC_INIT/YR/1e6:.2f} Myr")
+print(f"tau_rw                  = {TAU_RW_INIT/YR/1e6:.1f} Myr  (reverse weathering)")
+print(f"water/rock ratio        = {WATER_ROCK_RATIO_LT}")
+print(f"t_end                   = {T_END/YR/1e9:.1f} Gyr")
+print()
+print(f"ALPHA_REF in code       = {ALPHA_REF_CODE:.6f}   (used by the runs below)")
+print(f"ALPHA_REF refitted      = {ALPHA_REF_FITTED:.6f}   (diagnostic only, w/r={WATER_ROCK_RATIO_LT})")
+if ALPHA_REF_CODE > 0 and abs(ALPHA_REF_FITTED / ALPHA_REF_CODE - 1) > 0.10:
+    print(f"  ** these differ by {100*(ALPHA_REF_FITTED/ALPHA_REF_CODE - 1):+.0f}% -- the 1 Tmol/yr")
+    print(f"     seafloor anchor no longer holds at the current w/r and mineral lists.")
 print()
 
 
@@ -164,24 +213,43 @@ print()
 
 
 def make_b0():
-    """Initial ocean composition: zeros everywhere except Cl and SO4.
+    """Initial ocean composition: modern seawater, exactly charge-balanced.
 
-    Cl is seeded to its analytically-derived steady-state value.
-    SO4 is seeded to the background value computed from the charge balance
-    at target concentrations (accounting for the absence of K+ from the
-    model).  Both are physically motivated, not arbitrary: Cl was accumulated
-    over ~4 Gyr and K_cl is analytically determined; SO4 is the constant
-    background that makes the carbonate charge balance self-consistent.
-    All other species start at zero (blank ocean).
+    This REPLACES the previous "blank ocean" seed (Cl and SO4 only, every cation
+    and alkalinity zero), which was not a physical ocean and silently broke the
+    run.  Seeding 546 mM Cl and 23.45 mM SO4 with no cations puts -592.9 mEq/kg
+    of strong anions in the box while the tracked alkalinity starts at 0, so the
+    invariant Alk = ION_CHARGE.b is violated by 592.9 mEq at t=0.
+
+    Measured: that offset is 592.900 mEq at t=0 and 592.860 after 1.3 Gyr -- the
+    flux terms are charge-perfect (the S20.3 fix works; 0.04 mEq drift per Gyr),
+    so nothing in the run can ever repair it.  The carbonate system then sees
+    ~+493 mM of alkalinity that no cation supports, giving pH 9.7, DIC 303 mM,
+    and calcite supersaturation that strips Ca to 0.20 mM.  Every "Ca is 98%
+    low" result from this script predates this fix and was an artifact of it.
+
+    The old seed's rationale -- let species equilibrate from zero -- cannot work
+    here: Na alone needs ~500 Myr, and Ca/Mg never reach target at all, so the
+    ocean carries the full anion excess for the entire integration.
+
+    Alkalinity is set to the exact ion charge sum rather than to 2.3 mM, so the
+    invariant holds identically at t=0 (they agree to 3 decimal places at modern
+    concentrations, but deriving it keeps the two definitions from drifting).
     """
     b = np.zeros(N_ELEM)
     b[cl_idx]  = T_Cl
     b[so4_idx] = SO4_BG
+    b[na_idx]  = T_Na
+    b[ca_idx]  = T_Ca
+    b[mg_idx]  = T_Mg
+    b[c_idx]   = T_C
+    b[si_idx]  = 0.1e-3
+    b[alk_idx] = float(np.dot(ION_CHARGE, b))
     return b
 
 
-def run_planet(K_na, KD_mg, f_HT, tau_prec, tau_rw, f_bio=0.0, name='calib'):
-    """Run from a Cl-seeded blank ocean with the given calibration, return result dict."""
+def run_planet(K_na, KD_mg, alpha, tau_prec, tau_rw, name='calib'):
+    """Run from the charge-balanced seawater seed with the given calibration."""
     p = Planet(
         mass=M_EARTH,
         radius=R_EARTH,
@@ -192,25 +260,20 @@ def run_planet(K_na, KD_mg, f_HT, tau_prec, tau_rw, f_bio=0.0, name='calib'):
         ocean_depth=OCEAN_DEPTH,
         land_fraction=LAND_FRAC,
         reverse_weathering=True,
+        alpha=alpha,
         tau_prec=tau_prec,
         tau_rw=tau_rw,
-        f_bio=f_bio,
-        f_HT=f_HT,
         k_cl_subduction=K_CL_ANALYTIC,
-        k_na_albitization=K_na,
+        k_na_cont_removal=K_na,
         kd_mg_ht=KD_mg,
         name=name,
     )
 
-    # Run to 1 Gyr.  Ca (τ~1 Myr), Mg (τ~50 Myr), Na (τ~500 Myr) reach SS.
-    # Cl stays near T_Cl throughout (K_cl is analytic; τ_Cl~10 Gyr so
-    # drift is negligible).  Termination is usually "timeout" because
-    # Cl's tiny residual fractional rate prevents the convergence event;
-    # the fast species are at steady state regardless.
     p.time_evolve(
-        t_end=1e9 * YR,
+        t_end=T_END,
         b0=make_b0(),
         convergence_threshold=0.05,
+        max_chemistry_fallbacks=MAX_CHEM_FALLBACKS,
     )
 
     out_path = os.path.join(OUTPUT_DIR, f'{name}.json')
@@ -224,6 +287,13 @@ def run_planet(K_na, KD_mg, f_HT, tau_prec, tau_rw, f_bio=0.0, name='calib'):
     def final(idx):
         return float(y[2 + idx][-1])
 
+    # Drift of pCO2 over the last decade of the run -- the same settling metric
+    # used to audit the sweeps. |slope| < 0.05 means the run is at steady state.
+    t  = np.array(data['data']['time'], dtype=float)
+    Pt = np.array(y[0], dtype=float)
+    m  = (t > 0.9 * t[-1]) & (Pt > 0)
+    slope = float(np.polyfit(np.log(t[m]), np.log(Pt[m]), 1)[0]) if m.sum() > 3 else float('nan')
+
     # data['P_CO2'] is in bar (planet.py stores sol.y[0,-1] / 1e5)
     return {
         'Cl':  final(cl_idx),
@@ -236,6 +306,8 @@ def run_planet(K_na, KD_mg, f_HT, tau_prec, tau_rw, f_bio=0.0, name='calib'):
         'T':   float(data.get('T', float('nan'))),
         'pH':  float(data.get('pH', float('nan'))),
         'term': data.get('termination', '?'),
+        'fab': float(data.get('fabricated_fraction', 0.0)),
+        'slope': slope,
     }
 
 
@@ -243,8 +315,15 @@ def run_planet(K_na, KD_mg, f_HT, tau_prec, tau_rw, f_bio=0.0, name='calib'):
 # Diagnostics
 # ---------------------------------------------------------------------------
 
-def seafloor_alk_flux_tmol(result):
-    """Estimate primary seafloor alkalinity flux (Tmol/yr) at steady-state conditions."""
+def seafloor_alk_flux_tmol(result, alpha=None):
+    """Primary seafloor alkalinity flux (Tmol/yr) at the run's final conditions.
+
+    Uses the run's own alpha and the model's water/rock ratio so the number is
+    comparable to what dY_dt actually saw (it previously used alpha=1.0 and
+    w/r=None, which matched no configuration the model runs in).
+    """
+    if alpha is None:
+        alpha = ALPHA_REF_CODE
     b = np.zeros(N_ELEM)
     b[alk_idx] = result['Alk']
     b[c_idx]   = result['C']
@@ -262,20 +341,27 @@ def seafloor_alk_flux_tmol(result):
 
     flux, _ = get_weathering_flux(
         P_pore, T_pore, P_CO2_Pa, b,
-        alpha=1.0,
+        alpha=alpha,
         rate=rate_ref,
         precipitating_minerals=[],  # primary dissolution only
+        water_rock_ratio=WATER_ROCK_RATIO_LT,
     )
     return flux[alk_idx] * A_seafloor * YR / 1e12   # Tmol/yr
 
 
-def print_state(label, result, K_na, KD_mg, f_HT, tau_prec, tau_rw, f_bio=0.0):
-    sf_alk = seafloor_alk_flux_tmol(result)
+def print_state(label, result, K_na, KD_mg, alpha, tau_prec, tau_rw):
+    try:
+        sf_alk = f"{seafloor_alk_flux_tmol(result, alpha):.2f}"
+    except Exception as e:
+        sf_alk = f"n/a ({type(e).__name__})"
     bar = '─' * 70
     print(f"\n{bar}")
     print(f"  {label}")
     print(f"  term={result['term']}  T={result['T']:.1f} K  pH={result['pH']:.2f}  "
-          f"seafloor Alk={sf_alk:.2f} Tmol/yr  (target ~1)")
+          f"seafloor Alk={sf_alk} Tmol/yr  (target ~1)")
+    print(f"  settling: |dlnP/dlnt|={abs(result['slope']):.3f} "
+          f"({'AT STEADY STATE' if abs(result['slope']) < 0.05 else 'STILL DRIFTING'})"
+          f"   fabricated={result['fab']:.3f}")
     print(bar)
     print(f"  {'Species':6s}  {'Sim (mM)':>10s}  {'Target (mM)':>11s}  {'Error':>8s}  {'Note':s}")
     print(f"  {'-'*55}")
@@ -291,15 +377,21 @@ def print_state(label, result, K_na, KD_mg, f_HT, tau_prec, tau_rw, f_bio=0.0):
         err  = (s - t) / t * 100
         flag = '  <--' if abs(err) > 10 and sp != 'Cl' else ''
         print(f"  {sp:6s}  {s*1e3:>10.2f}  {t*1e3:>11.2f}  {err:>+7.1f}%{flag}  {note}")
+    # Ca+Mg (what alpha controls) and the Ca:Mg split (what KD_MG_HT controls),
+    # printed separately so it is visible which knob owns which error.
+    s_sum = (result['Ca'] + result['Mg']) / (T_Ca + T_Mg)
+    s_rat = ((result['Ca'] / T_Ca) / (result['Mg'] / T_Mg)) if result['Mg'] > 0 else float('inf')
     print()
-    print(f"  pCO2 = {result['pCO2_ppm']:.1f} ppm  (target: {T_pCO2:.0f})")
+    print(f"  Ca+Mg / target      = {s_sum:6.3f}   (alpha controls this)")
+    print(f"  (Ca/Ca_t)/(Mg/Mg_t) = {s_rat:6.3f}   (KD_MG_HT controls this; 1.0 = correct split)")
+    print()
+    print(f"  pCO2 = {result['pCO2_ppm']:.1f} ppm  (target: {T_pCO2:.0f}; abiotic model, expect high)")
     print(f"  K_NA      = {K_na:.4e}  (init: {K_NA_INIT:.4e})")
-    print(f"  KD_MG_HT  = {KD_mg:.4e}  (init: {KD_MG_INIT:.4e}; Mg balance)")
-    print(f"  f_HT      = {f_HT:.4f}   (init: {F_HT_INIT:.4f}; Ca balance)")
+    print(f"  KD_MG_HT  = {KD_mg:.4e}  (init: {KD_MG_INIT:.4e})")
+    print(f"  ALPHA     = {alpha:.4e}  (init: {ALPHA_INIT:.4e})")
     print(f"  K_CL      = {K_CL_ANALYTIC:.4e}  (analytic, fixed)")
     print(f"  tau_prec  = {tau_prec/YR/1e6:.3f} Myr")
     print(f"  tau_rw    = {tau_rw/YR/1e6:.1f} Myr")
-    print(f"  f_bio     = {f_bio:.2f}")
 
 
 def calibrated(result, tol=0.07):
@@ -310,129 +402,128 @@ def calibrated(result, tol=0.07):
 
 
 # ---------------------------------------------------------------------------
-# Phase 1: abiotic iteration
+# Abiotic iteration
 # ---------------------------------------------------------------------------
 
-def phase1(K_na, KD_mg, f_HT, tau_prec, tau_rw, f_bio=0.0, n_iter=6, tag='p1', fix_tau=True):
-    """Iteratively update K_na, KD_mg, and f_HT until Na/Mg/Ca converge.
+# KD_MG_HT is a rate constant, not a fraction, but a negative or runaway value is
+# unphysical. The floor is well below any value that does anything (at 1e-6 the
+# exchange is ~5 orders below the LT seafloor Mg flux), so pinning there is a
+# meaningful result: it says the Ca:Mg split is NOT controlled by HT exchange.
+_KD_LO, _KD_HI       = 1e-6, 10.0
+_ALPHA_LO, _ALPHA_HI = 1e-3, 1e4
 
-    Update rules (ratio-scaling):
-      K_na   — Na  balance: albitization sink
-      KD_mg  — Mg  balance: first-order HT Mg-Ca exchange (independent of Si)
-      f_HT   — Ca  balance: HT PHREEQC Ca source from Anorthite/Diopside
-      tau_rw — fixed; secondary Mg sink via reverse-weathering clays
+
+MAX_RUNS = 60   # hard cap on planet integrations spent by the solver
+
+_history = []   # (cost, K_na, KD_mg, alpha, result) for every successful evaluation
+
+
+def _residuals(x):
+    """Log-space residuals in (Na, Ca, Mg) for log-parameters x = [ln K_na, ln alpha, ln KD_mg].
+
+    Logs on both sides. The parameters span decades, and the targets differ by a factor
+    of 50 (Ca 10.3 mM vs Na 469 mM), so a linear residual would let Na dominate the fit
+    entirely; log residuals weight all three by relative error, which is what we want.
+    """
+    K_na, alpha, KD_mg = (float(v) for v in np.exp(x))
+    name = f'calib_ls_{len(_history):03d}'
+    try:
+        r = run_planet(K_na, KD_mg, alpha, TAU_PREC_INIT, TAU_RW_INIT, name=name)
+    except Exception as e:
+        print(f"    [eval {len(_history):03d}] FAILED {type(e).__name__}: {str(e)[:60]}")
+        return np.array([5.0, 5.0, 5.0])   # finite penalty; keeps the solver moving
+
+    res = np.array([np.log(max(r[s], 1e-12) / TARGETS[s]) for s in ('Na', 'Ca', 'Mg')])
+    cost = float(np.sum(res**2))
+    _history.append((cost, K_na, KD_mg, alpha, r))
+    print(f"    [eval {len(_history)-1:03d}] K_na={K_na:.3e} alpha={alpha:.3e} kd={KD_mg:.3e}"
+          f"  ->  Na={r['Na']*1e3:7.1f} Ca={r['Ca']*1e3:7.2f} Mg={r['Mg']*1e3:7.2f}"
+          f"  Alk={r['Alk']*1e3:6.2f}  cost={cost:.4f}")
+    return res
+
+
+def calibrate(K_na, KD_mg, alpha):
+    """Bounded least-squares solve for (K_na, alpha, KD_mg) against (Na, Ca, Mg).
+
+    Replaces the previous hand-rolled ratio-scaling loop, which OSCILLATED rather than
+    converged. Measured 2-cycle: kd 2.65e-2 -> 1.62e-2 -> 6.95e-2 -> 1.62e-2, with the
+    Ca:Mg ratio swinging 2.7 -> 0.054 -> 18.4 -> 0.048. A 4x change in kd moves the
+    ratio by 380x (log-log sensitivity ~4.1), so any damping exponent above ~0.24
+    amplifies the error instead of shrinking it.
+
+    That sensitivity is physical, not numerical: Ca is buffered by calcite saturation.
+    Ca and alkalinity trade off along Ca.CO3 = Ksp (measured Ca=0.55 mM at Alk=13.5 mM
+    versus Ca=55 mM at Alk=1.8 mM), so the system snaps between "calcite precipitates,
+    Ca -> 0" and "calcite undersaturated, Ca accumulates". A gradient method with a
+    proper trust region handles that; independent per-species ratio updates cannot,
+    because each knob's correct step depends on where the others sit relative to the
+    saturation boundary.
+
+    Knob roles remain as before -- K_na sets Na (first-order sink), alpha sets the total
+    Ca+Mg supply (seafloor reactive area), KD_mg sets the Ca:Mg split (HT exchange moves
+    Mg to Ca mole-for-mole) -- but they are solved jointly rather than one-at-a-time.
+
+    HISTORY: KD_mg used to be pinned here, on the measurement that HT exchange was 1.5%
+    of Mg removal and 0.6% of the Ca source at the Earth steady state. That was measured
+    when make_b0 violated Alk = ION_CHARGE.b by 592.9 mEq/kg, which pinned Ca near
+    0.20 mM by calcite supersaturation and made every knob look inert. With the seed
+    fixed, Ca responds and the pin no longer applies.
     """
     print(f"\n{'#'*70}")
-    print(f"  Phase 1  f_bio={f_bio:.2f}  tag={tag}")
+    print(f"  Abiotic calibration — least_squares on (K_na, alpha, KD_mg)")
+    print(f"  targets: Na={T_Na*1e3:.0f} Ca={T_Ca*1e3:.1f} Mg={T_Mg*1e3:.1f} mM   "
+          f"max {MAX_RUNS} runs")
     print(f"{'#'*70}")
 
-    for i in range(n_iter):
-        name   = f'calib_{tag}_i{i:02d}'
-        result = run_planet(K_na, KD_mg, f_HT, tau_prec, tau_rw, f_bio=f_bio, name=name)
-        print_state(f"Iter {i+1}/{n_iter}", result, K_na, KD_mg, f_HT, tau_prec, tau_rw, f_bio)
+    x0 = np.log([K_na, alpha, KD_mg])
+    lo = np.log([1e-8, _ALPHA_LO, _KD_LO])
+    hi = np.log([1e2,  _ALPHA_HI, _KD_HI])
 
-        if calibrated(result):
-            print(f"\n  *** Converged after {i+1} iteration(s) ***")
-            return K_na, KD_mg, f_HT, tau_prec, tau_rw, result
+    try:
+        least_squares(_residuals, x0, bounds=(lo, hi), diff_step=0.2,
+                      max_nfev=MAX_RUNS, xtol=1e-3, ftol=1e-3, gtol=1e-3)
+    except Exception as e:
+        print(f"\n  least_squares aborted ({type(e).__name__}: {e}); using best seen.")
 
-        K_na  = K_na  * (result['Na'] / T_Na)
-        # KD_mg: too-high Mg → increase removal rate; too-low → decrease. Damped (0.6).
-        KD_mg = max(KD_mg * (result['Mg'] / T_Mg) ** 0.6, 1e-6)
-        # f_HT: too-low Ca → increase; too-high → decrease. Damped (0.5). Clamped.
-        # f_HT  = min(max(f_HT * (T_Ca / max(result['Ca'], 1e-6)) ** 0.5, 1e-3), 0.5)
+    if not _history:
+        raise RuntimeError("no successful evaluations")
 
-        if not fix_tau:
-            tau_prec = tau_prec * (T_Ca / max(result['Ca'], 1e-9)) ** 0.3
-
-    print(f"\n  *** Did not fully converge in {n_iter} iterations ***")
-    return K_na, KD_mg, f_HT, tau_prec, tau_rw, result # type: ignore
+    # least_squares can finish at a point worse than one it visited, so report the best.
+    cost, K_na_b, KD_mg_b, alpha_b, res_b = min(_history, key=lambda h: h[0])
+    print(f"\n  Best of {len(_history)} evaluations: cost={cost:.4f}")
+    return K_na_b, KD_mg_b, alpha_b, res_b
 
 
-K_na, KD_mg, f_HT, tau_prec, tau_rw, result1 = phase1(
-    K_NA_INIT, KD_MG_INIT, F_HT_INIT, TAU_PREC_INIT, TAU_RW_INIT, f_bio=0.0, tag='abiotic', fix_tau=True
-)
+K_na, KD_mg, alpha, result1 = calibrate(K_NA_INIT, KD_MG_INIT, ALPHA_INIT)
+tau_prec, tau_rw = TAU_PREC_INIT, TAU_RW_INIT
 
-print("\n" + "="*70)
-print("  PHASE 1 (ABIOTIC) COMPLETE")
-print("="*70)
-print_state("Abiotic final", result1, K_na, KD_mg, f_HT, tau_prec, tau_rw, f_bio=0.0)
-
-# ---------------------------------------------------------------------------
-# Phase 2: scan f_bio to close residual Ca/Alk error.
-#
-# Biogenic CaCO3 burial is the dominant Ca sink in the modern ocean; without
-# it the abiotic model will likely over-predict [Ca].  f_bio adds a rate-
-# limited Ca+Alk sink calibrated to the observed total Ca sources at Earth
-# conditions.  We scan f_bio in steps, re-running a shortened Phase 1 (5
-# iterations) from the abiotic-converged constants for each trial value.
-# ---------------------------------------------------------------------------
-
-def score(result):
-    return (abs(result['Ca']  / T_Ca   - 1) +
-            0.5 * abs(result['Alk'] / T_Alk  - 1) +
-            0.5 * abs(result['pCO2_ppm'] / T_pCO2 - 1))
-
-
-best = dict(score=score(result1), K_na=K_na, KD_mg=KD_mg, f_HT=f_HT,
-            tau_prec=tau_prec, tau_rw=tau_rw, f_bio=0.0, result=result1)
-
-# Enter Phase 2 if Ca or pCO2 are off — with f_bio=0 the C budget is open
-# and pCO2 will typically be >> 280 ppm regardless of Ca.
-if result1['Ca'] > T_Ca * 1.05 or result1['pCO2_ppm'] > T_pCO2 * 1.5:
-    print(f"\n\n{'#'*70}")
-    print("  PHASE 2 — scanning f_bio (organic C burial + biogenic CaCO3)")
-    print(f"  Abiotic [Ca]  = {result1['Ca']*1e3:.2f} mM  (target {T_Ca*1e3:.2f} mM)")
-    print(f"  Abiotic pCO2  = {result1['pCO2_ppm']:.0f} ppm  (target {T_pCO2:.0f} ppm)")
-    print(f"{'#'*70}")
-
-    for fbio in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0]:
-        print(f"\n  --- f_bio = {fbio:.1f} ---")
-        K_na_t, KD_mg_t, f_HT_t, tau_t, tau_rw_t, res_t = phase1(
-            K_na, KD_mg, f_HT, tau_prec, tau_rw,
-            f_bio=fbio, n_iter=5,
-            tag=f'bio{int(fbio * 10):02d}',
-            fix_tau=True,
-        )
-        s = score(res_t)
-        print(f"  f_bio={fbio:.1f}  Ca={res_t['Ca']*1e3:.2f} mM  "
-              f"Alk={res_t['Alk']*1e3:.2f} mM  score={s:.4f}")
-
-        if s < best['score']:
-            best = dict(score=s, K_na=K_na_t, KD_mg=KD_mg_t, f_HT=f_HT_t,
-                        tau_prec=tau_t, tau_rw=tau_rw_t, f_bio=fbio, result=res_t)
-
-        if res_t['pCO2_ppm'] < T_pCO2 * 0.8:
-            print("  pCO2 below 80% of target — stopping scan.")
-            break
-
-else:
-    print(f"\n  Abiotic [Ca] within 5% of target — skipping Phase 2.")
+if not calibrated(result1):
+    print("\n  *** Did not reach all three targets within tolerance ***")
+if KD_mg <= _KD_LO * 1.001:
+    print("\n  NOTE: KD_MG_HT pinned at its floor. The Ca:Mg split is not controlled by")
+    print("        HT exchange -- the residual Mg deficit is set by another sink")
+    print("        (reverse-weathering clays / LT seafloor). Calibrating it further is futile.")
 
 # ---------------------------------------------------------------------------
 # Final report
 # ---------------------------------------------------------------------------
 
-r  = best['result']
-sf = seafloor_alk_flux_tmol(r)
-
 print("\n\n" + "="*70)
-print("  CALIBRATION COMPLETE — FINAL CONSTANTS")
+print("  CALIBRATION COMPLETE — FINAL CONSTANTS (ABIOTIC)")
 print("="*70)
-print_state("Best result", r, best['K_na'], best['KD_mg'], best['f_HT'], best['tau_prec'], best['tau_rw'], best['f_bio']) # type: ignore
-print(f"\n  Seafloor Alk flux: {sf:.3f} Tmol/yr  (target ~1)")
+print_state("Best result", result1, K_na, KD_mg, alpha, tau_prec, tau_rw)
 
-print("""
-  ── Paste into weathering.py ──────────────────────────────────────────""")
-print(f"  ALPHA_REF               = {ALPHA_REF:.6f}")
 print("""
   ── Paste into planet.py ──────────────────────────────────────────────""")
 print(f"  K_CL_SUBDUCTION         = {K_CL_ANALYTIC:.6e}")
-print(f"  K_NA_ALBITIZATION       = {best['K_na']:.6e}")
-print(f"  KD_MG_HT                = {best['KD_mg']:.6e}")
+print(f"  K_NA_CONT_REMOVAL       = {K_na:.6e}")
+print(f"  KD_MG_HT                = {KD_mg:.6e}")
+print("""
+  ── Paste into weathering.py ──────────────────────────────────────────""")
+print(f"  ALPHA_REF               = {alpha:.6f}")
+print(f"    (was {ALPHA_INIT:.6f}; Planet's `alpha` default mirrors this and must match)")
 print("""
   ── Planet constructor defaults ───────────────────────────────────────""")
-# print(f"  f_HT     = {best['f_HT']:.4f}   # PHREEQC HT Ca source + Mg-Ca exchange")
-print(f"  tau_prec = {best['tau_prec']/YR:.4e} * YR   # {best['tau_prec']/YR/1e6:.3f} Myr") # type: ignore
-print(f"  tau_rw   = {best['tau_rw']/YR:.4e} * YR   # {best['tau_rw']/YR/1e6:.1f} Myr  (reverse weathering)") # type: ignore
-print(f"  f_bio    = {best['f_bio']:.2f}")
+print(f"  tau_prec = {tau_prec/YR:.4e} * YR   # {tau_prec/YR/1e6:.3f} Myr")
+print(f"  tau_rw   = {tau_rw/YR:.4e} * YR   # {tau_rw/YR/1e6:.1f} Myr  (reverse weathering)")
 print()
