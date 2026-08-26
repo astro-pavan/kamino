@@ -14,7 +14,7 @@ import os
 import json
 import numpy as np
 
-from kamino.constants import YR, M_EARTH, R_EARTH
+from kamino.constants import YR, M_EARTH, R_EARTH, EARTH_MANTLE_MG_SI, EARTH_DELTA_IW
 from kamino.chemistry import elements, ChemistryError
 from kamino.planet import Planet
 from kamino.precipitation import get_precipitation_by_mineral
@@ -62,6 +62,11 @@ def planet_from_config(config: dict) -> Planet:
         ocean_depth=float(config['ocean_depth']),
         land_fraction=float(config.get('land_fraction', 0.0)),
         crust_composition=config['crust_composition'],
+        # NOTE: this function is independently STALE -- `crust_composition` and `f_bio` below are
+        # not Planet parameters and this call raises as written. The composition axes are passed
+        # anyway so that whoever repairs it does not silently get an Earth crust for every run.
+        mantle_mg_si=float(config.get('mantle_mg_si', EARTH_MANTLE_MG_SI)),
+        delta_iw=float(config.get('delta_iw', EARTH_DELTA_IW)),
         reverse_weathering=bool(config.get('reverse_weathering', True)),
         alpha=float(config.get('alpha', 1.43)),
         f_HT=float(config.get('f_HT', 0.0)),

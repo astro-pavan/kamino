@@ -176,7 +176,10 @@ K_NA_INIT     = planet_module.K_NA_CONT_REMOVAL
 # Iterated against the Ca:Mg split -- see calibrate().
 KD_MG_INIT    = planet_module.KD_MG_HT
 ALPHA_INIT    = ALPHA_REF_CODE   # start from the value the model ships with
-TAU_PREC_INIT = 100e3 * YR   # literature alkalinity residence time ~100 kyr
+# tau_prec is depth-scaled in the model (planet.TAU_PREC_REF, §26), so the calibration must use
+# the value Planet would resolve at OCEAN_DEPTH -- otherwise the Earth anchor is fitted at a
+# timescale the model never uses here. At 3700 m that is 123 kyr rather than the 100 kyr reference.
+TAU_PREC_INIT = planet_module.TAU_PREC_REF * (OCEAN_DEPTH / planet_module.OCEAN_DEPTH_REF)
 TAU_RW_INIT   = 5e6 * YR     # reverse weathering timescale (secondary Mg control)
 
 print(f"K_CL (analytic)         = {K_CL_ANALYTIC:.4e}  "

@@ -63,6 +63,9 @@ MINERAL_MOLAR_MASS = {
     'Anorthite':   278.21,   # CaAl2Si2O8
     'Albite':      262.22,   # NaAlSi3O8
     'Nepheline':   142.05,   # NaAlSiO4 (feldspathoid; CIPW desilication product of Albite)
+    'Akermanite':  272.63,   # Ca2MgSi2O7 (melilite; CIPW desilication product of Diopside)
+    'Hedenbergite':248.09,   # CaFeSi2O6 (Fe-clinopyroxene, the hedenbergite endmember)
+    'Ferrosilite': 131.93,   # FeSiO3    (Fe-orthopyroxene)
     'K-Feldspar':  278.33,   # KAlSi3O8
     'Quartz':       60.08,   # SiO2 (only emitted for silica-oversaturated rocks)
 }
@@ -102,8 +105,19 @@ evaporite_minerals = ['Halite'] # Cl (and Na) sink; only active when land_fracti
 lt_equilibrium_buffer_minerals = []  # OFF -- see above
 
 # Primary (igneous) rock-forming minerals - they generally only dissolve
+#
+# Quartz is here for the silica-oversaturated crusts that appear below mantle Mg/Si ~0.8, where
+# the CIPW norm now emits it instead of discarding the excess silica (which was not mass
+# conservative, and relabelled a rhyolite as a basalt). Listing it makes `dissolve_only` apply,
+# which matters: as a PRECIPITATING phase it acts as a low-temperature quartz buffer, clamping
+# pore b_eq[Si] by 32x and dragging Mg and Al with it -- a buffer this model deliberately avoids
+# elsewhere (`silica_minerals` is SiO2(am)). Dissolve-only it is inert, because the pore fluid is
+# already ~32x supersaturated in quartz, so its only effect is to dilute the reactive phases by
+# its weight fraction. That dilution is the physically correct signal: a silicic crust is a poor
+# weathering substrate.
 primary_minerals = {
     'Anorthite', 'Albite', 'Nepheline', 'K-Feldspar',
     'Wollastonite', 'Enstatite', 'Diopside',
-    'Forsterite', 'Fayalite',
+    'Forsterite', 'Fayalite', 'Quartz', 'Akermanite',
+    'Hedenbergite', 'Ferrosilite',
 }

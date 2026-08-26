@@ -1,49 +1,80 @@
-"""Generate a seafloor-crust mineral composition from planetary parameters.
+"""Generate a seafloor-crust mineral composition from astronomical composition parameters.
 
-Pipeline (a single physical knob -> a `crust_composition` dict):
+Pipeline (two observationally-motivated knobs -> a `crust_composition` dict):
 
-    mantle potential temperature T_p  [+ optional mantle Mg/Si]
-      --import_primelt_spreadsheet()--> T_p -> oxide interpolator
-      --oxide_composition()-----------> major-element oxide vector (wt%)
+    mantle molar Mg/Si, core-formation dIW
+      --feo_from_delta_iw()-----------> mantle FeO wt% (and core mass fraction)
+      --oxide_composition()-----------> primary-melt oxide vector (wt%), from the MAGEMin table
       --mineral_composition()---------> CIPW norm -> DB-valid mineral fractions
 
-The oxide anchors are the batch primary magmas from the PRIMELT1 spreadsheet
-(Herzberg & O'Hara 2002; Herzberg et al. 2007, G-Cubed) for four natural suites
-spanning ambient MORB (Siqueiros, T_p~1365 C) to komatiite (Gorgona, T_p~1606 C).
-Interpolating between them gives a continuous, internally consistent primary-melt
-composition as a function of T_p; the CIPW norm then converts that melt to the
-normative mineral assemblage the weathering model consumes.
+The oxide table `data/crust_compositions.csv` is generated offline by
+`data/make_crust_compositions.jl`: MAGEMin (Riel et al. 2022) with the Holland, Green & Powell
+(2018) igneous dataset, isentropic decompression melting of a McDonough & Sun (1995) pyrolite
+whose MgO/SiO2 and FeO have been re-set to the target axes, stopped at a fixed melt fraction
+F = 0.20 (the value Guimond et al. 2024 adopt, being where clinopyroxene leaves the melting
+assemblage for Earth's mantle). This module only interpolates that table and runs the norm.
 
-The Mg/Si knob is a first-order proxy: a planet whose mantle is more Mg-rich (higher
-Mg/Si) melts to a more silica-undersaturated crust. We inject this by scaling the
-melt SiO2 relative to the reference (Earth-like) anchors before running the norm.
-This captures the silica-saturation *direction* (olivine vs quartz normative), not
-the buffered nonlinearity a full melting model would give.
+The two axes
+------------
+`mantle_mg_si`  molar Mg/Si of the mantle. Earth = 1.25. Controls olivine vs orthopyroxene, and
+                through the melt, the normative feldspar/feldspathoid balance. Mantles are
+                olivine-free below ~0.8 and orthopyroxene-free above ~1.6.
+
+`delta_iw`      CORE-FORMATION oxygen fugacity, log10 units relative to iron-wustite. Sets how
+                much iron stayed in the mantle as FeO rather than going to the core as metal,
+                via the metal-silicate equilibrium dIW = 2 log10(a_FeO_sil / a_Fe_met).
+                Earth = -2. THE AXIS IS LOGARITHMIC IN FeO: -5 -> 0.26 wt%, -2 -> 8.05 wt%,
+                -1 -> 24 wt%, which is already at the ~25 wt% ceiling beyond which the
+                thermodynamic models are unreliable.
+
+                This is NOT the fO2 of a modern melt -- see `melt_delta_iw` and the
+                DELTA_IW_SELF_OXIDATION note in constants.py before handing a value to the
+                outgassing model.
+
+What is deliberately NOT an axis
+--------------------------------
+* T_p -- not observable, and not free: a mantle that cannot melt cannot transport heat
+  magmatically. Solved per composition by the generator and read back from the table.
+* C/O -- a regime switch, not a continuum. Carbides/nitrides need C/O > 0.9 (~1% of FGK
+  dwarfs), and those planets are not silicate at all, so HGP18 cannot model them. Below 0.9
+  the major elements do not care. Kamino's carbon input is the `outgassing` parameter.
+* Ca/Al -- real, but both elements are refractory so stellar Ca/Al varies least of the
+  candidate ratios. Held at pyrolite.
+* Na2O -- the strongest UN-SWEPT lever, and it should be reported as such: alkalis move the
+  solidus more than MgO/FeO does (Guimond et al. 2024 section 4.1), and albite vs nepheline is
+  what sets this model's ocean Na. Excluded because Na is moderately volatile and
+  devolatilisation is stochastic, so it does not belong on a grid indexed by observables.
+
+Citations
+---------
+  * Guimond, Wang, Seidler, Sossi, Mahajan & Shorttle (2024), Rev. Mineral. Geochem. 90, 259.
+  * Riel, Kaus, Green & Berlie (2022), G3 23, e2022GC010427 (MAGEMin).
+  * Holland, Green & Powell (2018), J. Petrol. 59, 881 (thermodynamic dataset).
+  * McDonough & Sun (1995), Chem. Geol. 120, 223 (pyrolite).
+  * Frost & McCammon (2008), Annu. Rev. Earth Planet. Sci. 36, 389 (IW buffer).
 """
 
+import functools
 import os
 import warnings
 
 import numpy as np
-from scipy.interpolate import interp1d
+from scipy.interpolate import RegularGridInterpolator
 
+from kamino.constants import DELTA_IW_SELF_OXIDATION, EARTH_DELTA_IW, EARTH_MANTLE_MG_SI
 from kamino.mineral_info import MINERAL_MOLAR_MASS
 
 _DATA_DIR = os.path.join(os.path.dirname(__file__), 'data')
-PRIMELT_SPREADSHEET = os.path.join(_DATA_DIR, 'ggge967-sup-0002-primelt1.xls')
+CRUST_TABLE = os.path.join(_DATA_DIR, 'crust_compositions.csv')
 
-# Sheets in the PRIMELT1 workbook (note the workbook's 'Icleand' misspelling).
-PRIMELT_SHEETS = ['Siqueiros', 'OJP', 'Icleand', 'Gorgona']
-
-# Major-element oxides carried through the pipeline (the ones the CIPW norm uses).
+# Major-element oxides carried through the pipeline (the ones the CIPW norm uses). Cr2O3 is in
+# the generator's output but not here: the norm has no chromite and Cr is not a tracked ion.
 PIPELINE_OXIDES = ['SiO2', 'TiO2', 'Al2O3', 'FeOt', 'MgO', 'CaO', 'Na2O', 'K2O']
 
-# Reference mantle molar Mg/Si the PRIMELT anchors implicitly correspond to. The
-# anchors are terrestrial primary magmas, so their source is ~Earth/solar (Mg/Si~1).
-MG_SI_REF = 1.0
+# Column in the CSV that supplies each pipeline oxide (the table reports total iron as FeO).
+_TABLE_COLUMN = {ox: ('FeO' if ox == 'FeOt' else ox) for ox in PIPELINE_OXIDES}
 
-# Oxide molar masses (g/mol) — convert a weight-percent oxide analysis to cation
-# moles for the CIPW norm and the Mg/Si adjustment.
+# Oxide molar masses (g/mol) — convert a weight-percent oxide analysis to cation moles.
 OXIDE_MOLAR_MASS = {
     'SiO2':   60.084,
     'TiO2':   79.866,
@@ -57,112 +88,417 @@ OXIDE_MOLAR_MASS = {
     'Na2O':   61.979,
     'K2O':    94.196,
     'P2O5':  141.945,
+    'Cr2O3': 151.990,
 }
 
 # Fe2O3 -> FeO mass-conversion factor (2 * M_FeO / M_Fe2O3): combine split iron into
 # total FeO, since the CIPW norm routes all iron to fayalitic olivine.
 _FE2O3_TO_FEO = 2 * OXIDE_MOLAR_MASS['FeO'] / OXIDE_MOLAR_MASS['Fe2O3']
 
-# Module-level cache built by import_primelt_spreadsheet().
-_INTERPOLATORS: dict[str, interp1d] | None = None
-_ANCHORS: dict | None = None
+# ---------------------------------------------------------------------------------------------
+# Redox: dIW <-> mantle FeO, and dIW <-> absolute fO2
+# ---------------------------------------------------------------------------------------------
+
+# McDonough & Sun (1995) pyrolite, NON-Fe oxides only (wt%). Iron is set by the dIW axis and the
+# rest of the budget is renormalised against it, so these are proportions, not absolutes. Must
+# stay identical to PYROLITE_NON_FE in make_crust_compositions.jl.
+PYROLITE_NON_FE = {
+    'SiO2': 45.00, 'Al2O3': 4.45, 'CaO': 3.55, 'MgO': 37.80,
+    'K2O': 0.029, 'Na2O': 0.36, 'TiO2': 0.201, 'Cr2O3': 0.384,
+}
+_CATIONS_PER_OXIDE = {'SiO2': 1, 'Al2O3': 2, 'CaO': 1, 'MgO': 1,
+                      'K2O': 2, 'Na2O': 2, 'TiO2': 1, 'Cr2O3': 2}
+
+# Cation moles contributed by 1 wt% of the (renormalised) non-Fe budget.
+_K_CATIONS = sum(
+    PYROLITE_NON_FE[ox] / sum(PYROLITE_NON_FE.values()) * _CATIONS_PER_OXIDE[ox] / OXIDE_MOLAR_MASS[ox]
+    for ox in PYROLITE_NON_FE
+)
+
+# Earth's BSE FeO, the anchor for the whole redox axis (McDonough & Sun 1995).
+EARTH_MANTLE_FEO = 8.05  # wt%
+
+# Metal-silicate activity constant, X_Fe(metal) / gamma_FeO, in
+#     X_FeO(silicate, cation mole fraction) = _FEO_ACTIVITY_CONST * 10 ** (dIW / 2)
+#
+# CALIBRATED, not measured: fixed so that dIW = EARTH_DELTA_IW reproduces EARTH_MANTLE_FEO
+# exactly. The first-principles value carries ~0.4 log units of slop -- gamma_FeO = 1.0 gives
+# Earth dIW = -2.35, gamma_FeO = 1.5 gives -1.99 -- so the absolute number is a label and only
+# the Earth anchor is meaningful. Same lesson as the T_p offset in section 24.2 of the
+# development history: anchor on the composition, not on the number.
+#
+# The mapping is also OURS, not Putirka & Rarick's: they define alpha_Fe = Fe_BSP/Fe_BP on a
+# cation weight basis with explicit core Ni and Si. Adopt their formulation before citing them.
+def _x_feo_from_feo_wt(feo_wt: float) -> float:
+    """Cation mole fraction of FeO in a pyrolite mantle carrying `feo_wt` wt% FeO."""
+    n_fe = feo_wt / OXIDE_MOLAR_MASS['FeO']
+    return n_fe / (n_fe + (100.0 - feo_wt) * _K_CATIONS)
 
 
-def import_primelt_spreadsheet(path: str = PRIMELT_SPREADSHEET) -> tuple[dict[str, interp1d], dict]:
-    """Read the PRIMELT1 batch primary magmas and build the T_p -> oxide interpolator.
+_FEO_ACTIVITY_CONST = _x_feo_from_feo_wt(EARTH_MANTLE_FEO) / 10 ** (EARTH_DELTA_IW / 2)
 
-    For each suite sheet, the batch-primary output row (the one whose potential-
-    temperature column is labelled 'TP') gives a primary-magma oxide analysis and its
-    T_p. Iron is combined to total FeO. A per-oxide linear interpolator over T_p is
-    built (linear extrapolation outside the anchor range) and cached module-level so
-    oxide_composition()/mineral_composition() can be called without re-reading the file.
 
-    Returns (interpolators, anchors); also stores them in module globals.
+def feo_from_delta_iw(delta_iw: float) -> float:
+    """Mantle FeO (wt%) implied by a core-formation oxygen fugacity `delta_iw`.
+
+    Inverts the metal-silicate equilibrium Fe + 1/2 O2 = FeO, for which
+    dIW = 2 log10(a_FeO_silicate / a_Fe_metal), with the activity constant calibrated on Earth.
+
+    Because the relation is logarithmic, a one-log-unit step in dIW is roughly a factor of
+    three in FeO: -5 -> 0.26, -4 -> 0.82, -3 -> 2.59, -2 -> 8.05, -1 -> 24.1 wt%.
     """
-    import pandas as pd  # local import: pandas/xlrd only needed to (re)build the interpolator
+    x = _FEO_ACTIVITY_CONST * 10 ** (delta_iw / 2)
+    if not 0.0 < x < 1.0:
+        raise ValueError(f'delta_iw={delta_iw} implies X_FeO={x:.3g}, outside (0, 1)')
+    feo = 100.0 * x * _K_CATIONS / ((1.0 - x) / OXIDE_MOLAR_MASS['FeO'] + x * _K_CATIONS)
+    if feo > 25.0:
+        warnings.warn(
+            f'delta_iw={delta_iw} gives mantle FeO = {feo:.1f} wt%; thermodynamic models are '
+            f'unreliable above ~25 wt% (Guimond et al. 2024, section 3.1.1)', stacklevel=2)
+    return feo
 
-    # Column indices of the PRIMELT output block (0-based); 16 holds T_p.
-    COL = {'SiO2': 1, 'TiO2': 2, 'Al2O3': 3, 'Fe2O3': 5, 'FeO': 6,
-           'MgO': 8, 'CaO': 9, 'Na2O': 10, 'K2O': 11, 'TP': 16}
 
-    def _num(x: object) -> float:
-        try:
-            return float(x) # type: ignore
-        except (TypeError, ValueError):
-            return np.nan
+def delta_iw_from_feo(feo_wt: float) -> float:
+    """Inverse of `feo_from_delta_iw`: core-formation dIW implied by a mantle FeO in wt%."""
+    if not 0.0 < feo_wt < 100.0:
+        raise ValueError('feo_wt must be in (0, 100)')
+    return 2 * np.log10(_x_feo_from_feo_wt(feo_wt) / _FEO_ACTIVITY_CONST)
 
-    T_p_list: list[float] = []
-    oxide_rows: list[dict[str, float]] = []
-    for sheet in PRIMELT_SHEETS:
-        df = pd.read_excel(path, sheet, header=None)
-        # The batch-primary output row is directly below the header whose T_p column
-        # reads exactly 'TP' (as opposed to 'TP_AFM' for the accumulated-fractional fit).
-        hdr = next(r for r in range(df.shape[0]) if str(df.iat[r, COL['TP']]).strip() == 'TP')
-        v = df.iloc[hdr + 1]
-        feot = _num(v[COL['FeO']]) + _FE2O3_TO_FEO * _num(v[COL['Fe2O3']])
-        oxide_rows.append({
-            'SiO2': _num(v[COL['SiO2']]), 'TiO2': _num(v[COL['TiO2']]),
-            'Al2O3': _num(v[COL['Al2O3']]), 'FeOt': feot,
-            'MgO': _num(v[COL['MgO']]), 'CaO': _num(v[COL['CaO']]),
-            'Na2O': _num(v[COL['Na2O']]), 'K2O': _num(v[COL['K2O']]),
-        })
-        T_p_list.append(_num(v[COL['TP']]))
 
-    order = np.argsort(T_p_list)  # interp1d needs ascending x
-    T_p = np.asarray(T_p_list)[order]
-    oxides = {ox: np.asarray([oxide_rows[i][ox] for i in order]) for ox in PIPELINE_OXIDES}
+# Iron-wustite buffer, log10 fO2_IW = A/T + B + C*(P-1)/T with T in K and P in bar
+# (Frost & McCammon 2008 / O'Neill 1987). These coefficients are duplicated verbatim from
+# m-class/outgassing/outgassing_model.fo2_IW so the two modules agree by construction --
+# change them in both places or not at all.
+_IW_A, _IW_B, _IW_C = -27215.0, 6.57, 0.055
 
-    interpolators = {
-        ox: interp1d(T_p, oxides[ox], kind='linear', bounds_error=False, fill_value='extrapolate') # type: ignore
+
+def log10_fo2_iw(T: float, P_bar: float = 1.0) -> float:
+    """log10 of the absolute oxygen fugacity (bar) of the iron-wustite buffer at T (K), P (bar)."""
+    return _IW_A / T + _IW_B + _IW_C * (P_bar - 1.0) / T
+
+
+def delta_iw_to_fo2(delta_iw: float, T: float, P_bar: float = 1.0) -> float:
+    """Absolute oxygen fugacity (bar) for a buffer offset `delta_iw` at T (K), P (bar).
+
+    The buffer position moves ~6 orders of magnitude between 1600 K / 1 bar and 1400 K / 10 GPa
+    while the redox state of the rock is unchanged, which is the whole reason fO2 is quoted as an
+    offset. A dIW is meaningless without the P and T it was evaluated at.
+    """
+    return 10.0 ** (delta_iw + log10_fo2_iw(T, P_bar))
+
+
+def fo2_to_delta_iw(fo2_bar: float, T: float, P_bar: float = 1.0) -> float:
+    """Buffer offset for an absolute oxygen fugacity `fo2_bar` at T (K), P (bar)."""
+    return np.log10(fo2_bar) - log10_fo2_iw(T, P_bar)
+
+
+def melt_delta_iw(delta_iw: float = EARTH_DELTA_IW,
+                  self_oxidation: float = DELTA_IW_SELF_OXIDATION) -> float:
+    """fO2 of a MODERN melt, given the CORE-FORMATION fO2 -- the handoff to the outgassing model.
+
+    These are different quantities and conflating them is the easy mistake here. Core formation
+    fixes how much iron the mantle keeps (Earth: IW-2, FeO 8.05 wt%). The mantle then
+    self-oxidises by Fe disproportionation, raising Fe3+/SigmaFe at constant total Fe until the
+    modern upper mantle sits near FMQ ~ IW+3.5. Volatile speciation in a degassing melt responds
+    to the latter, mantle FeO to the former.
+
+    `self_oxidation` is an Earth anchor (+5.5), not a law -- the true offset grows with mantle
+    pressure. Pass your own if you have a better estimate. The return value is in the same units
+    and sign convention as `outgassing_model.IW_offset`, so it can be handed across unchanged.
+    """
+    return delta_iw + self_oxidation
+
+
+# ---------------------------------------------------------------------------------------------
+# The melt-composition table
+# ---------------------------------------------------------------------------------------------
+
+# Module-level cache built by load_crust_table().
+_INTERPOLATOR: RegularGridInterpolator | None = None
+_TABLE_AXES: dict | None = None
+
+# FeO spans nearly two orders of magnitude across the dIW axis, so it is interpolated in log
+# space; everything else is near-linear in the two axes and is not.
+_LOG_INTERPOLATED = {'FeOt'}
+
+
+def load_crust_table(path: str = CRUST_TABLE) -> tuple[RegularGridInterpolator, dict]:
+    """Read `crust_compositions.csv` and build the (mg_si, delta_iw) -> oxides interpolator.
+
+    The generator writes a full regular grid, so this is a `RegularGridInterpolator` rather than
+    a scattered one. Also returns the axes and the auxiliary columns (T_p, melt fraction,
+    residual assemblage, CaO/Al2O3, warnings) for diagnostics.
+
+    Cached module-level; call again to force a re-read after regenerating the table.
+    """
+    import pandas as pd  # local import: only needed to (re)build the interpolator
+
+    df = pd.read_csv(path, comment='#')
+    mg_si = np.array(sorted(df['mg_si'].unique()))
+    d_iw = np.array(sorted(df['delta_iw'].unique()))
+    if len(df) != len(mg_si) * len(d_iw):
+        raise ValueError(
+            f'{path} is not a complete regular grid: {len(df)} rows for a '
+            f'{len(mg_si)} x {len(d_iw)} grid. Rerun make_crust_compositions.jl -- a partial '
+            f'table means grid points failed, and interpolating across the hole would hide it.')
+
+    df = df.sort_values(['mg_si', 'delta_iw'])
+    shape = (len(mg_si), len(d_iw))
+    values = np.stack([
+        (np.log(df[_TABLE_COLUMN[ox]].to_numpy()) if ox in _LOG_INTERPOLATED
+         else df[_TABLE_COLUMN[ox]].to_numpy()).reshape(shape)
         for ox in PIPELINE_OXIDES
+    ], axis=-1)
+
+    # bounds_error=True on purpose. Extrapolating this table is what section 23.2 of the
+    # development history punished: silently clipped compositions look exactly like an
+    # insensitive model.
+    interpolator = RegularGridInterpolator((mg_si, d_iw), values, method='linear',
+                                           bounds_error=True)
+    axes = {
+        'mg_si': mg_si, 'delta_iw': d_iw,
+        'T_p': df['T_p'].to_numpy().reshape(shape),
+        'melt_fraction': df['melt_fraction'].to_numpy().reshape(shape),
+        'mantle_feo': df['mantle_feo'].to_numpy().reshape(shape),
+        'CaO_Al2O3': df['CaO_Al2O3'].to_numpy().reshape(shape),
+        'residual_phases': df['residual_phases'].to_numpy().reshape(shape),
+        'table': df,
     }
 
-    global _INTERPOLATORS, _ANCHORS
-    _INTERPOLATORS = interpolators
-    _ANCHORS = {'T_p': T_p, 'oxides': oxides, 'suites': [PRIMELT_SHEETS[i] for i in order]}
-    return interpolators, _ANCHORS
+    global _INTERPOLATOR, _TABLE_AXES
+    _INTERPOLATOR, _TABLE_AXES = interpolator, axes
+    return interpolator, axes
 
 
-def oxide_composition(T_p: float, mg_si_ratio: float = MG_SI_REF) -> dict[str, float]:
-    """Interpolated primary-magma oxides (wt%) at potential temperature `T_p` (deg C).
+def oxide_composition(mantle_mg_si: float = EARTH_MANTLE_MG_SI,
+                      delta_iw: float = EARTH_DELTA_IW) -> dict[str, float]:
+    """Primary-melt oxides (wt%) for a mantle of molar Mg/Si `mantle_mg_si` at `delta_iw`.
 
-    `mg_si_ratio` is the planet's mantle molar Mg/Si (Earth reference = MG_SI_REF = 1.0).
-    A higher Mg/Si source melts to a more silica-poor crust, so the melt SiO2 is scaled
-    by MG_SI_REF / mg_si_ratio (first-order silica-saturation proxy) before renormalising
-    to 100 wt%. mg_si_ratio = MG_SI_REF leaves the composition unchanged. The overall
-    renormalisation does not affect the CIPW norm (which works on ratios) — only the
-    SiO2 rescaling changes the resulting mineralogy.
+    Bilinear interpolation of the MAGEMin table. Iron is returned as total FeO ('FeOt'), which is
+    what the norm consumes. Raises if either axis is off the table -- see load_crust_table.
     """
-    if _INTERPOLATORS is None:
-        import_primelt_spreadsheet()
+    if _INTERPOLATOR is None:
+        load_crust_table()
 
-    T_p_min, T_p_max = float(_ANCHORS['T_p'].min()), float(_ANCHORS['T_p'].max()) # type: ignore
-    # if not (T_p_min <= T_p <= T_p_max):
-        # warnings.warn(f'T_p={T_p} deg C is outside the PRIMELT anchor range ' f'[{T_p_min:.0f}, {T_p_max:.0f}]; extrapolating.', stacklevel=2)
-
-    oxides = {ox: max(float(_INTERPOLATORS[ox](T_p)), 0.0) for ox in PIPELINE_OXIDES} # type: ignore
-
-    if mg_si_ratio <= 0:
-        raise ValueError('mg_si_ratio must be positive')
-    oxides['SiO2'] *= MG_SI_REF / mg_si_ratio
+    values = _INTERPOLATOR([[mantle_mg_si, delta_iw]])[0]  # type: ignore[misc]
+    oxides = {}
+    for ox, v in zip(PIPELINE_OXIDES, values):
+        oxides[ox] = float(np.exp(v)) if ox in _LOG_INTERPOLATED else max(float(v), 0.0)
 
     total = sum(oxides.values())
     return {ox: v / total * 100.0 for ox, v in oxides.items()}
 
 
-def mineral_composition(T_p: float, mg_si_ratio: float = MG_SI_REF, **cipw_kwargs) -> dict[str, float]:
-    """Full pipeline: T_p (+ mantle Mg/Si) -> weight-fraction crust mineral dict.
+@functools.lru_cache(maxsize=512)
+def _mineral_composition_cached(mantle_mg_si: float, delta_iw: float,
+                                cipw_items: tuple) -> tuple:
+    """Cached inner call. pyrolite's CIPW costs ~1.6 s against 0.03 ms for a hand-rolled norm, and
+    a sweep holds the composition fixed while varying instellation/outgassing/crust production --
+    so without this every run in the grid would pay the full cost again for an identical answer.
 
-    Interpolates the primary-magma oxides for `T_p`, applies the `mg_si_ratio`
-    adjustment, and runs the CIPW norm. Extra keyword arguments (emit_quartz,
-    kfeldspar, verbose) pass through to cipw_norm. The returned dict is a valid
-    `crust_composition` for get_weathering_flux / get_b_eq.
+    Every input that changes the assemblage MUST arrive through `cipw_items` so it is part of the
+    cache key. A module-level flag read inside `cipw_norm` would not be, and flipping it would
+    silently return the previously-cached assemblage."""
+    oxides = oxide_composition(mantle_mg_si, delta_iw)
+    return tuple(cipw_norm(oxides, **dict(cipw_items)).items())
+
+
+def mineral_composition(mantle_mg_si: float = EARTH_MANTLE_MG_SI,
+                        delta_iw: float = EARTH_DELTA_IW, **cipw_kwargs) -> dict[str, float]:
+    """Full pipeline: (mantle Mg/Si, core-formation dIW) -> weight-fraction crust mineral dict.
+
+    Extra keyword arguments (emit_quartz, kfeldspar, verbose) pass through to cipw_norm. The
+    returned dict is a valid `crust_composition` for get_weathering_flux / get_b_eq.
+
+    `emit_quartz` defaults to True here, unlike in cipw_norm itself: below Mg/Si ~0.8 the melts
+    are genuinely silica-oversaturated and discarding the excess is neither mass-conservative nor
+    honest -- it relabels a rhyolite as a basalt. Quartz is in `primary_minerals`, so it dissolves
+    only and cannot act as a low-temperature silica buffer.
     """
-    oxides = oxide_composition(T_p, mg_si_ratio=mg_si_ratio)
-    return cipw_norm(oxides, **cipw_kwargs)
+    cipw_kwargs.setdefault('emit_quartz', True)
+    return dict(_mineral_composition_cached(float(mantle_mg_si), float(delta_iw),
+                                            tuple(sorted(cipw_kwargs.items()))))
 
 
-def cipw_norm(oxides: dict[str, float], emit_quartz: bool = False, kfeldspar: bool = False,
+
+# ---------------------------------------------------------------------------------------------
+# CIPW norm — pyrolite, with corrections for the phases the database cannot express
+# ---------------------------------------------------------------------------------------------
+
+# Oxides the database's phase set can express. Everything else (TiO2, K2O, MnO, P2O5, Cr2O3) is
+# removed from the input and the remainder renormalised, BEFORE the norm runs. Removing them
+# afterwards does not work: standard CIPW allocates Fe to magnetite and ilmenite and K to
+# orthoclase/leucite ahead of the ferromagnesian phases, so deleting those products strands their
+# cations and leaves the silica balance — which is what sets the olivine/pyroxene split — wrong.
+_NORM_OXIDES = ['SiO2', 'Al2O3', 'FeO', 'MgO', 'CaO', 'Na2O']
+
+# pyrolite applies a ferric-iron correction by DEFAULT, and `Fe_correction=None` does not disable
+# it (normative.py: `if Fe_correction is None: Fe_correction = "LeMaitre"`). The default assigns
+# Fe2O3/FeO from a TAS rock-type classification (_MiddlemostTASRatios, ratios 0.1-0.5), which
+# would invent ~3.6 wt% normative magnetite from an all-ferrous melt and silently contradict the
+# dIW axis. The correction is skipped only where BOTH FeO and Fe2O3 are > 0, so Fe2O3 must be a
+# tiny POSITIVE number rather than zero. This is undocumented and version-fragile: the guard in
+# `cipw_norm` fails loudly if it ever stops working.
+_FERRIC_SENTINEL = 1e-9
+
+# pyrolite endmembers that map straight onto a database phase.
+_PYROLITE_DIRECT = {
+    'quartz': 'Quartz', 'albite': 'Albite', 'nepheline': 'Nepheline', 'anorthite': 'Anorthite',
+    'clinoenstatite': 'Diopside',      # CaO MgO (SiO2)2 -- diopside proper, despite the name
+    'enstatite': 'Enstatite',          # MgO SiO2
+    'forsterite': 'Forsterite', 'fayalite': 'Fayalite',
+    # Fe endmembers of the pyroxenes. Both are in the database (grafted from llnl.dat by
+    # make_database.py) with a measured Fe-cpx proxy rate (mineral_rates.augite_k), so the norm's
+    # own iron assignment is kept rather than exchanged into olivine.
+    'clinoferrosilite': 'Hedenbergite',   # CaO FeO (SiO2)2
+    'ferrosilite': 'Ferrosilite',         # FeO SiO2
+}
+
+# Endmembers with no database counterpart, converted by the reactions in `cipw_norm`.
+_PYROLITE_CORRECTED = {
+    'dicalcium silicate': 172.239,     # Ca2SiO4          -- larnite
+}
+# Aggregate rows pyrolite also returns; counting them would double-count their endmembers.
+_PYROLITE_GROUPS = {'olivine', 'hypersthene', 'diopside'}
+
+_M_SIO2 = 60.084
+_CIPW_IMPL = None
+
+
+def _pyrolite_cipw():
+    """Import pyrolite's CIPW norm, neutralising its matplotlib side effect. Cached."""
+    global _CIPW_IMPL
+    if _CIPW_IMPL is None:
+        import matplotlib
+        from pyrolite.mineral.normative import CIPW_norm
+        # pyrolite writes pyrolite.mplstyle into the matplotlib config dir on import and applies
+        # it globally; its `legend.bbox_to_anchor` line is not a valid rcParam, so every
+        # matplotlib import in every sweep worker prints a "Bad key" warning. This cost real time
+        # twice (development history sections 5 and 23.8). Strip the line: pyrolite only writes
+        # the file when it is ABSENT, so editing it is durable where deleting it is not.
+        style = os.path.join(matplotlib.get_configdir(), 'stylelib', 'pyrolite.mplstyle')
+        try:
+            if os.path.exists(style):
+                with open(style) as fh:
+                    lines = fh.readlines()
+                kept = [ln for ln in lines if 'bbox_to_anchor' not in ln]
+                if len(kept) != len(lines):
+                    with open(style, 'w') as fh:
+                        fh.writelines(kept)
+        except OSError:
+            pass  # cosmetic only -- never let this break the norm
+        _CIPW_IMPL = CIPW_norm
+    return _CIPW_IMPL
+
+
+def cipw_norm(oxides: dict[str, float], emit_quartz: bool = True, kfeldspar: bool = False,
+              verbose: bool = False) -> dict[str, float]:
+    """Convert a melt major-element analysis into a crust mineral composition.
+
+    The norm itself is pyrolite's implementation (Williams et al. 2020) of the CIPW norm; this
+    function restricts the input to the oxides the model's PHREEQC database can express, and then
+    converts the one normative phase that has no counterpart in that database. Both conversions
+    are balanced and use only database-available phases:
+
+        larnite   + 2 diopside -> 2 akermanite + SiO2          (releases silica)
+        nepheline + 2 SiO2     -> albite                       (reabsorbs it)
+
+    Larnite is the textbook desilication product and is rejected as a cement clinker phase
+    dissolving ~10^5x faster than diopside — see mineral_rates.akermanite_k. Routing it through
+    diopside rather than through enstatite matters: none of the silica-deficient compositions
+    carries free enstatite, and the only other balanced route produces wollastonite, which
+    floods Ca.
+
+    Normative hedenbergite and ferrosilite are emitted directly (see `_PYROLITE_DIRECT`). Earlier
+    versions exchanged their iron into fayalite, because the database had no Fe-pyroxene; both
+    endmembers are now present with a measured Fe-cpx proxy rate, so the norm's own iron
+    assignment stands. That exchange overstated iron delivery — most severely below Mg/Si ~0.8,
+    where the melts carry no normative olivine and every ferrous atom ended up in fayalite, the
+    fastest-dissolving host in the database.
+
+    `emit_quartz` defaults True: below Mg/Si ~0.8 the melts are genuinely silica-oversaturated and
+    discarding the excess is neither mass-conservative nor honest. `kfeldspar` is accepted for
+    signature compatibility and must be False -- K is not a tracked ion and K2O is removed from the
+    input before the norm runs.
+
+    Returns weight fractions summing to 1, valid as a `crust_composition`.
+    """
+    import pandas as pd
+
+    if kfeldspar:
+        raise ValueError('kfeldspar=True is not supported: K2O is stripped before the norm runs')
+
+    g = lambda k: float(oxides.get(k, 0.0))
+    feo = g('FeO') + g('FeOt') + _FE2O3_TO_FEO * g('Fe2O3')
+    kept = {'SiO2': g('SiO2'), 'Al2O3': g('Al2O3'), 'FeO': feo,
+            'MgO': g('MgO'), 'CaO': g('CaO'), 'Na2O': g('Na2O')}
+    total = sum(kept.values())
+    if total <= 0:
+        raise ValueError('no expressible oxides in the input; check the analysis')
+    row = {k: v / total * 100.0 for k, v in kept.items()}
+    row.update(TiO2=0.0, Fe2O3=_FERRIC_SENTINEL, MnO=0.0, K2O=0.0, P2O5=0.0, Cr2O3=0.0)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        out = _pyrolite_cipw()(pd.DataFrame([row]).astype('float64'), adjust_all_Fe=False)
+    wt = {c: float(out[c].iloc[0]) for c in out.columns}
+
+    # Guard the two assumptions this path rests on: that stripping the oxides suppressed the
+    # phases we cannot express, and that the ferric sentinel suppressed the Fe correction.
+    unexpected = {c: v for c, v in wt.items()
+                  if v > 1e-3 and c not in _PYROLITE_DIRECT and c not in _PYROLITE_CORRECTED
+                  and c not in _PYROLITE_GROUPS}
+    if unexpected:
+        raise RuntimeError(
+            f'pyrolite returned phases this pipeline cannot express: '
+            f'{ {k: round(v, 3) for k, v in unexpected.items()} }. If magnetite is among them the '
+            f'ferric sentinel has stopped suppressing the LeMaitre/TAS Fe correction -- check '
+            f'pyrolite\'s normative.py before trusting any crust composition.')
+
+    mol = {name: wt[c] / MINERAL_MOLAR_MASS[name] for c, name in _PYROLITE_DIRECT.items()
+           if wt.get(c, 0.0) > 0}
+    lar = wt.get('dicalcium silicate', 0.0) / _PYROLITE_CORRECTED['dicalcium silicate']
+    get = lambda m: mol.get(m, 0.0)
+    warn_msgs: list[str] = []
+    free_silica = 0.0
+
+    # 1. Larnite -> akermanite, drawing Mg and Si from diopside and releasing silica.
+    if lar > 1e-12:
+        if 2 * lar > get('Diopside') + 1e-12:
+            raise ValueError(f'{2*lar:.4g} mol diopside needed to convert normative larnite but '
+                             f'only {get("Diopside"):.4g} available')
+        mol['Diopside'] = get('Diopside') - 2 * lar
+        mol['Akermanite'] = get('Akermanite') + 2 * lar
+        free_silica += lar
+
+    # 2. Reabsorb that silica by reversing desilication, then keep any remainder as quartz.
+    if free_silica > 1e-12 and get('Nepheline') > 1e-12:
+        conv = min(free_silica / 2.0, get('Nepheline'))
+        mol['Nepheline'] = get('Nepheline') - conv
+        mol['Albite'] = get('Albite') + conv
+        free_silica -= 2 * conv
+    if free_silica > 1e-12:
+        if emit_quartz:
+            mol['Quartz'] = get('Quartz') + free_silica
+        else:
+            warn_msgs.append(f'{free_silica:.3g} mol SiO2 released by the larnite conversion was '
+                             f'dropped (set emit_quartz=True to keep it)')
+
+    if verbose:
+        print(f'  pyrolite: ' + ', '.join(f'{c} {v:.2f}' for c, v in sorted(wt.items())
+                                          if v > 1e-3 and c not in _PYROLITE_GROUPS))
+        print(f'  corrections: hedenbergite {hd:.4g}, ferrosilite {fs:.4g}, larnite {lar:.4g} mol')
+    for m in warn_msgs:
+        warnings.warn(m, stacklevel=2)
+
+    weights = {m: n * MINERAL_MOLAR_MASS[m] for m, n in mol.items() if n > 1e-12}
+    tot = sum(weights.values())
+    if tot <= 0:
+        raise ValueError('CIPW norm produced no minerals; check the oxide input')
+    return {m: w / tot for m, w in weights.items()}
+
+
+def _cipw_norm_native(oxides: dict[str, float], emit_quartz: bool = False, kfeldspar: bool = False,
               verbose: bool = False) -> dict[str, float]:
     """Convert a bulk-rock major-element analysis into a crust mineral composition.
 
@@ -293,11 +629,32 @@ def cipw_norm(oxides: dict[str, float], emit_quartz: bool = False, kfeldspar: bo
             moles.pop('Albite')
         take('Nepheline', converted)
         Si += 2 * converted
+    # 5c. Still deficient -> desilicate Diopside to Akermanite, the melilite step.
+    # 2 CaMgSi2O6 -> Ca2MgSi2O7 + 1/2 Mg2SiO4 + 3/2 SiO2 releases 0.75 mol Si per mol diopside
+    # converted. Textbook CIPW would use larnite (Ca2SiO4) here, and Kinec_v3 has larnite
+    # complete (thermodynamics AND kinetics) -- it is rejected deliberately. Larnite dissolves
+    # 606x faster than Wollastonite and ~1e5x faster than Diopside, so at the 5-8 wt% this
+    # cascade produces it would supply the entire dissolution flux; and it is a cement clinker
+    # phase, rare in nature, whereas these melts are melilititic (section 24.4 via Medard et al.
+    # 2004) and melilitites crystallise MELILITE. Akermanite is the phase that is actually there.
+    # Its rate is a documented proxy -- see mineral_rates.akermanite_k.
+    if Si < -1e-12 and moles.get('Diopside', 0.0) > 1e-12:
+        converted = min(-Si / 0.75, moles['Diopside'])
+        moles['Diopside'] -= converted
+        if moles['Diopside'] <= 1e-12:
+            moles.pop('Diopside')
+        take('Akermanite', converted / 2.0)
+        take('Forsterite', converted / 4.0)
+        Si += 0.75 * converted
     if Si < -1e-12:
-        # Nothing left to desilicate: real CIPW would go on to leucite (no K here) and then
-        # larnite (not in the database), so the composition is beyond what this norm can express.
-        warn_msgs.append(f'silica-deficient: {-Si:.3g} mol SiO2 deficit remains after '
-                         f'albite->nepheline; composition is beyond the norm\'s range')
+        # Nothing left to desilicate. Proceeding would assign more SiO2 to minerals than the rock
+        # contains -- a crust that violates mass balance by a few percent of its silica, which is
+        # exactly the silent failure section 23.2 was written about. Raise rather than warn: a
+        # composition this far outside the phase set is not a crust, and the caller must know.
+        raise ValueError(
+            f'silica-deficient: {-Si:.3g} mol SiO2 deficit remains after the albite->nepheline '
+            f'and diopside->akermanite cascades. This composition is beyond what the database\'s '
+            f'phase set can express; it is not a mass-conservative crust.')
     # 6. Excess silica -> Quartz (optional)
     if Si > 1e-9:
         if emit_quartz:

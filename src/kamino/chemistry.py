@@ -5,12 +5,20 @@ from kamino.mineral_rates import K_FUNCTIONS
 from kamino.mineral_info import (
     MINERAL_MOLAR_MASS,
     carbonate_minerals,
+    clay_minerals,
+    evaporite_minerals,
     hydrothermal_mineral_string,
     ht_secondary_minerals,
     primary_minerals,
+    reverse_weathering_minerals,
+    silica_minerals,
 )
 
-OXYGEN_GAS_PHASE = 'Oxg(g)'
+# The SIT/ThermoChimie base names gases conventionally (O2, H2, N2, CH4); the former Pitzer
+# runtime database used ThermoChimie's alternative spellings (Oxg, Hdg, Ntg, Mtg). This is the
+# same class of trap as the silica naming in section 11, and it is silent: an absent gas phase
+# makes PHREEQC reject the whole SELECTED_OUTPUT block rather than warn.
+OXYGEN_GAS_PHASE = 'O2(g)'
 
 _NON_CONVERGENCE_WARNINGS = (
     'Maximum iterations exceeded',
@@ -30,7 +38,25 @@ class ChemistryError(Exception):
     """PHREEQC failed to load a database or to converge on a solution."""
 
 _data_dir = os.path.join(os.path.dirname(__file__), 'data')
-database_path = os.path.join(_data_dir, 'hybrid_ocean.dat')
+# Runtime LT database. Switched from hybrid_ocean.dat (Pitzer) to lt_weathering_sit.dat (SIT)
+# -- see section 25.12/25.14 of the development history. Two reasons: hybrid_ocean.dat is not
+# reproducible (its generator, make_hybrid.py, is not in the repository), and pitzer.dat carries
+# NO aluminium parameterisation at all, which matters because the feldspar/nepheline/kaolinite
+# equilibria this model turns on are written against Al+3. Every ocean state the model reaches
+# sits at I = 0.7-2.8 mol/kgw, inside SIT's validity.
+# Runtime LT database, built by data/make_database.py and therefore reproducible from the
+# databases bundled with the `phreeqc` package -- unlike the previous hybrid_ocean.dat, whose
+# generator (make_hybrid.py) was never committed. See development history 25.12/25.14.
+#
+# The Pitzer build is the default: it is ~8x faster per solve than the SIT build, and the two
+# agree on the alkalinity weathering flux to within 10-20% and on the feedback strength
+# d ln(F)/dT to within ~15%, because the model sits in the kinetically-limited regime where
+# F -> A_r*k and the equilibrium concentrations the activity model sets divide out.
+#
+# Override to compare, without editing code:
+#   KAMINO_LT_DATABASE=src/kamino/data/lt_weathering_sit.dat python ...
+database_path = os.environ.get(
+    'KAMINO_LT_DATABASE', os.path.join(_data_dir, 'lt_weathering_pitzer.dat'))
 _hydrothermal_path = os.path.join(_data_dir, 'hydrothermal.dat')
 
 elements = np.array([
@@ -91,6 +117,7 @@ species_to_element = {
     'Al+3': 'Al',
     'SiO2': 'Si',
     'H4SiO4': 'Si',
+    'H4(SiO4)': 'Si',   # ThermoChimie/SIT spelling of the same species
     'HCO3-': 'C',
     'CO3-2': 'C',
     #'SO4-2': 'S',
@@ -128,13 +155,19 @@ IGNORED_SPECIES = {
 
 _COEFF_RE = re.compile(r'\d+(?:\.\d+)?(?:[eE][+-]?\d+)?$')
 
+# A coefficient fused to the species it multiplies, with no separating space: Thermoddem writes
+# '2.000H+' and '1.000H4SiO4' where llnl writes '2 H+'. PHREEQC accepts both. Anchored at the
+# start and requiring a following letter or '(' so it cannot bite a bare number or a species
+# whose name legitimately begins with a digit.
+_FUSED_RE = re.compile(r'^(\d+(?:\.\d+)?)(?=[A-Za-z(])(.+)$')
+
 def _iter_terms(side: str):
     """Yield (coeff, species) for one side of a reaction.
 
-    Handles '2 X', 'X', and negative coefficients written as '- X' (which appear in
-    llnl.dat-derived reactions, e.g. 'CaSiO3 + 2 H+ = Ca+2 - H2O + H4SiO4').
-    Species names may themselves end in '+'/'-' (HCO3-, Ca+2); only a bare '+'/'-'
-    token is an operator.
+    Handles '2 X', 'X', negative coefficients written as '- X' (which appear in llnl.dat-derived
+    reactions, e.g. 'CaSiO3 + 2 H+ = Ca+2 - H2O + H4SiO4'), and the fused Thermoddem form
+    '2.000H+' (see _FUSED_RE). Species names may themselves end in '+'/'-' (HCO3-, Ca+2); only a
+    bare '+'/'-' token is an operator.
     """
     sign, coeff = 1.0, None
     for tok in side.split():
@@ -145,15 +178,40 @@ def _iter_terms(side: str):
         elif _COEFF_RE.match(tok):
             coeff = float(tok)
         else:
+            fused = _FUSED_RE.match(tok)
+            if fused:
+                coeff, tok = float(fused.group(1)), fused.group(2)
             yield sign * (1.0 if coeff is None else coeff), tok
             sign, coeff = 1.0, None
 
-def parse_stoichiometry(filepath: str) -> dict[str, npt.NDArray[np.float64]]:
+def _db_phase_names(filepath: str) -> set[str]:
+    """Every phase name in a database's PHASES section, gases included."""
+    names, in_phases = set(), False
+    with open(filepath) as f:
+        for raw in f:
+            line = raw.split('#')[0].strip()
+            if not line:
+                continue
+            if line == 'PHASES':
+                in_phases = True
+            elif line in ('RATES', 'SOLUTION_SPECIES', 'END', 'PITZER', 'SIT'):
+                in_phases = False
+            elif in_phases and '=' not in line and not line.startswith('-') and not raw[0].isspace():
+                names.add(line.split()[0])
+    return names
+
+
+def parse_stoichiometry(filepath: str, keep: set[str] | None = None) -> dict[str, npt.NDArray[np.float64]]:
     """Parse mineral reaction stoichiometry from a PHREEQC database PHASES section.
 
     Works with both reaction formats found in PHREEQC databases:
       - Indented reactions (ocean_chem.dat / SUPCRT92 style)
       - Unindented reactions (hydrothermal.dat / SupPHREEQC bl-1kb.dat style)
+
+    `keep`, if given, restricts parsing to those phase names. The SIT database is the full
+    ThermoChimie set (~1772 phases spanning actinides, ore metals and organics); without a filter
+    the unmapped-species check below would demand a species map for chemistry this model has no
+    business knowing about, and PHREEQC would be asked for 1772 saturation indices per solve.
 
     Raises
     ------
@@ -201,6 +259,9 @@ def parse_stoichiometry(filepath: str) -> dict[str, npt.NDArray[np.float64]]:
             if '=' not in line and not line.startswith('-') and not raw_line[0].isspace():
                 current_mineral = line.split()[0]
             elif current_mineral and '=' in line and 'log_k' not in line and 'delta_H' not in line:
+                if keep is not None and current_mineral not in keep:
+                    current_mineral = None      # not a phase this model uses; skip its reaction
+                    continue
                 stoich: dict[str, float] = {str(el): 0.0 for el in elements}
                 lhs_str, rhs_str = line.split('=', 1)
                 parse_side(lhs_str, stoich, multiplier=-1.0, is_lhs=True)
@@ -218,7 +279,13 @@ def parse_stoichiometry(filepath: str) -> dict[str, npt.NDArray[np.float64]]:
 
     return result
 
-_stoich_LT = parse_stoichiometry(database_path)
+# Phases the model can use as a crust component or precipitating sink. Everything else in the
+# SIT database is irrelevant here and is not parsed -- see parse_stoichiometry's `keep`.
+_MODEL_MINERALS = (set(MINERAL_MOLAR_MASS) | set(carbonate_minerals) | set(clay_minerals)
+                   | set(silica_minerals) | set(reverse_weathering_minerals)
+                   | set(evaporite_minerals) | set(ht_secondary_minerals))
+
+_stoich_LT = parse_stoichiometry(database_path, keep=_MODEL_MINERALS)
 _stoich_HT = parse_stoichiometry(_hydrothermal_path)
 
 # Some minerals appear in BOTH databases with reactions written on different bases
@@ -244,8 +311,10 @@ STOICHIOMETRY_SOURCE: dict[str, str] = {
 
 stoichiometry: dict[str, npt.NDArray[np.float64]] = {**_stoich_LT, **_stoich_HT}
 
+# Only phases the model actually uses need a declared source; the SIT database shares hundreds
+# of irrelevant names with hydrothermal.dat and flagging those would be noise.
 _undeclared = sorted(
-    m for m in set(_stoich_LT) & set(_stoich_HT)
+    m for m in set(_stoich_LT) & set(_stoich_HT) & _MODEL_MINERALS
     if not np.array_equal(_stoich_LT[m], _stoich_HT[m]) and m not in STOICHIOMETRY_SOURCE
 )
 if _undeclared:
@@ -258,9 +327,44 @@ if _undeclared:
 for _mineral, _src in STOICHIOMETRY_SOURCE.items():
     stoichiometry[_mineral] = (_stoich_LT if _src == 'LT' else _stoich_HT)[_mineral]
 
-# Minerals PHREEQC can report saturation indices for, per database.
-minerals = list(_stoich_LT)
-available_mineral_string = ' '.join(minerals)
+# Minerals PHREEQC can report saturation indices for.
+#
+# The SIT database carries ~1772 phases, almost all irrelevant here (actinides, cements,
+# zeolites, ore minerals). Requesting saturation indices for all of them would make PHREEQC
+# compute 1772 SIs on every single solve. Restrict the request to the phases the model can
+# actually use as a crust component or a precipitating sink -- section 19 flagged this list as
+# unfiltered back when it was 84 phases; at 1772 it stops being cosmetic.
+# Gas phases whose saturation indices the code reads back (get_ocean_state, and
+# get_gas_partial_pressure for any gas the caller asks for). These are NOT minerals and are not
+# in _MODEL_MINERALS, but they must still be requested or the SI lookup KeyErrors.
+# Gas saturation indices to request. CO2 is the only one read back in the default path
+# (get_ocean_state, get_P_CO2); the others are requested when present so the fO2-buffered path
+# and caller-supplied gas lists resolve. Which names exist is database-dependent -- SIT uses the
+# conventional O2/H2/N2/CH4, the Pitzer database uses ThermoChimie's Oxg/Hdg/Ntg/Mtg -- so the
+# list is intersected with what the loaded database actually defines. Requesting an absent phase
+# makes PHREEQC reject the whole SELECTED_OUTPUT block.
+_SI_GAS_CANDIDATES = ['CO2(g)', 'H2O(g)', 'O2(g)', 'Oxg(g)']
+_REQUIRED_GASES = ['CO2(g)']
+
+minerals = [m for m in _stoich_LT if m in _MODEL_MINERALS]
+# Hedenbergite and Ferrosilite were exempted here while they sat behind an off-by-default flag.
+# They are now always emitted by the CIPW norm, so a database lacking them would silently drop the
+# crust's iron out of the reactive assemblage instead of failing -- they must be required.
+_missing = sorted(_MODEL_MINERALS - set(_stoich_LT) - set(_stoich_HT))
+if _missing:
+    raise ChemistryError(
+        f"Minerals the model references are absent from the LT database {database_path}: "
+        f"{_missing}. Add them to make_database.ADDED_PHASES and regenerate.")
+_db_phases = _db_phase_names(database_path)
+_SI_GASES = [g for g in _SI_GAS_CANDIDATES if g in _db_phases]
+_missing_gases = [g for g in _REQUIRED_GASES if g not in _db_phases]
+if _missing_gases:
+    raise ChemistryError(
+        f"Gas phases whose saturation indices the model reads back are absent from "
+        f"{database_path}: {_missing_gases}.")
+# OXYGEN_GAS_PHASE is only used when fO2 > 0; point it at whichever name this database uses.
+OXYGEN_GAS_PHASE = next((g for g in ('O2(g)', 'Oxg(g)') if g in _db_phases), OXYGEN_GAS_PHASE)
+available_mineral_string = ' '.join(minerals + _SI_GASES)
 
 def _load_database(path: str) -> Phreeqc:
     """Load a PHREEQC database, raising if it fails rather than continuing blind."""

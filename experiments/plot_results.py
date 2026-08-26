@@ -23,11 +23,11 @@ from kamino.constants import (
     A_SEAFLOOR_EARTH as A_seafloor,
 )
 from kamino.constants import (G, EARTH_CRUST_PRODUCTION_RATE_PER_AREA, YR, SOLAR_CONSTANT,
-                              STEFAN_BOLTZMANN, EARTH_MANTLE_POTENTIAL_TEMPERATURE)
+                              STEFAN_BOLTZMANN, EARTH_MANTLE_MG_SI, EARTH_DELTA_IW)
 from kamino.chemistry import alk_idx, elements
 from kamino.mineral_info import (carbonate_minerals, clay_minerals, silica_minerals,
                                  reverse_weathering_minerals, evaporite_minerals)
-from kamino.crust_composition import mineral_composition, MG_SI_REF
+from kamino.crust_composition import mineral_composition
 from kamino.climate.analytic import get_T_surface_analytic
 from kamino.planet import OCEAN_ALBEDO, LAND_ALBEDO, KD_MG_HT, K_NA_CONT_REMOVAL
 from kamino.weathering import ALPHA_REF
@@ -83,10 +83,11 @@ _ELEMENT_MASSES = {'C': 61.0, 'Si': 60.1, 'Al': 27.0, 'Fe': 55.8, 'Ca': 40.1,
 _SAL_INDICES = [2 + i for i, e in enumerate(elements) if e in _ELEMENT_MASSES]
 _SAL_MASSES  = [_ELEMENT_MASSES[e] for e in elements if e in _ELEMENT_MASSES]
 
-# Reference crust: the model now derives the mineralogy from the mantle potential
-# temperature and Mg/Si (CIPW norm) instead of a named composition like 'basalt_49'.
-REF_TP    = float(EARTH_MANTLE_POTENTIAL_TEMPERATURE)
-REF_MG_SI = float(MG_SI_REF)
+# Reference crust: the model derives the mineralogy from the two composition axes -- mantle
+# molar Mg/Si and the core-formation oxygen fugacity dIW -- instead of a named composition like
+# 'basalt_49', or the (T_p, mg_si_ratio) pair that preceded them.
+REF_MG_SI = float(EARTH_MANTLE_MG_SI)
+REF_DIW   = float(EARTH_DELTA_IW)
 
 COMP_COLORS = {
     'komatiite_42': '#7b2d8b',
@@ -161,18 +162,29 @@ def _recompute_T(instellation, P_CO2_bar, land_fraction=0.0):
 
 
 @functools.lru_cache(maxsize=None)
-def _crust_composition(T_p, mg_si_ratio):
-    """CIPW-norm crust mineralogy for a mantle potential temperature and Mg/Si (cached)."""
-    return mineral_composition(T_p, mg_si_ratio)
+def _crust_composition(mantle_mg_si, delta_iw):
+    """CIPW-norm crust mineralogy for a mantle Mg/Si and core-formation dIW (cached)."""
+    return mineral_composition(mantle_mg_si, delta_iw)
 
 
 def _crust_composition_of(d):
-    """Crust mineralogy for a run, from the stored composition (old sweeps) or T_p/Mg-Si."""
+    """Crust mineralogy for a run: the stored composition if present, else the two axes.
+
+    Runs predating the MAGEMin table stored `mantle_potential_temperature` / `mg_si_ratio`, which
+    the current pipeline cannot reproduce -- T_p is no longer an input and `mg_si_ratio` was a
+    multiplier on 1.23, not a Mg/Si. Those runs are only plottable via their stored
+    `crust_composition`; without one there is nothing honest to draw, so say so rather than
+    silently substituting Earth.
+    """
     stored = d.get('crust_composition')
     if stored:
         return stored
-    return _crust_composition(float(d.get('mantle_potential_temperature', REF_TP)),
-                              float(d.get('mg_si_ratio', REF_MG_SI)))
+    if 'mantle_potential_temperature' in d and 'mantle_mg_si' not in d:
+        raise KeyError(
+            'legacy run (mantle_potential_temperature) with no stored crust_composition: its '
+            'mineralogy cannot be reconstructed by the current pipeline')
+    return _crust_composition(float(d.get('mantle_mg_si', REF_MG_SI)),
+                              float(d.get('delta_iw', REF_DIW)))
 
 
 def _pore_conditions(d):
@@ -375,8 +387,8 @@ def load_data(output_path):
             'crust_carbonate':    float(d.get('crust_carbonate_content', 0.0)),
             'ocean_depth':        float(d['ocean_depth']),
             'comp_name':          comp_name,
-            'T_p':                float(d.get('mantle_potential_temperature', REF_TP)),
-            'mg_si':              float(d.get('mg_si_ratio', REF_MG_SI)),
+            'mg_si':              float(d.get('mantle_mg_si', REF_MG_SI)),
+            'delta_iw':           float(d.get('delta_iw', REF_DIW)),
             'f_HT':               float(d.get('f_HT', 0.0)),
             # Chemistry constants are swept axes (parameter_sweep.py). Runs differing only in
             # these must not be pooled into one line -- see _ref_chem.
@@ -406,11 +418,11 @@ def _ref_crust(df):
     """Mask for the reference crust.
 
     Old sweeps tagged a named composition in the run name (`_comp_basalt_49`); the
-    current model derives the mineralogy from T_p and Mg/Si, so select Earth values.
+    current model derives the mineralogy from mantle Mg/Si and dIW, so select Earth values.
     """
     named = df['comp_name'].astype(bool)
     legacy_ref  = named & (df['comp_name'] == 'basalt_49')
-    derived_ref = (~named) & np.isclose(df['T_p'], REF_TP) & np.isclose(df['mg_si'], REF_MG_SI)
+    derived_ref = (~named) & np.isclose(df['mg_si'], REF_MG_SI) & np.isclose(df['delta_iw'], REF_DIW)
     return legacy_ref | derived_ref
 
 
@@ -899,11 +911,11 @@ def plot_crust_composition(df, output_path, split_panels=False, show_markers=Fal
     ].copy()
 
     # The crust sweep fixes (outgassing, crust) at their sweep defaults and varies the crust
-    # knob (T_p / Mg-Si / named composition). That default drifted over time (outgassing 1.0 ->
+    # knob (Mg-Si / dIW / named composition). That default drifted over time (outgassing 1.0 ->
     # 0.1), so don't hardcode it: pick the (outgassing, crust) pair that spans the most distinct
-    # crust values. crust_knob is whichever of comp_name/T_p/mg_si actually varies.
+    # crust values. crust_knob is whichever of comp_name/mg_si/delta_iw actually varies.
     def _knobcol(g):
-        for k in ['comp_name', 'T_p', 'mg_si']:
+        for k in ['comp_name', 'mg_si', 'delta_iw']:
             col = g[k].astype(str) if k == 'comp_name' else g[k]
             if col.nunique() > 1:
                 return k
@@ -923,12 +935,12 @@ def plot_crust_composition(df, output_path, split_panels=False, show_markers=Fal
         key, label, fmt = 'comp_name', 'Crust composition', lambda v: COMP_LABELS.get(v, v)
         values = [c for c in ['komatiite_42', 'komatiite_44', 'basalt_47', 'basalt_49', 'basalt_51']
                   if c in set(subset['comp_name'])]
-    elif subset['T_p'].nunique() > 1:
-        key, label, fmt = 'T_p', 'Mantle potential temperature (°C)', lambda v: f'{v:g}'
-        values = sorted(subset['T_p'].unique())
     elif subset['mg_si'].nunique() > 1:
         key, label, fmt = 'mg_si', 'Mantle Mg/Si', lambda v: f'{v:g}'
         values = sorted(subset['mg_si'].unique())
+    elif subset['delta_iw'].nunique() > 1:
+        key, label, fmt = 'delta_iw', r'Core-formation $\Delta$IW', lambda v: f'{v:+g}'
+        values = sorted(subset['delta_iw'].unique())
     else:
         print("No crust composition sweep data found — skipping.")
         return

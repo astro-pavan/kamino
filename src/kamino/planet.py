@@ -9,7 +9,7 @@ import os
 from kamino.constants import (
     G, YR, SOLAR_CONSTANT, M_EARTH, R_EARTH,
     EARTH_OUTGASSING, EARTH_CRUST_PRODUCTION_RATE_PER_AREA,
-    EARTH_HYDROTHERMAL_FLUX_PER_AREA, EARTH_MANTLE_POTENTIAL_TEMPERATURE
+    EARTH_HYDROTHERMAL_FLUX_PER_AREA, EARTH_MANTLE_MG_SI, EARTH_DELTA_IW
 )
 from kamino.chemistry import elements, get_ocean_state, c_idx, si_idx, alk_idx, ca_idx, mg_idx, na_idx, cl_idx, so4_idx, ChemistryError
 from kamino.weathering import get_weathering_flux, get_continental_weathering_flux, ALPHA_REF
@@ -40,6 +40,34 @@ _EARTH_CA_SOURCES  = 5.731e12 / YR   # continental + seafloor + HT at Earth [mol
 _ABIOTIC_CA_3MYR   = 0.321e12 / YR   # abiotic Ca sink at tau_prec=3 Myr, Earth [mol/s]
 _TAU_PREC_REF_K    = 3e6 * YR
 
+# Fast-precipitation relaxation timescale, referenced to an Earth-depth ocean. `tau_prec`
+# defaults to None and is resolved in __init__ as TAU_PREC_REF * (ocean_depth / OCEAN_DEPTH_REF),
+# so a 3 km ocean keeps the historical 100 kyr exactly and only deeper oceans change.
+#
+# Why scale it. The fast bucket (carbonates, clays, silica, evaporites) is not a kinetic rate --
+# those phases reach saturation and stay there, so their flux is set by solute SUPPLY and the
+# timescale barely enters. What `tau_prec` has to do is relax a reservoir, and the reservoir is
+# volumetric while precipitation is areal, so the relaxation time grows with ocean depth. Holding
+# it at 100 kyr in a 20 km ocean therefore buys nothing physical and costs a 3-6x stiffer system:
+# it forces the integrator to resolve a mode far faster than anything the chemistry is doing.
+#
+# Measured at 20 km, S = 1.0 (100 kyr -> 667 kyr): Mg/Si 1.25 dT = +0.29 K, Ca +6.4%, steps
+# 1232 -> 384;  Mg/Si 0.5 dT = +0.07 K, Ca +1.1%, steps 1477 -> 243. Calcite stays buffered at
+# SI = +0.021 (baseline +0.004).
+#
+# The scaling must NOT be applied as a flat increase for all depths. Setting tau_prec = 5 Myr at
+# 3 km breaks the carbonate buffer outright -- calcite runs to SI = +1.219 (16x supersaturated),
+# ocean Ca rises 11x to 3.33 mM, pH falls 0.72 and T rises 7.2 K. Shallow oceans need the fast
+# bucket to stay ON saturation, which is exactly what the reference value delivers.
+#
+# `tau_rw` is deliberately NOT scaled with it. Sepiolite(d) sits ~4 log units supersaturated
+# (SI = +3.8) at every timescale tested, i.e. it never reaches equilibrium, so tau_rw IS the
+# reverse-weathering flux rather than a relaxation constant. Scaling both together to preserve
+# their ratio cools a 20 km / Mg/Si 1.25 world by 25 K (T 344.09 -> 319.26, pCO2 0.553 -> 0.034)
+# because slowing reverse weathering frees alkalinity for calcite. See docs/development_history.md.
+TAU_PREC_REF = 100e3 * YR
+OCEAN_DEPTH_REF = 3000.0   # m; the depth at which TAU_PREC_REF applies
+
 TAU_ATM = 1e4 * YR
 
 tau_r_avg = 3e7 * YR   # EMA timescale for convergence rate smoothing (~30 Myr)
@@ -54,6 +82,18 @@ LAND_ALBEDO = 0.3
 
 
 class ChemistryFallbackLimitExceeded(RuntimeError):
+    pass
+
+
+class WallClockLimitExceeded(RuntimeError):
+    """A run exceeded its wall-clock budget and was abandoned.
+
+    The fallback cap cannot catch every runaway: a run whose chemistry keeps CONVERGING but
+    whose integrator crawls (tiny timesteps on stiff chemistry) never spends fallback budget and
+    never trips `chemistry_void` either, so it grinds indefinitely. In the fast_18 sweep the
+    slowest single run took 3.2 hours and the top 5% of runs consumed 57% of total CPU time.
+    A wall-clock cap is the only bound that holds regardless of WHY a run is slow.
+    """
     pass
 
 
@@ -74,9 +114,9 @@ class Planet:
             water_rock_ratio: float=WATER_ROCK_RATIO_LT,
             f_HT: float=0.0,
             cl_outgassing_ratio: float=0.02,
-            mantle_potential_temperature: float=EARTH_MANTLE_POTENTIAL_TEMPERATURE, # NOTE: this is currently in C (not K)
-            mg_si_ratio: float=1,
-            tau_prec: float=100e3 * YR,
+            mantle_mg_si: float=EARTH_MANTLE_MG_SI,
+            delta_iw: float=EARTH_DELTA_IW,
+            tau_prec: float | None=None,   # None -> scaled with ocean depth, see TAU_PREC_REF
             tau_rw: float=5e6 * YR,
             kd_mg_ht: float=KD_MG_HT,
             k_na_cont_removal: float=K_NA_CONT_REMOVAL,
@@ -85,7 +125,10 @@ class Planet:
             name: str='planet',
             climate_model: str='analytic',
             ):
-        
+
+        if tau_prec is None:
+            tau_prec = TAU_PREC_REF * (ocean_depth / OCEAN_DEPTH_REF)
+
         planet_config = {
             "name": name,
             "mass": mass,
@@ -93,8 +136,8 @@ class Planet:
             "background_pressure": background_pressure,
             "ocean_depth": ocean_depth,
             "land_fraction": land_fraction,
-            "mantle_potential_temperature": mantle_potential_temperature,
-            "mg_si_ratio": mg_si_ratio,
+            "mantle_mg_si": mantle_mg_si,
+            "delta_iw": delta_iw,
             "instellation": instellation(0.0) if callable(instellation) else instellation,
             "crust_production_rate": crust_production_rate,
             "outgassing": outgassing,
@@ -127,7 +170,18 @@ class Planet:
         self.ocean_water_mass = self.ocean_depth * self.surface_area * 1000
 
         # Tectonic properties
-        self.crust_composition = mineral_composition(mantle_potential_temperature, mg_si_ratio)
+        # Crust mineralogy from the two composition axes. `mantle_mg_si` is the mantle's molar
+        # Mg/Si (Earth 1.25) and `delta_iw` is the CORE-FORMATION oxygen fugacity relative to
+        # iron-wustite (Earth -2), which sets mantle FeO and hence the crust's iron. Mantle
+        # potential temperature is no longer an input: it is solved per composition by the
+        # melting model and recorded in crust_compositions.csv.
+        #
+        # NOTE the rename from `mg_si_ratio`. That parameter was a MULTIPLIER on Earth's 1.23,
+        # not a Mg/Si, so a config passing mg_si_ratio=1 meant Mg/Si=1.23. Reusing the name
+        # would have silently changed the meaning of every existing sweep config.
+        self.mantle_mg_si = mantle_mg_si
+        self.delta_iw = delta_iw
+        self.crust_composition = mineral_composition(mantle_mg_si, delta_iw)
         self.crust_production_rate = EARTH_CRUST_PRODUCTION_RATE_PER_AREA * crust_production_rate
         self.hydrothermal_flux = EARTH_HYDROTHERMAL_FLUX_PER_AREA * crust_production_rate
 
@@ -183,6 +237,17 @@ class Planet:
         self.verbose = verbose
 
     def dY_dt(self, t, Y):
+
+        # Wall-clock budget. Checked here rather than after solve_ivp returns, for the same
+        # reason as the fallback cap: a check on the finished run would save nothing. Jacobian
+        # probes are included deliberately -- they cost wall time like any other evaluation.
+        _deadline = getattr(self, '_wall_deadline', None)
+        if _deadline is not None and time.time() > _deadline:
+            self._abort_t = t
+            self._abort_Y = np.asarray(Y).copy()
+            raise WallClockLimitExceeded(
+                f'wall-clock limit of {self._wall_limit:.0f} s exceeded at t = {t / YR:.3e} yr'
+            )
 
         # Extract state vector
         P_CO2 = Y[0]
@@ -387,7 +452,7 @@ class Planet:
 
     def time_evolve(self, t_end=2e9 * YR, jac_epsilon=0.01, b0=None, initial_pco2=1000,
                     convergence_threshold=0.05, max_chemistry_fallbacks=None,
-                    void_fraction=0.5):
+                    void_fraction=0.5, max_wall_seconds=None):
         """Integrate to steady state, or until the state leaves the model's validity box.
 
         max_chemistry_fallbacks: abandon the run once this many trajectory derivative
@@ -399,7 +464,15 @@ class Planet:
             nominal termination. Catches the failure mode an absolute fallback cap cannot:
             chemistry that fails outright is cheap, so it never trips the cap (see the void
             check below). The nominal outcome is kept as 'termination_raw'.
+        max_wall_seconds: abandon the run after this much wall-clock time, reporting
+            'wall_timeout'. None (the default) means no limit. This is the only cap that bounds
+            a run whose chemistry converges but whose integrator crawls -- see
+            WallClockLimitExceeded. Sweeps should set it: in fast_18 the top 5% of runs took 57%
+            of the CPU, and 2.9% of runs (fallback_limit + chemistry_void) took 32%.
         """
+
+        self._wall_limit = max_wall_seconds
+        self._wall_deadline = (time.time() + max_wall_seconds) if max_wall_seconds else None
 
         Y0 = np.zeros(elements.shape[0] + 3)  # +2 for P_CO2/P_H2O, +1 for r_avg
 
@@ -508,24 +581,26 @@ class Planet:
                 (0, t_end),
                 Y0,
                 method='LSODA',
-                max_step=1e7 * YR,
+                max_step=2e7 * YR,
                 rtol=1e-3,
                 atol=atol,
                 jac=macro_jacobian,
                 events=[event_domain, event_converged],
             )
-        except ChemistryFallbackLimitExceeded as exc:
+        except (ChemistryFallbackLimitExceeded, WallClockLimitExceeded) as exc:
 
+            _why = ('wall_timeout' if isinstance(exc, WallClockLimitExceeded)
+                    else 'fallback_limit')
             end = time.time()
             if self.verbose:
                 print()
-                print(f'Aborted: fallback_limit -- {exc}')
+                print(f'Aborted: {_why} -- {exc}')
 
             with open(self._output_filename, 'r') as f:
                 output_data = json.load(f)
             output_data.update({
                 "simulation_time_seconds": end - start,
-                "termination": "fallback_limit",
+                "termination": _why,
                 "domain_wall": None,
                 "chemistry_fallbacks": self._chem_fallbacks,
                 "fallback_limit": self._fallback_limit,

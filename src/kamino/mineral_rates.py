@@ -1205,6 +1205,78 @@ from collections.abc import Callable
 #: Map mineral name → JIT-compiled k_eff function (T, pH) → k [mol m⁻² s⁻¹].
 #: Carbonate minerals accept optional (act_HCO3, act_CO3) keyword arguments.
 #: Goethite k function has signature (T,) with no pH argument.
+# ---------------------------------------------------------------------------------------------
+# Akermanite — proxied, because no measured rate exists in any available database
+# ---------------------------------------------------------------------------------------------
+#
+# Akermanite (Ca2MgSi2O7) is the melilite endmember the CIPW cascade produces for
+# silica-deficient, Ca-rich melts (crust_composition.cipw_norm step 5c). Its THERMODYNAMICS are
+# real -- an llnl-lineage PHASES entry in hybrid_ocean.dat -- but it has NO kinetic data:
+# checked Kinec_v3.dat, Kinec.v2.dat, llnl.dat, core10.dat and Thermoddem, and it is PHASES-only
+# in all five. So the rate here is a PROXY and must be reported as one.
+#
+# WHY NOT LARNITE. Textbook CIPW desilicates to larnite (Ca2SiO4), and Kinec_v3.dat has larnite
+# COMPLETE -- both PHASES and a RATES block (Aa 5.25e8 / Ea 70400 / na 0.44, Ab 8.25e5 /
+# Eb 60900 / nb 0.22). It was rejected on two grounds:
+#   1. Rate. Larnite's k_eff at 300 K / pH 6 is 1.6e-6, i.e. 606x Wollastonite and ~1e5x
+#      Diopside. At the 5-8 wt% the cascade produces it would supply essentially the whole
+#      dissolution flux, and those crusts would stop being crusts. Section 5 records that the
+#      Wollastonite -> Diopside swap was "one of the most consequential changes in the project";
+#      larnite is three orders beyond wollastonite.
+#   2. Petrology. Larnite is a cement clinker phase (belite), rare in nature outside
+#      high-temperature contact metamorphism. The melts in question are melilititic (section
+#      24.4, via Medard et al. 2004), and melilitites crystallise MELILITE. Giving larnite a
+#      real rate would be modelling a mineral that is not in the rock.
+#
+# THE BRACKET. Melilite is a sorosilicate (Si2O7 dimers), structurally between the
+# orthosilicates (isolated SiO4 -- olivine, larnite; fast) and the chain silicates (diopside;
+# slow). That brackets the plausible rate rather than pinning it:
+#
+#     'fast'  Wollastonite   2.7e-09   Ca-rich, acid-promoted upper bound
+#     'mid'   Forsterite     4.5e-10   orthosilicate of similar polymerisation (DEFAULT)
+#     'slow'  Diopside       1.5e-11   chain-silicate lower bound
+#                                      (k_eff at 300 K / pH 6, mol m-2 s-1)
+#
+# Sweep the bracket before trusting any result that depends on an akermanite-bearing crust; if
+# the spread matters, the answer is a measured rate, not a better guess.
+@jit
+def augite_k(T: float, pH: float) -> float:
+    """Augite (Ca,Mg,Fe)SiO3 effective rate constant k_eff [mol m-2 s-1].
+
+    Mechanism: acid + neutral  (sigma = 1)
+    Source: Kinec_v3.dat, RATES block `Augite_ss#Mg0.45Fe0.275Ca0.275SiO3`.
+
+    Used as the rate for BOTH Hedenbergite and Ferrosilite, which have thermodynamics in
+    llnl.dat but no kinetic data in any available database. Augite is a real Fe-bearing pyroxene
+    solid solution sitting between diopside and hedenbergite, so this is a far closer proxy than
+    the Mg endmembers -- but it is still a proxy, and the two Fe phases share it.
+    """
+    aH = 10.0 ** (-pH)
+    Aa, Ea, na = 1.52e6, 81_834.0, 0.7
+    An, En     = 350.0,  83_000.0
+    return Aa * jnp.exp(-Ea / (R * T)) * aH**na + An * jnp.exp(-En / (R * T))
+
+
+AKERMANITE_PROXIES: dict[str, Callable] = {}   # populated below, after the proxy targets exist
+AKERMANITE_PROXY = 'mid'
+
+
+def set_akermanite_proxy(which: str) -> None:
+    """Select the akermanite rate proxy: 'fast', 'mid' (default) or 'slow'."""
+    global AKERMANITE_PROXY
+    if which not in AKERMANITE_PROXIES:
+        raise ValueError(f'akermanite proxy must be one of {sorted(AKERMANITE_PROXIES)}')
+    AKERMANITE_PROXY = which
+
+
+def akermanite_k(T: float, pH: float) -> float:
+    """Akermanite (Ca2MgSi2O7) effective rate constant k_eff [mol m-2 s-1]. PROXIED -- see above."""
+    return AKERMANITE_PROXIES[AKERMANITE_PROXY](T, pH)
+
+
+AKERMANITE_PROXIES.update({'fast': wollastonite_k, 'mid': forsterite_k, 'slow': diopside_k})
+
+
 K_FUNCTIONS: dict[str, Callable] = {
     # Primary silicates
     "Albite":        albite_k,
@@ -1217,6 +1289,9 @@ K_FUNCTIONS: dict[str, Callable] = {
     "Fayalite":      fayalite_k,
     "Quartz":        quartz_k,
     "Wollastonite":  wollastonite_k,
+    "Akermanite":    akermanite_k,   # PROXIED, see set_akermanite_proxy
+    "Hedenbergite":  augite_k,       # PROXIED on Augite_ss (measured Fe-cpx rate)
+    "Ferrosilite":   augite_k,       # PROXIED on Augite_ss -- no Fe-opx rate exists
     # Carbonates / sulfates
     "Calcite":       calcite_k,
     "Aragonite":     aragonite_k,
