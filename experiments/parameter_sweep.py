@@ -7,7 +7,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 os.environ.setdefault('JAX_PLATFORMS', 'cpu')
 
 import kamino.planet as p2
-from kamino.planet import Planet, KD_MG_HT, K_NA_CONT_REMOVAL
+from kamino.planet import Planet, KD_MG_HT, K_NA_CONT_REMOVAL, PE_DEFAULT
 from kamino.weathering import ALPHA_REF
 from kamino.crust_composition import mineral_composition
 from kamino.constants import M_EARTH, R_EARTH, EARTH_MANTLE_MG_SI, EARTH_DELTA_IW
@@ -55,6 +55,44 @@ K_NA_CALIB  = 4.272026e-03
 # where picking a single anchored value would not.
 ALPHA_CALIB = 2.0
 alpha = [2, 10, 50]   # the sensitivity arm; all three stay in the kinetic limit (Da <= 0.13)
+
+# ── Ocean redox ───────────────────────────────────────────────────────────────────────────────
+# Every sweep is run under BOTH redox states, because the model has no basis for preferring one
+# and the difference is large (+11.5 K at S = 1.0, 3 km, Mg/Si 1.25 -- see development history
+# section 28.4).
+#
+#   PE_REDUCING  -3.0  an abiotic planet, which is what this model actually is: no oxygenic
+#                      photosynthesis, so no free O2. Ferrous iron stays dissolved and Siderite
+#                      (FeCO3) is the iron sink. Matches anoxic marine pore water (-3 to -5) and
+#                      Archean ocean reconstructions (-3 to 0).
+#   PE_OXIDISING  +4.0 an oxygenated ocean. Ferric Goethite is supersaturated and strips every
+#                      mole of dissolved iron. This is ALSO the value PHREEQC silently defaulted
+#                      to before pe was a parameter, so it reproduces every result on disk from
+#                      before 2026-08-27 -- which is why it is the comparison arm rather than
+#                      just an alternative.
+#
+# Modern oxic seawater is nearer pe = +12.5, but +4 is used for the oxidising arm because it is
+# the value the pre-2026-08-27 sweeps implicitly ran at; the iron system is saturated by then
+# anyway (Goethite SI +7.64 at pe 4 against +7.65 at pe 12).
+#
+# The effect SATURATES below pe ~ 0 (pe of 0, -3 and -6 all give 321.3 K), so this is a binary
+# oxic/anoxic distinction rather than a continuum that needs resolving. pe = -3 is also the
+# numerically cleanest of the reducing values (0 chemistry fallbacks against 9 at pe = -6).
+PE_REDUCING = -3.0
+PE_OXIDISING = 4.0
+PE_DEFAULT_SWEEP = PE_REDUCING          # the physically-motivated arm for an abiotic planet
+PE_STATES = [PE_REDUCING, PE_OXIDISING]
+
+
+def _pe_label(pe):
+    """Short name for a redox state, for logs and figure captions."""
+    if pe is None:
+        return 'PHREEQC default (+4, oxidising)'
+    return 'reducing' if pe < 2.0 else 'oxidising'
+
+# The pe sensitivity arm, for the one sweep that resolves the axis rather than bracketing it.
+# Spans oxic seawater to below the Goethite saturation boundary (~ -5.8).
+pe_arm = [12.0, 4.0, 0.0, -3.0, -6.0]
 
 def _warn_constant_drift():
     """The sweep used alpha=2, kd=0.02, k_na=0.004 for a year while planet.py shipped kd=0.07 and
@@ -115,9 +153,15 @@ def _tag(value, reference, prefix):
     return '' if value == reference else f'_{prefix}{value:g}'
 
 
-def _run_name(s, o, c, d, rw, mgsi, diw, alpha, kd_mg, k_na):
+def _run_name(s, o, c, d, rw, mgsi, diw, alpha, kd_mg, k_na, pe=PE_DEFAULT_SWEEP):
     """Run name. Every parameter that differs from the Planet default MUST appear, or two configs
-    would share a filename and RERUN=False would silently return the first one's result."""
+    would share a filename and RERUN=False would silently return the first one's result.
+
+    `pe` is tagged against planet.PE_DEFAULT rather than against this module's sweep default, so
+    a run at the model's own default keeps an untagged name and every other redox state is
+    distinguishable. Without this the oxidising and reducing arms of the SAME sweep would share a
+    filename and one would silently overwrite the other.
+    """
     run_name = f'planet_s_{s}_out_{o}_crust_{c}_depth_{d}'
 
     if rw:
@@ -129,14 +173,15 @@ def _run_name(s, o, c, d, rw, mgsi, diw, alpha, kd_mg, k_na):
     run_name += _tag(alpha, ALPHA_REF, 'a')
     run_name += _tag(kd_mg, KD_MG_HT, 'kmg')
     run_name += _tag(k_na, K_NA_CONT_REMOVAL, 'kna')
+    run_name += _tag(pe, PE_DEFAULT, 'pe')
 
     return run_name
 
 
-def run_simulation(s, o, c, d, rw, mgsi, diw, alpha, kd_mg, k_na, output_path):
+def run_simulation(s, o, c, d, rw, mgsi, diw, alpha, kd_mg, k_na, pe, output_path):
     p2.output_path = output_path  # each subprocess imports a fresh module; set path here
 
-    run_name = _run_name(s, o, c, d, rw, mgsi, diw, alpha, kd_mg, k_na)
+    run_name = _run_name(s, o, c, d, rw, mgsi, diw, alpha, kd_mg, k_na, pe)
 
     if not RERUN:
         json_path = os.path.join(output_path, f'{run_name}.json')
@@ -144,7 +189,20 @@ def run_simulation(s, o, c, d, rw, mgsi, diw, alpha, kd_mg, k_na, output_path):
             try:
                 with open(json_path) as fh:
                     existing = json.load(fh)
-                if 'termination' in existing:
+                # Resume guard. A run at the model default is deliberately UNTAGGED, so a file
+                # written before `pe` existed has the same name as a reducing run -- but it was
+                # produced at PHREEQC's implicit pe = 4, i.e. OXIDISING. Reusing it would label
+                # 2000 oxidising runs as reducing. Any file whose recorded pe does not match what
+                # was asked for is re-run rather than trusted (the fast_13 resume trap, again).
+                stored_pe = existing.get('pe', 'ABSENT')
+                if stored_pe == 'ABSENT':
+                    stale = pe is not None      # pre-pe output: only valid if pe was unset
+                else:
+                    stale = not (stored_pe is None and pe is None) and stored_pe != pe
+                if stale:
+                    print(f"  re-running {run_name}: stored pe={stored_pe!r} != requested "
+                          f"pe={pe!r} (output predates the pe parameter?)", flush=True)
+                elif 'termination' in existing:
                     return run_name, None, existing.get('T'), existing['termination']
             except Exception:
                 pass  # corrupt/incomplete file — fall through and re-run
@@ -164,6 +222,7 @@ def run_simulation(s, o, c, d, rw, mgsi, diw, alpha, kd_mg, k_na, output_path):
             alpha=alpha,
             kd_mg_ht=kd_mg,
             k_na_cont_removal=k_na,
+            pe=pe,
             name=run_name
         )
         p.time_evolve(max_chemistry_fallbacks=MAX_CHEMISTRY_FALLBACKS,
@@ -178,7 +237,7 @@ def run_simulation(s, o, c, d, rw, mgsi, diw, alpha, kd_mg, k_na, output_path):
 def cross_combos(instellation, mantle_mg_si, delta_iw, ocean_depth,
                  mg_si_ref=EARTH_MANTLE_MG_SI, diw_ref=EARTH_DELTA_IW,
                  outgassing=0.1, crust=1.0, rw=True,
-                 alpha=None, kd_mg=None, k_na=None):
+                 alpha=None, kd_mg=None, k_na=None, pe=PE_DEFAULT_SWEEP):
     """Combos for a CROSS design: vary one composition axis at a time through the Earth centre.
 
     A full factorial over instellation x Mg/Si x dIW is the obvious design and it is mostly
@@ -204,7 +263,7 @@ def cross_combos(instellation, mantle_mg_si, delta_iw, ocean_depth,
             axes = ([(mg, diw_ref) for mg in mantle_mg_si]
                     + [(mg_si_ref, dw) for dw in delta_iw])
             for mg, dw in axes:
-                key = (S, outgassing, crust, depth, rw, mg, dw, alpha, kd_mg, k_na)
+                key = (S, outgassing, crust, depth, rw, mg, dw, alpha, kd_mg, k_na, pe)
                 if key in seen:
                     continue
                 seen.add(key)
@@ -225,7 +284,7 @@ def _cost_rank(combo):
 
 def run_sweep(instellation, outgassing, crust_production_rate, ocean_depth, reverse_weathering,
               mantle_mg_si, delta_iw, alpha=(ALPHA_REF,), kd_mg=(KD_MG_HT,),
-              k_na=(K_NA_CONT_REMOVAL,), output_path=OUTPUT_PATH):
+              k_na=(K_NA_CONT_REMOVAL,), pe=(PE_DEFAULT_SWEEP,), output_path=OUTPUT_PATH):
 
     if not output_path.endswith('/'):
         output_path += '/'
@@ -234,7 +293,9 @@ def run_sweep(instellation, outgassing, crust_production_rate, ocean_depth, reve
 
     workers = WORKERS
 
-    combos = list(itertools.product(instellation, outgassing, crust_production_rate, ocean_depth, reverse_weathering, mantle_mg_si, delta_iw, alpha, kd_mg, k_na))
+    combos = list(itertools.product(instellation, outgassing, crust_production_rate, ocean_depth,
+                                   reverse_weathering, mantle_mg_si, delta_iw, alpha, kd_mg,
+                                   k_na, pe))
     return run_combos(combos, output_path=output_path)
 
 
@@ -252,6 +313,7 @@ def run_combos(combos, output_path=OUTPUT_PATH):
     alpha = sorted({c[7] for c in combos})
     kd_mg = sorted({c[8] for c in combos})
     k_na = sorted({c[9] for c in combos})
+    pe = sorted({c[10] for c in combos})
     total = len(combos)
 
     # Distinct configs must map to distinct filenames, or one silently overwrites the other and
@@ -268,13 +330,15 @@ def run_combos(combos, output_path=OUTPUT_PATH):
     print(f"Running {total} simulations with {workers} worker processes "
           f"(fallback cap: {cap_str})...")
     print(f"Output: {output_path}")
-    for label, values in (('alpha', alpha), ('kd_mg_ht', kd_mg), ('k_na_cont_removal', k_na)):
+    for label, values in (('alpha', alpha), ('kd_mg_ht', kd_mg), ('k_na_cont_removal', k_na),
+                          ('pe', [f'{v:g} ({_pe_label(v)})' for v in pe])):
         print(f"  {label}: {list(values)}")
 
     with ProcessPoolExecutor(max_workers=workers, mp_context=mp.get_context('spawn')) as executor:
         futures = {
-            executor.submit(run_simulation, s, o, c, d, rw, mgsi, diw, a, kmg, kna, output_path): (s, o, c, d, rw, mgsi, diw, a, kmg, kna)
-            for s, o, c, d, rw, mgsi, diw, a, kmg, kna in combos
+            executor.submit(run_simulation, s, o, c, d, rw, mgsi, diw, a, kmg, kna, pe_,
+                            output_path): (s, o, c, d, rw, mgsi, diw, a, kmg, kna, pe_)
+            for s, o, c, d, rw, mgsi, diw, a, kmg, kna, pe_ in combos
         }
 
         completed = 0
@@ -356,9 +420,12 @@ CROSS_DELTA_IW = [-5.0, -4.0, -3.0, EARTH_DELTA_IW, -1.0]
 CROSS_DEPTHS = [3000, 20000]
 
 
-def run_cross(depths=CROSS_DEPTHS, output_path=OUTPUT_PATH):
+def run_cross(depths=CROSS_DEPTHS, output_path=OUTPUT_PATH, pe=PE_STATES):
     """The cross sweep. Cheapest runs first, so an interrupted run still covers the most ground."""
-    combos = cross_combos(CROSS_INSTELLATION, CROSS_MG_SI, CROSS_DELTA_IW, depths)
+    combos = []
+    for pe_ in ([pe] if isinstance(pe, (int, float)) else pe):
+        combos += cross_combos(CROSS_INSTELLATION, CROSS_MG_SI, CROSS_DELTA_IW, depths, pe=pe_)
+    combos.sort(key=_cost_rank)
     return run_combos(combos, output_path=output_path)
 
 
@@ -371,14 +438,14 @@ def run_cross(depths=CROSS_DEPTHS, output_path=OUTPUT_PATH):
 # edited to run anything, only one sweep was ever active, and which one had run was recoverable
 # only from the git history of this file.
 
-def sweep_basic(output_path=OUTPUT_PATH):
+def sweep_basic(output_path=OUTPUT_PATH, pe=PE_STATES):
     """Instellation x outgassing x crust production, at the Earth-reference crust."""
     return run_sweep(instellation, outgassing, crust_production_rate, ocean_depth_default,
                      reverse_weathering_default, mantle_mg_si_default, delta_iw_default,
-                     alpha_default, k_mg_default, k_na_default, output_path=output_path)
+                     alpha_default, k_mg_default, k_na_default, pe=pe, output_path=output_path)
 
 
-def sweep_basic_deep(output_path=OUTPUT_PATH):
+def sweep_basic_deep(output_path=OUTPUT_PATH, pe=PE_STATES):
     """As sweep_basic, on the 20 km water world.
 
     This is the expensive one. Deep runs cost ~5.7x shallow (pilot: 154.6 min for 10 deep against
@@ -389,17 +456,17 @@ def sweep_basic_deep(output_path=OUTPUT_PATH):
     """
     return run_sweep(instellation, outgassing, crust_production_rate, ocean_depth_deep_default,
                      reverse_weathering_default, mantle_mg_si_default, delta_iw_default,
-                     alpha_default, k_mg_default, k_na_default, output_path=output_path)
+                     alpha_default, k_mg_default, k_na_default, pe=pe, output_path=output_path)
 
 
-def sweep_depth(output_path=OUTPUT_PATH):
+def sweep_depth(output_path=OUTPUT_PATH, pe=PE_STATES):
     """Instellation x ocean depth."""
     return run_sweep(instellation, outgassing_default, crust_production_rate_default, ocean_depth,
                      reverse_weathering_default, mantle_mg_si_default, delta_iw_default,
-                     alpha_default, k_mg_default, k_na_default, output_path=output_path)
+                     alpha_default, k_mg_default, k_na_default, pe=pe, output_path=output_path)
 
 
-def sweep_composition(output_path=OUTPUT_PATH):
+def sweep_composition(output_path=OUTPUT_PATH, pe=PE_STATES):
     """Instellation x Mg/Si x dIW -- the full composition factorial at 3 km.
 
     This is the factorial the CROSS design deliberately avoids (see cross_combos). Use it when
@@ -408,46 +475,93 @@ def sweep_composition(output_path=OUTPUT_PATH):
     """
     return run_sweep(instellation, outgassing_default, crust_production_rate_default,
                      ocean_depth_default, reverse_weathering_default, mantle_mg_si, delta_iw,
-                     alpha_default, k_mg_default, k_na_default, output_path=output_path)
+                     alpha_default, k_mg_default, k_na_default, pe=pe, output_path=output_path)
 
 
-def sweep_composition_deep(output_path=OUTPUT_PATH):
+def sweep_composition_deep(output_path=OUTPUT_PATH, pe=PE_STATES):
     """As sweep_composition, on the 20 km water world."""
     return run_sweep(instellation, outgassing_default, crust_production_rate_default,
                      ocean_depth_deep_default, reverse_weathering_default, mantle_mg_si, delta_iw,
-                     alpha_default, k_mg_default, k_na_default, output_path=output_path)
+                     alpha_default, k_mg_default, k_na_default, pe=pe, output_path=output_path)
 
 
-def sweep_alpha(output_path=OUTPUT_PATH):
+def sweep_alpha(output_path=OUTPUT_PATH, pe=PE_STATES):
     """The alpha sensitivity arm at the Earth-reference crust. alpha is a CHOICE (see
     ALPHA_CALIB), so any result sensitive to the absolute CO2 level needs this reported."""
     return run_sweep(instellation, outgassing_default, crust_production_rate_default,
                      ocean_depth_default, reverse_weathering_default, mantle_mg_si_default,
-                     delta_iw_default, alpha, k_mg_default, k_na_default, output_path=output_path)
+                     delta_iw_default, alpha, k_mg_default, k_na_default, pe=pe, output_path=output_path)
 
 
-def sweep_alpha_composition(output_path=OUTPUT_PATH):
+def sweep_alpha_composition(output_path=OUTPUT_PATH, pe=PE_STATES):
     """alpha x Mg/Si and alpha x dIW: does the composition signal survive the alpha choice?
 
     This is the sweep that answers the referee question directly -- if the Mg/Si and dIW
     orderings are the same at alpha = 2, 10 and 50, the conclusions do not rest on alpha.
     """
     combos = []
-    for a in alpha:
-        combos += cross_combos(CROSS_INSTELLATION, CROSS_MG_SI, CROSS_DELTA_IW,
-                               ocean_depth_default, alpha=a,
-                               kd_mg=k_mg_default[0], k_na=k_na_default[0])
+    for pe_ in pe:
+        for a in alpha:
+            combos += cross_combos(CROSS_INSTELLATION, CROSS_MG_SI, CROSS_DELTA_IW,
+                                   ocean_depth_default, alpha=a,
+                                   kd_mg=k_mg_default[0], k_na=k_na_default[0], pe=pe_)
     return run_combos(combos, output_path=output_path)
 
 
-def sweep_chemistry(output_path=OUTPUT_PATH):
+def sweep_chemistry(output_path=OUTPUT_PATH, pe=PE_STATES):
     """kd_mg_ht and k_na on/off, to isolate what each sink contributes."""
     return run_sweep(instellation, outgassing_default, crust_production_rate_default,
                      ocean_depth_default, reverse_weathering_default, mantle_mg_si_default,
-                     delta_iw_default, alpha_default, k_mg, k_na, output_path=output_path)
+                     delta_iw_default, alpha_default, k_mg, k_na, pe=pe, output_path=output_path)
 
 
-def sweep_cross(output_path=OUTPUT_PATH):
+def sweep_pe(output_path=OUTPUT_PATH, pe=None):
+    """The redox sensitivity arm: instellation x pe at the Earth-reference crust.
+
+    Resolves the axis that every other sweep only brackets. Spans modern oxic seawater (+12) to
+    below the Goethite saturation boundary (~ -5.8), so it shows both the plateau and where the
+    iron sink actually switches from ferric Goethite to ferrous Siderite (around pe = 0).
+
+    The effect is expected to SATURATE below pe ~ 0 -- measured at one point, pe of 0, -3 and -6
+    all give 321.3 K -- so the interesting structure is between +12 and 0, and the reducing tail
+    is there to confirm the plateau rather than to resolve it.
+    """
+    return run_sweep(instellation, outgassing_default, crust_production_rate_default,
+                     ocean_depth_default, reverse_weathering_default, mantle_mg_si_default,
+                     delta_iw_default, alpha_default, k_mg_default, k_na_default,
+                     pe=(pe_arm if pe is None else pe), output_path=output_path)
+
+
+def sweep_pe_deep(output_path=OUTPUT_PATH, pe=None):
+    """As sweep_pe, on the 20 km water world.
+
+    Worth running separately: the deep ocean is where the carbonate sink is pressure-suppressed
+    (section 29.3), and Siderite -- the reducing-arm iron sink -- is a CARBONATE, so the redox
+    switch and the depth effect are not obviously independent.
+    """
+    return run_sweep(instellation, outgassing_default, crust_production_rate_default,
+                     ocean_depth_deep_default, reverse_weathering_default, mantle_mg_si_default,
+                     delta_iw_default, alpha_default, k_mg_default, k_na_default,
+                     pe=(pe_arm if pe is None else pe), output_path=output_path)
+
+
+def sweep_pe_composition(output_path=OUTPUT_PATH, pe=None):
+    """pe x Mg/Si and pe x dIW: does the composition signal survive the redox choice?
+
+    The dIW half is the one that matters. Section 29.2 measured dIW as a weak, phase-boundary-gated
+    control, but that was at pe = 4 where dissolved iron is stripped by Goethite and so cannot
+    affect the carbon cycle at all. Under anoxia iron stays in solution, and dIW is the parameter
+    that sets how much of it there is -- so the dIW result may be substantially redox-dependent.
+    """
+    combos = []
+    for pe_ in (pe_arm if pe is None else pe):
+        combos += cross_combos(CROSS_INSTELLATION, CROSS_MG_SI, CROSS_DELTA_IW,
+                               ocean_depth_default, pe=pe_)
+    combos.sort(key=_cost_rank)
+    return run_combos(combos, output_path=output_path)
+
+
+def sweep_cross(output_path=OUTPUT_PATH, pe=PE_STATES):
     """The cross design at 3 km: one composition axis at a time through the Earth centre.
 
     Split from the deep half deliberately. The two halves cost very differently (126 runs at
@@ -455,12 +569,12 @@ def sweep_cross(output_path=OUTPUT_PATH):
     reference the Mg/Si and dIW figures are built on, 20 km is the water-world case. Running the
     shallow half alone secures those figures in a few hours; the deep half can follow.
     """
-    return run_cross(depths=ocean_depth_default, output_path=output_path)
+    return run_cross(depths=ocean_depth_default, output_path=output_path, pe=pe)
 
 
-def sweep_cross_deep(output_path=OUTPUT_PATH):
+def sweep_cross_deep(output_path=OUTPUT_PATH, pe=PE_STATES):
     """The cross design on the 20 km water world. See sweep_cross."""
-    return run_cross(depths=ocean_depth_deep_default, output_path=output_path)
+    return run_cross(depths=ocean_depth_deep_default, output_path=output_path, pe=pe)
 
 
 SWEEPS = {
@@ -474,6 +588,10 @@ SWEEPS = {
     'alpha':             ('alpha sensitivity arm', sweep_alpha),
     'alpha_composition': ('alpha x composition -- does the signal survive alpha?',
                           sweep_alpha_composition),
+    'pe':                ('redox sensitivity arm, 3 km', sweep_pe),
+    'pe_deep':           ('redox sensitivity arm, 20 km', sweep_pe_deep),
+    'pe_composition':    ('pe x composition -- does the signal survive redox?',
+                          sweep_pe_composition),
     'chemistry':         ('kd_mg_ht / k_na on-off', sweep_chemistry),
 }
 
@@ -490,11 +608,13 @@ MINUTES_PER_RUN_DEEP = 15.46
 def _sweep_shape(name):
     """(n_shallow, n_deep) for a sweep, so cost can be estimated before launching."""
     n = _sweep_size(name)
-    if name in ('basic_deep', 'composition_deep', 'cross_deep'):
+    if name in ('basic_deep', 'composition_deep', 'cross_deep', 'pe_deep'):
         return 0, n
     if name == 'depth':
-        deep_frac = sum(1 for d in ocean_depth if d >= DEEP_OCEAN_M)
-        return len(instellation) * (len(ocean_depth) - deep_frac), len(instellation) * deep_frac
+        deep = sum(1 for d in ocean_depth if d >= DEEP_OCEAN_M)
+        per_state = len(instellation)
+        return (per_state * (len(ocean_depth) - deep) * len(PE_STATES),
+                per_state * deep * len(PE_STATES))
     return n, 0
 
 
@@ -506,21 +626,28 @@ def _sweep_cost_hours(name):
 
 def _sweep_size(name):
     """Run count without executing anything, so a sweep can be costed before it is launched."""
+    n_redox, n_pe = len(PE_STATES), len(pe_arm)
+    n_cross = len(cross_combos(CROSS_INSTELLATION, CROSS_MG_SI, CROSS_DELTA_IW,
+                               ocean_depth_default))
+    # Every sweep except the pe arms runs under BOTH redox states, so it doubles. The pe sweeps
+    # resolve that axis themselves and are NOT doubled.
     sizers = {
-        'basic':            len(instellation)*len(outgassing)*len(crust_production_rate),
-        'basic_deep':       len(instellation)*len(outgassing)*len(crust_production_rate),
-        'depth':            len(instellation)*len(ocean_depth),
-        'composition':      len(instellation)*len(mantle_mg_si)*len(delta_iw),
-        'composition_deep': len(instellation)*len(mantle_mg_si)*len(delta_iw),
-        'cross':            len(cross_combos(CROSS_INSTELLATION, CROSS_MG_SI, CROSS_DELTA_IW,
-                                             ocean_depth_default)),
+        'basic':            len(instellation)*len(outgassing)*len(crust_production_rate)*n_redox,
+        'basic_deep':       len(instellation)*len(outgassing)*len(crust_production_rate)*n_redox,
+        'depth':            len(instellation)*len(ocean_depth)*n_redox,
+        'composition':      len(instellation)*len(mantle_mg_si)*len(delta_iw)*n_redox,
+        'composition_deep': len(instellation)*len(mantle_mg_si)*len(delta_iw)*n_redox,
+        'cross':            n_cross*n_redox,
         'cross_deep':       len(cross_combos(CROSS_INSTELLATION, CROSS_MG_SI, CROSS_DELTA_IW,
-                                             ocean_depth_deep_default)),
-        'alpha':            len(instellation)*len(alpha),
+                                             ocean_depth_deep_default))*n_redox,
+        'alpha':            len(instellation)*len(alpha)*n_redox,
         'alpha_composition': sum(len(cross_combos(CROSS_INSTELLATION, CROSS_MG_SI,
                                                   CROSS_DELTA_IW, ocean_depth_default, alpha=a))
-                                 for a in alpha),
-        'chemistry':        len(instellation)*len(k_mg)*len(k_na),
+                                 for a in alpha)*n_redox,
+        'chemistry':        len(instellation)*len(k_mg)*len(k_na)*n_redox,
+        'pe':               len(instellation)*n_pe,
+        'pe_deep':          len(instellation)*n_pe,
+        'pe_composition':   n_cross*n_pe,
     }
     return sizers.get(name, 0)
 
