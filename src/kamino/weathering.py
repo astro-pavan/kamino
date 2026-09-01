@@ -57,6 +57,7 @@ def get_weathering_flux(
         clog: bool=False,
         fO2: float=0,
         water_rock_ratio: float | None=None,
+        pe: float | None=None,
         ) -> tuple[npt.NDArray[np.float64], dict[str, float]]:
 
     if alpha is None:
@@ -77,7 +78,7 @@ def get_weathering_flux(
 
     primary_equilibrium_buffer = ([] if (high_temperature or water_rock_ratio is None) else list(lt_equilibrium_buffer_minerals)) 
 
-    b_eq_primary, pH = get_b_eq(P, T, P_CO2, crust_composition, b_input=b_input, precipitating_minerals=primary_equilibrium_buffer, high_temperature=high_temperature, fO2=fO2, water_rock_ratio=water_rock_ratio, dissolve_only=True)
+    b_eq_primary, pH = get_b_eq(P, T, P_CO2, crust_composition, b_input=b_input, precipitating_minerals=primary_equilibrium_buffer, high_temperature=high_temperature, fO2=fO2, water_rock_ratio=water_rock_ratio, dissolve_only=True, pe=pe)
     k_primary = get_k(P, T, pH, crust_composition)
     k_nonzero = k_primary != 0  # save before replacing zeros with inf
     k_primary = np.where(k_nonzero, k_primary, np.inf)
@@ -111,7 +112,7 @@ def get_weathering_flux(
     }
 
     if precipitating_minerals and not high_temperature:
-        d_b_secondary, _, SI_dict = get_precipitation(P, T, b_pore, precipitating_minerals, [])
+        d_b_secondary, _, SI_dict = get_precipitation(P, T, b_pore, precipitating_minerals, [], pe=pe)
         flux += J * d_b_secondary
         b_pore = b_pore + d_b_secondary
         weathering_diagnostics['secondary_SI'] = SI_dict

@@ -9,7 +9,8 @@ import os
 from kamino.constants import (
     G, YR, SOLAR_CONSTANT, M_EARTH, R_EARTH,
     EARTH_OUTGASSING, EARTH_CRUST_PRODUCTION_RATE_PER_AREA,
-    EARTH_HYDROTHERMAL_FLUX_PER_AREA, EARTH_MANTLE_MG_SI, EARTH_DELTA_IW
+    EARTH_HYDROTHERMAL_FLUX_PER_AREA, EARTH_MANTLE_MG_SI, EARTH_DELTA_IW,
+    A_SEAFLOOR_EARTH
 )
 from kamino.chemistry import elements, get_ocean_state, c_idx, si_idx, alk_idx, ca_idx, mg_idx, na_idx, cl_idx, so4_idx, ChemistryError
 from kamino.weathering import get_weathering_flux, get_continental_weathering_flux, ALPHA_REF
@@ -65,6 +66,36 @@ _TAU_PREC_REF_K    = 3e6 * YR
 # reverse-weathering flux rather than a relaxation constant. Scaling both together to preserve
 # their ratio cools a 20 km / Mg/Si 1.25 world by 25 K (T 344.09 -> 319.26, pCO2 0.553 -> 0.034)
 # because slowing reverse weathering frees alkalinity for calcite. See docs/development_history.md.
+# Redox state (pe) of the ocean and seafloor pore fluid.
+#
+# This model is ABIOTIC by construction -- there is no oxygenic photosynthesis, so there is no
+# source of free O2. Its oceans should therefore be reducing, like the Archean. Until 2026-08-27
+# no pe was set anywhere, which is NOT the same as making no assumption: PHREEQC then uses its
+# own default of pe = 4.0, an oxidising ocean in which ferric Goethite (FeOOH) is supersaturated
+# and strips every mole of dissolved iron, taking 2 eq of alkalinity with it. Every result
+# produced before this parameter existed silently assumed an oxygenated planet.
+#
+# Measured effect of removing that assumption (3 km, Mg/Si 1.25, dIW -2, alpha 2):
+#
+#     S     oxic (pe 4)              anoxic (no ferric Fe)
+#     0.8   T 298.3, Fe 0            T 268.2, Fe 69 uM
+#     1.0   T 309.8, Fe 0            T 290.5, Fe 1107 uM
+#
+# i.e. 19-30 K, and ocean Fe moves from exactly zero into the Archean range (~0.05-0.5 mM). It
+# also roughly doubles the influence of the crust dIW axis, because iron only matters to the
+# carbon cycle when it stays dissolved.
+#
+# Reference values for natural waters: modern oxic seawater ~ +12.5; anoxic marine pore water
+# ~ -3 to -5; Archean ocean reconstructions ~ -3 to 0. Goethite goes undersaturated below
+# pe ~ -5.8, and Siderite (ferrous FeCO3, the Archean iron sink) becomes stable below pe ~ 0.
+#
+# NOTE this is a distinct quantity from the two dIW values in the crust pipeline. Those set the
+# oxygen fugacity of the MANTLE at core formation and of the melt; this is the ambient redox of
+# the WATER-ROCK system. They must not be conflated.
+#
+# Set to None to restore the pre-2026-08-27 behaviour (PHREEQC's default pe = 4).
+PE_DEFAULT = -3.0
+
 TAU_PREC_REF = 100e3 * YR
 OCEAN_DEPTH_REF = 3000.0   # m; the depth at which TAU_PREC_REF applies
 
@@ -116,6 +147,7 @@ class Planet:
             cl_outgassing_ratio: float=0.02,
             mantle_mg_si: float=EARTH_MANTLE_MG_SI,
             delta_iw: float=EARTH_DELTA_IW,
+            pe: float | None=PE_DEFAULT,   # ocean/pore redox; see PE_DEFAULT
             tau_prec: float | None=None,   # None -> scaled with ocean depth, see TAU_PREC_REF
             tau_rw: float=5e6 * YR,
             kd_mg_ht: float=KD_MG_HT,
@@ -147,6 +179,7 @@ class Planet:
             "f_HT": f_HT,
             "climate_model": climate_model,
             "cl_outgassing_ratio": cl_outgassing_ratio,
+            "pe": pe,
             "tau_prec": tau_prec,
             "tau_rw": tau_rw,
             "kd_mg_ht": kd_mg_ht,
@@ -202,6 +235,7 @@ class Planet:
 
         # Chemistry properties
         self.cl_subduction_k = k_cl_subduction
+        self.pe = pe
         self.tau_prec = tau_prec
         self.tau_rw = tau_rw
         self.alpha = alpha
@@ -283,13 +317,13 @@ class Planet:
             self._pH_surface = pH_surface
 
             # Fast precipitation: carbonates, clays, silica, evaporites (tau_prec ~100 kyr)
-            F_prec_fast, pH_seafloor, SI = get_precipitation(P_pore, T_seafloor, b_ocean, precipitating_minerals=self.fast_ocean_precipitating_minerals, precipitation_timescale=self.tau_prec)
+            F_prec_fast, pH_seafloor, SI = get_precipitation(P_pore, T_seafloor, b_ocean, precipitating_minerals=self.fast_ocean_precipitating_minerals, precipitation_timescale=self.tau_prec, pe=self.pe)
             F_prec = F_prec_fast
             F_prec_rw = np.zeros(elements.shape)
 
             # Slow precipitation: reverse weathering clays (tau_rw ~10-100 Myr)
             if self.rw_ocean_precipitating_minerals:
-                F_prec_rw, _, SI_rw = get_precipitation(P_pore, T_seafloor, b_ocean, precipitating_minerals=self.rw_ocean_precipitating_minerals, precipitation_timescale=self.tau_rw)
+                F_prec_rw, _, SI_rw = get_precipitation(P_pore, T_seafloor, b_ocean, precipitating_minerals=self.rw_ocean_precipitating_minerals, precipitation_timescale=self.tau_rw, pe=self.pe)
                 F_prec = F_prec + F_prec_rw
                 SI.update(SI_rw)
 
@@ -305,7 +339,7 @@ class Planet:
             J_total = EARTH_HYDROTHERMAL_FLUX_PER_AREA * (self.crust_production_rate / EARTH_CRUST_PRODUCTION_RATE_PER_AREA)
 
             # Off axis (low-temperature) hydrothermal weathering
-            flux_LT, diag_LT = get_weathering_flux(P_pore, T_pore, P_CO2, b_ocean, alpha=self.alpha, rate=self.crust_production_rate, J=J_total, crust_composition=self.crust_composition, sedimentation_rate=S_sed, precipitating_minerals=self.pore_precipitating_minerals, water_rock_ratio=self.water_rock_ratio)
+            flux_LT, diag_LT = get_weathering_flux(P_pore, T_pore, P_CO2, b_ocean, alpha=self.alpha, rate=self.crust_production_rate, J=J_total, crust_composition=self.crust_composition, sedimentation_rate=S_sed, precipitating_minerals=self.pore_precipitating_minerals, water_rock_ratio=self.water_rock_ratio, pe=self.pe)
             F_diss = (flux_LT * self.surface_area) / self.ocean_water_mass
 
             # HT Mg->Ca exchange (parameterized)
@@ -332,7 +366,7 @@ class Planet:
 
                 # Shallow carbonate precipitation on continental shelves
                 P_shelf = P_surface + 1000 * self.gravity * self.shelf_depth
-                F_shelf_prec, _, _ = get_precipitation(P_shelf, T_seafloor, b_ocean, precipitating_minerals=self.shelf_precipitating_minerals, precipitation_timescale=self.tau_prec)
+                F_shelf_prec, _, _ = get_precipitation(P_shelf, T_seafloor, b_ocean, precipitating_minerals=self.shelf_precipitating_minerals, precipitation_timescale=self.tau_prec, pe=self.pe)
 
             # Cl subduction
             F_cl_subduct = np.zeros(elements.shape)
@@ -368,6 +402,11 @@ class Planet:
                 'supply_efficiency': diag_LT.get('supply_efficiency', np.nan),
                 'pore_SI':     diag_LT.get('secondary_SI', {}),
                 'ocean_SI':    SI,
+                # Kept so time_evolve can evaluate the pore-fluid calcite saturation once on the
+                # accepted final state. It is not in `pore_SI`: the pore space precipitates clays
+                # only, so Calcite never enters that equilibrium and has no SI there.
+                'b_pore':      diag_LT.get('b_pore'),
+                'alk_flux_lt': float(flux_LT[alk_idx]),
             }
 
         except (ChemistryError, AssertionError): # Chemistry has left the valid domain (typically high P_CO2 where PHREEQC cannot converge).
@@ -679,10 +718,46 @@ class Planet:
             (self._fallback_limit, self._chem_fallbacks, self._chem_ok,
              self._dYdt_last_good) = _saved_diag_state
 
+        # Weathering diagnostics for the accepted final state. `dY_dt` already computes all of
+        # these on every step, so recording them here costs one extra PHREEQC solve per RUN (the
+        # pore-fluid calcite SI, which is not part of any equilibrium dY_dt performs). Without
+        # them the plotting code has to reconstruct the whole final state and re-run the
+        # weathering chemistry for every run it draws -- about 0.9 s each, so ~30 minutes for a
+        # 2000-run sweep, every time a figure is regenerated.
+        diagnostics = {"da": np.nan, "calcite_si": np.nan, "ocean_si": np.nan,
+                       "alk_flux": np.nan, "pH_seafloor": np.nan}
+        _final = getattr(self, '_state', None)
+        if _final:
+            diagnostics["da"] = float(_final.get('Da', np.nan))
+            diagnostics["pH_seafloor"] = float(_final.get('pH_seafloor', np.nan))
+            # Tmol eq/yr, normalised on A_SEAFLOOR_EARTH (0.7 of Earth's surface) -- the
+            # same fixed normalisation plot_results uses, so the two agree exactly.
+            diagnostics["alk_flux"] = (float(_final.get('alk_flux_lt', np.nan))
+                                       * A_SEAFLOOR_EARTH * YR / 1e12)
+            # Ocean calcite SI is only meaningful while there is calcium left to saturate with;
+            # at the ODE floor PHREEQC returns a spurious -inf.
+            _ocean_si = (_final.get('ocean_SI') or {}).get('Calcite', np.nan)
+            if sol.y[2 + ca_idx, -1] > 1e-6:
+                diagnostics["ocean_si"] = float(_ocean_si)
+            _b_pore = _final.get('b_pore')
+            if _b_pore is not None:
+                try:
+                    _, _, _si_p = get_precipitation(
+                        _final['P_pore'], _final['T_pore'],
+                        np.maximum(np.asarray(_b_pore, dtype=float), 0.0),
+                        precipitating_minerals=['Calcite'],
+                        precipitation_timescale=1e6 * YR, pe=self.pe)
+                    diagnostics["calcite_si"] = float(_si_p.get('Calcite', np.nan))
+                except Exception:
+                    pass
+        diagnostics = {k: (None if v is None or not np.isfinite(v) else v)
+                       for k, v in diagnostics.items()}
+
         with open(self._output_filename, 'r') as f:
             output_data = json.load(f)
 
         output_data.update({
+            "diagnostics": diagnostics,
             "simulation_time_seconds": end - start,
             "termination": termination,
             "domain_wall": domain_wall,

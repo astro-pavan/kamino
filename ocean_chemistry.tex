@@ -1,0 +1,382 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Basic setup. Most papers should leave these options alone.
+\documentclass[fleqn,usenatbib]{mnras}
+
+% MNRAS is set in Times font. If you don't have this installed (most LaTeX
+% installations will be fine) or prefer the old Computer Modern fonts, comment
+% out the following line
+\usepackage{newtxtext,newtxmath}
+% Depending on your LaTeX fonts installation, you might get better results with one of these:
+%\usepackage{mathptmx}
+%\usepackage{txfonts}
+
+% Use vector fonts, so it zooms properly in on-screen viewing software
+% Don't change these lines unless you know what you are doing
+\usepackage[T1]{fontenc}
+
+% Allow "Thomas van Noord" and "Simon de Laguarde" and alike to be sorted by "N" and "L" etc. in the bibliography.
+% Write the name in the bibliography as "\VAN{Noord}{Van}{van} Noord, Thomas"
+\DeclareRobustCommand{\VAN}[3]{#2}
+\let\VANthebibliography\thebibliography
+\def\thebibliography{\DeclareRobustCommand{\VAN}[3]{##3}\VANthebibliography}
+
+
+%%%%% AUTHORS - PLACE YOUR OWN PACKAGES HERE %%%%%
+
+% Only include extra packages if you really need them. Avoid using amssymb if newtxmath is enabled, as these packages can cause conflicts. newtxmatch covers the same math symbols while producing a consistent Times New Roman font. Common packages are:
+\usepackage{graphicx}	% Including figure files
+\usepackage{amsmath}	% Advanced maths commands
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%%%%% AUTHORS - PLACE YOUR OWN COMMANDS HERE %%%%%
+
+% Please keep new commands to a minimum, and use \newcommand not \def to avoid
+% overwriting existing commands. Example:
+%\newcommand{\pcm}{\,cm$^{-2}$}	% per cm-squared
+%\newcommand{\pco2}{P_{\mathrm{CO}_{2}}}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%%%%%%%%%%%%%%%%%%% TITLE PAGE %%%%%%%%%%%%%%%%%%%
+
+% Title of the paper, and the short title which is used in the headers.
+% Keep the title short and informative.
+\title[Short title, max. 45 characters]{Do Ocean Worlds have stable climates?}
+
+% The list of authors, and the short list which is used in the headers.
+% If you need two or more lines of authors, add an extra line using \newauthor
+\author[P. Tanna et al.]{
+Pavan Tanna,$^{1}$\thanks{E-mail: pt426@cam.ac.uk (PT)}
+Oliver Shorttle,$^{1,2}$
+\\
+% List of institutions
+$^{1}$Institute of Astronomy, University of Cambridge\\
+$^{2}$Department of Earth Sciences, University of Cambridge
+}
+
+% These dates will be filled out by the publisher
+\date{Accepted XXX. Received YYY; in original form ZZZ}
+
+% Prints the current year, for the copyright statements etc. To achieve a fixed year, replace the expression with a number. 
+\pubyear{\the\year{}}
+
+% Don't change these lines
+\begin{document}
+\label{firstpage}
+\pagerange{\pageref{firstpage}--\pageref{lastpage}}
+\maketitle
+
+% Abstract of the paper
+\begin{abstract}
+This is a simple template for authors to write new MNRAS papers.
+The abstract should briefly describe the aims, methods, and main results of the paper.
+It should be a single paragraph not more than 250 words (200 words for Letters).
+No references should appear in the abstract.
+\end{abstract}
+
+% Select between one and six entries from the list of approved keywords.
+% Don't make up new ones.
+\begin{keywords}
+keyword1 -- keyword2 -- keyword3
+\end{keywords}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%%%%%%%%%%%%%%%%% BODY OF PAPER %%%%%%%%%%%%%%%%%%
+
+\section{Introduction}
+
+% What is the problem?
+The stable climate state of a terrestrial planet in the circumstellar habitable zone (the range of distances from a host star where a planet can have liquid water on its surface) is assumed to be maintained by the continental silicate weathering climate feedback, acting as a thermostat that maintains habitable temperatures on a planet \citep{walker_negative_1981, kasting_habitable_1993, kopparapu_habitable_2013}. This model neglects the effect of seafloor weathering in off-axis hydrothermal systems, which is critical on ocean covered planets with little or no land. This feedback process is modulated by tectonic processes such as crust production rate and outgassing rate, as well as other ocean chemistry processes such as calcite precipitation, clay formation [or life].
+
+% How likely are ocean worlds?
+
+Water is an essential requirement for all types of known life, and is probably a requirement for any type of biological activity \citep{keller_exploration_2025}. Water-rich planets thus provide a good potential area to search for habitable planets. With water being a very common molecule \citep{noack_water_2017}, water rich planets may be widespread throughout the galaxy \citep{lichtenberg_water_2019}. This leads to an intriguing possible type of planet: Ocean Worlds. These are planets covered in significant amounts of liquid water in vast planet spanning oceans.
+
+Likelihood of ocean worlds
+How prevalent is water??
+\cite{guimond_water_2026} - land vs water
+% MORE CITATIONS NEEDED
+
+% Introduce the climate thermostat
+The faint young Sun paradox [Crowley 1983, Barron 1984], the supposed contradiction between the Earth's relatively unchanging habitable surface temperature and the Sun's steadily increasing luminosity is solved by the silicate weathering feedback first proposed by \cite{walker_negative_1981}. Carbon dioxide in the atmosphere dissolves in rain and weathers silicate rocks on the surface, dissolving cations and producing bicarbonate. The cations and bicarbonate react in the ocean forming carbonate minerals that are buried and return to the mantle, removing carbon from the ocean-atmosphere system. When weathering is stronger, more CO2 is removed from the atmosphere. Weathering is stronger at higher temperatures, which consequently reduces the greenhouse effect and cooling the planet, providing a stabilising negative climate feedback.
+
+% Introduce the habitable zone
+This climate feedback was used to find the limits of the circumstellar habitable zone (HZ) by \cite{kasting_habitable_1993} (later updated with updated absorption lines and stellar spectra by \cite{kopparapu_habitable_2013}). The absolute inner edge of the habitable zone is determined by the moist and runaway greenhouse effects. In the runaway greenhouse state the atmosphere becomes optically thick to infrared radiation (due to high water vapour content in the atmosphere) and the surface temperature decouples from the rest of the atmosphere \citep{innes_runaway_2023, ingersoll_runaway_1969}. In the moist greenhouse state, the stratosphere becomes water vapour dominated. H2 is photolyzed in the stratosphere from H2O and the planet loses its water. The outer edge of the HZ is determined by CO2. With sufficient amounts of pCO2 (10 bar) increasing the CO2 increases infrared scattering without increasing infrared absorption, setting a maximum greenhouse effect \citep{kasting_co_1991, kopparapu_habitable_2013}. % Is this needed???
+
+% Introduce thermodynamic limits vs kinetic limits
+Classic weathering rate laws (such as that in \cite{walker_negative_1981}) are derived from chemical kinetics with an exponential relationship with temperature from the arrhenius equation and a power law relationship with pH. This relies on the assumption that there is an infinite supply of weatherable rock and that the fluid residence time is sufficiently short that it is undersaturated with the dissolving minerals. \cite{maher_hydrologic_2014} incorporate a limited supply of weatherable rock (known as the `supply limit') and the effect of equilibrium chemistry, where the fluid residence time is high enough that the fluid reaches equilibrium with the dissolving minerals (known as the `thermodynamic limit'). This transport limited weathering requires the fluid flow rate and the rock production rate (alongside temperature and pH) as further input parameters. This weathering model has been applied to the classical habitable zone calculation by \cite{graham_thermodynamic_2020}.
+
+% Justification for transport limits
+Stagnant lid planets
+\cite{honing_carbon_2019}
+
+% Introduce previous work with seafloor weathering
+\cite{krissansen-totton_constraining_2017, krissansen-totton_constraining_2018} developed a chemical kinetics based seafloor weathering model for constraining the climate and ocean pH of the early Earth. This weathering law was used by \cite{coogan_controls_2022} to model Cenezoic ocean chemistry, incorporating continental weathering, seafloor weathering, high temperature hydrothermal chemistry. The model was extended to include reverse weathering and volcanic outgassing \citep{coogan_model_2026}. \cite{hayworth_waterworlds_2020} used the weathering law from \cite{krissansen-totton_constraining_2017} to examine the effect of land fraction on the climate buffering capacity of terrestrial exoplanets. 
+
+% Previous work on transport limited seafloor weathering
+\cite{hakim_lithologic_2021} created an updated weathering law using the \cite{maher_hydrologic_2014} framework with 3 different lithologies (granite, basalt and peridotite). Given that oceanic crust is made of basalt, this allows the law to be used for seafloor weathering. They highlight that when basalt dissolves to equilibrium, the equilbriums point shifts to more dissolution at lower rather than high temperatures. This leads to decreasing weathering at higher temperatures at the thermodynamic limit, which leads to more atmospheric CO2, more greenhouse warming, which acts as a positive feedback. This leads to a climate instability. 
+
+% Limitations of that work (THIS NEEDS WORK)
+The \cite{hakim_lithologic_2021} weathering law has some key limitations. A result of the \cite{maher_hydrologic_2014} used by \cite{hakim_lithologic_2021} framework is that any temperature or pH dependence is effective shut off in the supply limit. Even in limiting case of very low rock production, there will be some limited amount of weatherable rock, however limited. It assumes that the weathering kinetics is limited by the slowest reacting mineral, which can lead to some anomalously small weathering rates from extremely slow reacting minerals. 
+Limited by the fact that the model was developed for continental weathering. The seafloor weathering from \cite{hakim_lithologic_2021} use parameters for the reactive area, fluid flow rate and path that are derived from continental weathering studies, and don't match observations of seafloor weathering on Earth.
+
+% Introducing reverse weathering (NEED FOUNDATIONAL REVERSE WEATHERING CITATIONS)
+Reverse weathering is the formation of authigenic clays at the seafloor that consumes cations, silica and alkalinity \cite{isson_reverse_2018}. This consumption of alkalinity affects the ocean's ability to sequester carbon and thus the stability of the planet's climate. Reverse weathering has been studied in the context of the early Earth \citep{isson_reverse_2018, coogan_model_2026} but has not been implemented in an exoplanet context.
+
+% Modelling the CCD and its effect of the climate cycle
+CCD
+% This is underdeveloped in the code
+\cite{hakim_diverse_2023}
+
+What we're doing now:
+New seafloor weathering model from first principles
+With thermodynamic limits and supply constraints
+Different formulation to MAC which was developed for continental weathering
+Can vary lithology of seafloor
+Can track multiple elements
+Allows us to implement reverse weathering
+
+It will show:
+The kinetic/thermodynamic limit in the parameter space
+Can predict ocean pH
+Can predict salinity (via proxy? or not)?
+Effect of life on climate??????
+Will tell us a bit about ocean planet habitability and the chemical conditions of the ocean
+
+- What sections are in the paper
+Methods
+Results
+Discussions
+Conclusion
+
+\section{Methods}
+% Review this
+We created a box model of an ocean covered planet, with chemical reactions between the oceanic crust and the the ocean???. We assume the ocean is chemically isotropic and has constant depth. We track the ocean's alkalinity, the concentrations of carbon, calcium, magnesium, iron, aluminium, sodium and chlorine, and the atmospheric PCO2. The ocean is coupled to the climate. We evolve the planets for 2 Gyr.
+
+
+
+Geochemical calculations in the model are primarily carried out by PHREEQC \cite{pparkhurst_description_2013}. 
+
+The equilibrium concentration (moles per unit mass of water) of a solution are calculated as follows,
+
+\begin{equation}
+     b_{eq} = f_{\mathrm{eq,PHREEQC}}(P, T, P_{\mathrm{CO2}}, b_{in}),
+\end{equation}
+
+where $P$ is the pressure (1 atm at the surface and seafloor pressure for seafloor reactions), $T$ is the temperature, $P_{\mathrm{CO2}}$ is the atmospheric CO2 partial pressure, and $b_{in}$ is the solution concentrations before equilibrium.
+
+The kinetic reaction rate (in moles per unit time per unit reactive area) is given by,
+
+\begin{equation}
+    k = f_{\mathrm{kinetics}}(T, \mathrm{pH}).
+\end{equation}
+
+$k$ is always calculated with $b_{eq}$ and uses the pH calculated from the equilibrium calculation.
+
+A solution pH is calculated by
+
+\begin{equation}
+    \mathrm{pH} = f_{\mathrm{pH,PHREEQC}}(P, T, b_{in}).
+\end{equation}
+
+The partial pressure of CO2 above a solution is calculated by
+
+\begin{equation}
+    P_\mathrm{CO2} = f_{\mathrm{pH,PHREEQC}}(P, T, b_{in})
+\end{equation}
+
+The precipitation rate is calculated as follows:
+
+\begin{equation}
+    \dot b_{\mathrm{prec}} = \frac{b_{eq} - b_{in}}{\tau_{prec}},
+\end{equation}
+
+where $F_{\mathrm{prec}}$ is the precipitation rate per unit mass of water, $b_{eq}$ is the equilbrium concentration (calculated as above) when all supersaturated minerals have precipitated, $b_{in}$ is the input concentrations, and $\tau_{prec}$ is the precipitation timescale and controls the strength of the precipitation.
+
+STILL NEEDED:
+
+Volcanic fluxes
+Seafloor temperatures
+Vector and evolution
+Continental fluxes for callibration
+
+\subsection{Crust Composition}
+
+We assume that a planet has a constant flux of new unweathered crust and is matched by an identical crust burial rate. This assumption works well for a planet with plate tectonics. For stagnant lid planets, crust production is more stochastic process. However, the model timescale is sufficiently long (2 Gyr) that we can treat stagnant lid crust production as a constant process as well. 
+
+Exoplanet oceanic crusts are likely to have a range of mineralogies beyond that of Earth-like basalt \citep{guimond_stars_2024}. The mineral assemblage of the oceanic crust will modify the behaviour of the seafloor weathering due to the different chemical kinetics and different compositions of each mineral. To sweep a range of likely crust compositions, we choose the planet's mantle oxygen fugacity at accretion ($\Delta \mathrm{IW}$) which controls the iron content of the mantle, and the mantle Mg/Si ratio which controls whether a mantle is more olivine or pyroxene rich.  
+
+To generate the crust composition, we start with the primitive mantle composition from \cite{mcdonough_composition_1995}. The iron oxide mole fraction ($X_{\mathrm{FeO}}$) is set by the oxygen fugacity of the mantle at accretion (represented by $\Delta \mathrm{IW}$),
+
+\begin{equation}
+    X_{\mathrm{FeO}} = X_{\mathrm{FeO},\oplus} \,10^{\frac{\Delta\mathrm{IW} - \Delta\mathrm{IW}_{\oplus}}{2}}, 
+\end{equation}
+
+where $X_{\mathrm{FeO},\oplus}$ is the iron oxide fraction in Earth's mantle (from \cite{mcdonough_composition_1995}) and $\Delta\mathrm{IW}_{\oplus}$ is Earth's mantle oxygen fugacity. After the iron oxide fraction is calculated, the magnesium and silicon composition is then rebalanced to give the the Mg/Si ratio. The untracked oxides titanium, potassium and chromium are removed and the composition is renormalised.
+
+This mantle oxide composition then needs to be converted into a crust oxide composition. This is done with MAGEMin \citep{riel_magemin_2022}, a Gibbs free energy minimiser that can calculate the melt state of the mantle with the given composition at a fixed temperature and pressure. Starting at 3 GPa, the mantle melt state and entropy is calculated, the pressure is then reduced and the temperature is adjusted to maintain constant entropy, ending at 1 GPa. The mantle potential temperature is solved so that the melt fraction is 0.2, in line with \cite{guimond_stars_2024}.
+
+The the crust mineral composition is calculated with the CIPW norm from melt oxide compositions using \cite{williams_pyrolite_2020}. The CIPW norm gives larnite as an output mineral. This is unlikely to be present in the crust so is replaced with akermanite, with the extra magnesium drawn from the diopside, releasing silica. The excess silica from this exchange converts nepheline to albite. Excess silica from the nepheline albite exchange becomes quartz.
+
+\subsection{Weathering}
+
+Introduce chemical kinetics
+Introduce thermodynamic limit
+Introduce supply via crust production
+Full formula
+
+The seafloor weathering is calculated as follows. The water enters the low temperature pore space at seawater concentrations. The primary basalt minerals dissolve, modifying the pore space concentrations. In this pore space water, secondary clay minerals precipitate out. The rest of the water then re enters the ocean.
+
+The water rock primary dissolution are based on the weathering formula from Maher & Chamberlain (2014), which models a weathering flux in both the kinetic and thermodynamic limits. The water rock reaction starts by modelling the dissolution of the primary minerals, given by the following formula,
+
+\begin{equation}
+    F_p=\frac{A_r(b_{eq} - b_{in})}{\frac{b_{eq}}{k_p} + \frac{A_r}{J}},
+\end{equation}
+
+where $F_p$ is the flux per unit area of seafloor from the dissolution, $A_r$ is the reactive area per unit area of seafloor, $b_{in}$ is the concentration from the incoming seawater, $b_{eq}$ is the equilibrium concentration of the reaction, $k_p$ is the reaction rate per unit area of seafloor and $J$ is the hydrothermal water mass flux per unit area seafloor. $b_{eq}$ and $k_p$ are both calculated by PHREEQC.
+
+Only freshly created exposed oceanic crust is weatherable. Oceanic crust is only weatherable when the crust is exposed to the seafloor and not covered by sediment. We can calculated the weatherable fraction of seafloor by,
+
+\begin{equation}
+    A_r = \alpha R \tau_{\mathrm{cover}} \left( 1 - e^{-\frac{1}{R \tau_{\mathrm{cover}}}} \right) ,
+\end{equation}
+
+where $\alpha$ is the base reactive area of crust per unit area of crust (this is a tunable parameter), $R$ is the crust production rate in fraction of seafloor per unit time, $\tau_{\mathrm{cover}}$ is the timescale for the crust to be covered by sediment forming in the ocean and is given by,
+
+\begin{equation}
+    \tau_{\mathrm{cover} = F_{\mathrm{prec}} \frac{\mu}{\rho} \frac{V_o}{D_o},
+\end{equation}
+
+where $F_{\mathrm{prec}}$ is the precipitation rate in the ocean (in moles per unit time), $\mu$ is the precipitating mineral mean molecular weight, $\rho$ is the mineral density, $V_o$ is the ocean volume and $D_o$ is the depth of the ocean.
+
+After the primary dissolution, the pore space water concentration ($b_p$) is calculated as follows:
+
+\begin{equation}
+    b_p = b_{in} + \frac{F_p}{J}.
+\end{equation}
+
+The secondary precipitation is calculated from the concentration of the pore water. The final weathering flux is given by
+
+\begin{equation}
+    F_{\mathrm{diss}} = F_p + \dot b_{prec} J.
+\end{equation}
+
+\subsection{Precipitation}
+
+The precipitation rate of secondary minerals in the ocean is calculated from the ocean ion concentrations at the seafloor pressure and temperature. This is because the precipitating minerals have to survive falling to the seafloor without being redissolved. This allows the effect of a changing Calcite Compensation Depth (CCD) to be modelled. 
+
+The precipitating minerals include carbonate minerals (calcite, siderite, nahcolite) which act as sinks for Ca, Fe and Mg, reverse weathering minerals (sepiolite(d), saponite-Na, greenalite) and amorphous silica.      
+
+
+Element sink requirements
+Calcite precipitation
+Silica precipitation
+Clay precipitation (reverse weathering)
+Describe methods
+
+\subsection{Other Chemical Processes}
+
+High temperature Ca-Mg exchange
+Na removal
+Cl subduction
+
+\subsection{Atmosphere \& Climate}
+Henry's Law leads to gas partial pressures
+Uses Clima interpolator/analytic climate model
+
+\subsection{Calibration}
+Calibration of seafloor area parameter
+Choosing timescales??
+Discrepancies with normal studies??
+
+\subsection{Parameter Sweeps}
+
+Sweep of outgassing + crust production
+Sweep of ocean depth
+Sweep of crust composition
+Effect of various chemical processes
+
+\section{Results}
+
+Parameter sweeps:
+- Basic crust production + outgassing sweep
+- Ocean depth
+- Crust composition
+
+Modelling choices + checks
+- Pure kinetic weathering?
+- Weathering with no 
+- Reverse weathering
+- High temperature hydrothermal systems
+
+Tracking the thermodynamic limit
+
+\section{Discussions}
+
+Implications for climate stability + habitability
+
+Implications for stagnant lid planets
+
+Implications for atmospheric chemistry
+- Solubility plot
+- Photochem coupling
+
+Implications for life/origin of life
+
+Implications for observations
+
+Limitations of the model + future work
+- Ocean circulation and bottom water temperature
+- Tidal locking
+- Chemical mismatches
+- More sophisticated climate modelling
+- Integration with full atmospheric chemistry??
+
+\section{Conclusions}
+
+The last numbered section should briefly summarise what has been done, and describe
+the final conclusions which the authors draw from their work.
+
+\section*{Acknowledgements}
+
+The Acknowledgements section is not numbered. Here you can thank helpful
+colleagues, acknowledge funding agencies, telescopes and facilities used etc.
+Try to keep it short.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section*{Data Availability}
+
+ 
+The inclusion of a Data Availability Statement is a requirement for articles published in MNRAS. Data Availability Statements provide a standardised format for readers to understand the availability of data underlying the research results described in the article. The statement may refer to original data generated in the course of the study or to third-party data analysed in the article. The statement should describe and provide means of access, where possible, by linking to the data or providing the required accession numbers for the relevant databases or DOIs.
+
+
+
+
+%%%%%%%%%%%%%%%%%%%% REFERENCES %%%%%%%%%%%%%%%%%%
+
+% The best way to enter references is to use BibTeX:
+
+\bibliographystyle{mnras}
+\bibliography{references} % if your bibtex file is called example.bib
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%%%%%%%%%%%%%%%%% APPENDICES %%%%%%%%%%%%%%%%%%%%%
+
+\appendix
+
+\section{Some extra material}
+
+If you want to present additional material which would interrupt the flow of the main paper,
+it can be placed in an Appendix which appears after the list of references.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
+% Don't change these lines
+\bsp	% typesetting comment
+\label{lastpage}
+\end{document}
+

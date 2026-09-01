@@ -42,15 +42,28 @@ from kamino.crust_composition import CRUST_TABLE, cipw_norm
 # Fixed slice order, silica-rich -> silica-poor, with the albite->nepheline cascade pair
 # adjacent. Changing this changes which colour pairs touch; see the module docstring.
 MINERALS = ['Quartz', 'Albite', 'Nepheline', 'Anorthite',
-            'Diopside', 'Akermanite', 'Enstatite', 'Forsterite', 'Fayalite']
+            'Diopside', 'Hedenbergite', 'Akermanite',
+            'Enstatite', 'Ferrosilite', 'Forsterite', 'Fayalite']
 COLORS = {'Quartz': '#2a78d6', 'Albite': '#eb6834', 'Nepheline': '#1baf7a',
-          'Anorthite': '#4a3aa7', 'Diopside': '#e87ba4', 'Akermanite': '#e87ba4',
-          'Enstatite': '#008300', 'Forsterite': '#eda100', 'Fayalite': '#e34948'}
-# Nine minerals, eight documented hues. Rather than invent a ninth, Akermanite takes
-# Diopside's hue with a hatch -- composite encoding, and semantically exact: akermanite IS
-# the diopside desilication product (norm step 5c). The hue ring is therefore unchanged and
-# its CVD validation still holds; the two are adjacent, so the boundary is a texture edge.
-HATCHED = {'Akermanite': '///'}
+          'Anorthite': '#4a3aa7', 'Diopside': '#e87ba4', 'Hedenbergite': '#e87ba4',
+          'Akermanite': '#e87ba4', 'Enstatite': '#008300', 'Ferrosilite': '#008300',
+          'Forsterite': '#eda100', 'Fayalite': '#e34948'}
+# Eleven minerals, eight documented hues. Rather than invent new ones, each derived phase takes
+# its PARENT's hue with a hatch -- composite encoding, and semantically exact in every case:
+#
+#   Akermanite   <- Diopside     the diopside desilication product (norm step 1)
+#   Hedenbergite <- Diopside     the Fe endmember of the same clinopyroxene
+#   Ferrosilite  <- Enstatite    the Fe endmember of the same orthopyroxene
+#
+# The hue ring is therefore unchanged and its CVD validation still holds. Each hatched phase is
+# placed ADJACENT to its parent in MINERALS, so the shared-hue boundary is always a texture edge
+# rather than two same-coloured wedges separated by something else.
+#
+# Hedenbergite and Ferrosilite were added 2026-08-27. They are not optional decoration: since the
+# Fe-pyroxene adoption (development history 27) the norm emits them unconditionally, and they
+# carry up to 39 wt% of the crust at reduced, silica-rich compositions. Before this they were
+# silently dropped from every pie, so the wedges did not sum to the assemblage.
+HATCHED = {'Akermanite': '///', 'Hedenbergite': '...', 'Ferrosilite': '...'}
 
 INK, INK_2, INK_3 = '#1a1a19', '#55554e', '#8a8a80'
 SURFACE, MUTED = '#ffffff', '#e8e8e2'
@@ -146,7 +159,7 @@ def main(table, out):
     fig.text(0.5, 0.929,
              'MAGEMin primary melts at 20% melting, through the CIPW norm.  '
              'Number under each pie is melt SiO$_2$ (wt%).  '
-             'Hatched = Akermanite (proxied kinetics).',
+             'Hatched = proxied kinetics (Akermanite; Fe-pyroxenes on augite).',
              ha='center', fontsize=8.5, color=INK_2)
     fig.text(0.5, 0.086, 'Mantle molar Mg/Si', ha='center', fontsize=10, color=INK)
     fig.text(0.018, 0.5, 'Core-formation $\\Delta$IW', va='center', rotation=90,
@@ -161,10 +174,13 @@ def main(table, out):
     if any(r['mass_violating'] for r in records):
         handles.append(plt.Rectangle((0, 0), 1, 1, facecolor=MUTED, edgecolor='none'))
         labels.append('beyond norm')
-    fig.legend(handles, labels, loc='lower center', ncol=len(labels), frameon=False,
+    # Two rows once the Fe endmembers are included -- 12 entries on one row overruns the figure
+    # width and shrinks the type below the 8 pt floor.
+    ncol = len(labels) if len(labels) <= 7 else (len(labels) + 1) // 2
+    fig.legend(handles, labels, loc='lower center', ncol=ncol, frameon=False,
                fontsize=8, bbox_to_anchor=(0.5, 0.002), handlelength=1.1, columnspacing=1.3)
 
-    fig.subplots_adjust(left=0.072, right=0.945, top=0.885, bottom=0.150,
+    fig.subplots_adjust(left=0.072, right=0.945, top=0.885, bottom=0.175,
                         wspace=0.10, hspace=0.02)
 
     for ext in ('png', 'pdf'):

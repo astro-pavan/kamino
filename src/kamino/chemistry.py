@@ -400,14 +400,38 @@ def _knobs_block() -> list[str]:
     ]
 
 def _solution_block(P: float, T: float, b: npt.NDArray[np.float64],
-                    pH: float | None, trace_approximation: bool) -> list[str]:
-    """PHREEQC SOLUTION block: bulk composition at (P, T)."""
+                    pH: float | None, trace_approximation: bool,
+                    pe: float | None = None) -> list[str]:
+    """PHREEQC SOLUTION block: bulk composition and redox state at (P, T).
+
+    `pe` is the redox master variable. Leaving it None does NOT mean "no redox assumption" --
+    PHREEQC then falls back to its own default of pe = 4.0, which at seawater pH is firmly
+    OXIDISING (Eh ~ +0.24 V) and keeps Goethite (ferric, FeOOH) supersaturated. Every result
+    produced before this parameter existed carries that hidden assumption.
+
+    Measured response of the iron system at Earth pore conditions (Pitzer database, 50 uM Fe):
+
+        pe      Goethite SI   Siderite SI
+        +12        +7.65         -9.33      modern oxic seawater
+        +4         +7.64         -1.34      <- PHREEQC's default, i.e. the old behaviour
+         0         +5.65         +0.43      siderite (ferrous) takes over
+        -3         +3.66         +0.43      anoxic marine pore water
+        -6         -0.34         +0.43      goethite finally undersaturated
+
+    Note the Pitzer database's ONLY redox couple is Fe(2)/Fe(3) (`Fe+2 = Fe+3 + e-`); its oxygen
+    master `Oxg` is a decoupled inert gas (`Oxg = Oxg`), so the `fO2` argument threaded through
+    this module CANNOT set redox on that database -- verified inert from 1 to 1e-14 PAL. pe is the
+    control that works. `lt_weathering_sit.dat` does carry a proper `O(0)` master and would
+    respond to fO2, at ~9x the runtime (section 25.12).
+    """
     lines = [
         'SOLUTION 1',
         f'    pressure  {P / EARTH_ATM:.4f}',
         f'    temp      {max(T + ABSOLUTE_ZERO, 0.01):.4f}',  # LLNL database valid from 0.01°C
         '    units     mol/kgw',
     ]
+    if pe is not None:
+        lines.append(f'    pe        {pe:.4f}')
     if pH is not None:
         lines.append(f'    pH     {pH:5f}')
     for element, x in zip(elements, b):
@@ -470,14 +494,14 @@ def _output_block(high_temperature: bool, reported_phases: list[str]) -> list[st
         lines.append('    -equilibrium_phases ' + ' '.join(reported_phases))
     return lines
 
-def solve_solution(P: float, T: float, b: npt.NDArray[np.float64], pH: float | None=None, P_CO2: float | None=None, precipitating_minerals: list[str]=[], equilibriating_minerals: list[str]=[], equilibriating_amounts: dict[str, float] | None=None, high_temperature: bool=False, fO2: float=0, trace_approximation: bool=True, precipitation_SI: float=0, verbose: bool=False, dissolve_only_primary: bool | None=None):
+def solve_solution(P: float, T: float, b: npt.NDArray[np.float64], pH: float | None=None, P_CO2: float | None=None, precipitating_minerals: list[str]=[], equilibriating_minerals: list[str]=[], equilibriating_amounts: dict[str, float] | None=None, high_temperature: bool=False, fO2: float=0, trace_approximation: bool=True, precipitation_SI: float=0, verbose: bool=False, dissolve_only_primary: bool | None=None, pe: float | None=None):
 
     # Per-call override of the module-level DISSOLVE_ONLY_PRIMARY toggle (None -> use global).
     do_primary = DISSOLVE_ONLY_PRIMARY if dissolve_only_primary is None else dissolve_only_primary
 
     input_lines = (
         _knobs_block()
-        + _solution_block(P, T, b, pH, trace_approximation)
+        + _solution_block(P, T, b, pH, trace_approximation, pe=pe)
         + _equilibrium_block(P_CO2, fO2, equilibriating_minerals, equilibriating_amounts,
                              precipitating_minerals, precipitation_SI, do_primary)
         + _output_block(high_temperature, equilibriating_minerals + precipitating_minerals)
@@ -536,7 +560,7 @@ def get_k(P: float, T: float, pH: float, composition: dict[str, float]) -> npt.N
 
     return k
 
-def get_b_eq(P: float, T: float, P_CO2: float, composition: dict[str, float], b_input: npt.NDArray[np.float64] | None=None, precipitating_minerals: list[str]=[], high_temperature: bool=False, fO2: float=0, water_rock_ratio: float | None=None, dissolve_only: bool | None=None) -> tuple[npt.NDArray[np.float64], float]:
+def get_b_eq(P: float, T: float, P_CO2: float, composition: dict[str, float], b_input: npt.NDArray[np.float64] | None=None, precipitating_minerals: list[str]=[], high_temperature: bool=False, fO2: float=0, water_rock_ratio: float | None=None, dissolve_only: bool | None=None, pe: float | None=None) -> tuple[npt.NDArray[np.float64], float]:
 
     b_eq = np.zeros(elements.shape)
 
@@ -565,7 +589,7 @@ def get_b_eq(P: float, T: float, P_CO2: float, composition: dict[str, float], b_
     if high_temperature:
         precipitating_minerals = list(precipitating_minerals) + ht_secondary_minerals
 
-    output = solve_solution(P, T, b, P_CO2=P_CO2, equilibriating_minerals=equilibrium_minerals, equilibriating_amounts=eq_amounts, precipitating_minerals=precipitating_minerals, high_temperature=high_temperature, fO2=fO2, dissolve_only_primary=dissolve_only)
+    output = solve_solution(P, T, b, pe=pe, P_CO2=P_CO2, equilibriating_minerals=equilibrium_minerals, equilibriating_amounts=eq_amounts, precipitating_minerals=precipitating_minerals, high_temperature=high_temperature, fO2=fO2, dissolve_only_primary=dissolve_only)
 
     for i, element in enumerate(elements):
         output_key = 'Alk(eq/kgw)' if element == 'Alkalinity' else f'{element}(mol/kgw)'

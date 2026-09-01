@@ -3,7 +3,7 @@ import numpy.typing as npt
 
 from kamino.chemistry import solve_solution, elements, stoichiometry
 
-def get_precipitation_by_mineral(P: float, T: float, b: npt.NDArray[np.float64], precipitating_minerals: list[str], equilibrium_minerals: list[str]=[], fO2: float=0, precipitation_timescale: float=0) -> tuple[dict[str, npt.NDArray[np.float64]], float, dict[str, float]]:
+def get_precipitation_by_mineral(P: float, T: float, b: npt.NDArray[np.float64], precipitating_minerals: list[str], equilibrium_minerals: list[str]=[], fO2: float=0, precipitation_timescale: float=0, pe: float | None=None) -> tuple[dict[str, npt.NDArray[np.float64]], float, dict[str, float]]:
     """As get_precipitation, but keeps each mineral's aqueous flux vector separate.
 
     Returns {mineral: flux_vector} rather than their sum, so a diagnostic can attribute
@@ -16,7 +16,7 @@ def get_precipitation_by_mineral(P: float, T: float, b: npt.NDArray[np.float64],
     may therefore carry a small positive entry; only their sum is guaranteed <= 0.
     """
 
-    output = solve_solution(P, T, b, precipitating_minerals=precipitating_minerals, equilibriating_minerals=equilibrium_minerals, fO2=fO2)
+    output = solve_solution(P, T, b, precipitating_minerals=precipitating_minerals, equilibriating_minerals=equilibrium_minerals, fO2=fO2, pe=pe)
 
     pH = float(output['pH'][-1])
 
@@ -59,10 +59,10 @@ def get_precipitation_by_mineral(P: float, T: float, b: npt.NDArray[np.float64],
     return fluxes_by_mineral, pH, si_dict
 
 
-def get_precipitation(P: float, T: float, b: npt.NDArray[np.float64], precipitating_minerals: list[str], equilibrium_minerals: list[str]=[], fO2: float=0, precipitation_timescale: float=0) -> tuple[npt.NDArray[np.float64], float, dict[str, float]]:
+def get_precipitation(P: float, T: float, b: npt.NDArray[np.float64], precipitating_minerals: list[str], equilibrium_minerals: list[str]=[], fO2: float=0, precipitation_timescale: float=0, pe: float | None=None) -> tuple[npt.NDArray[np.float64], float, dict[str, float]]:
 
     fluxes_by_mineral, pH, si_dict = get_precipitation_by_mineral(
-        P, T, b, precipitating_minerals, equilibrium_minerals, fO2, precipitation_timescale,
+        P, T, b, precipitating_minerals, equilibrium_minerals, fO2, precipitation_timescale, pe=pe,
     )
 
     aqueous_fluxes = np.zeros(elements.shape)
