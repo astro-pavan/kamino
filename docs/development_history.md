@@ -160,6 +160,7 @@ weathering ∝ climate** — that coupling is what carries the thermostat.
 | `K_NA_CONT_REMOVAL` | `2.194806e-03` | Na sink (always-on, `J_total`-scaled) |
 | `alpha` | `1.43` | base reactive area per unit crust area |
 | `f_HT` | `0.0` | vestigial |
+| `pe` | **−3.0** | ocean/pore redox; added 2026-08-27, see §28.3. Was silently PHREEQC's default of +4 |
 | `tau_prec` | **100 kyr x (ocean_depth / 3 km)** | fast precipitation; depth-scaled 2026-08-25, see §26 |
 | `tau_rw` | 5 Myr | reverse weathering; deliberately **not** depth-scaled, see §26.2 |
 | `TAU_ATM` | 10 kyr | atmosphere relaxation |
@@ -970,11 +971,16 @@ confirms the user's position that **timeout runs have essentially converged**.
 was blocking convergence; the transition is now visible (§20.4). The binding constraint has moved from
 chemistry correctness to the **CO₂ ceiling** censoring the thermodynamic branch.
 
-> 🔴 **Added 2026-08-25 (§27.5): the §22 Earth calibration is now stale and blocks the paper
-> figures.** Adopting hedenbergite moved the Earth anchor **−8.2 K at S = 1.0**, so `alpha` and
-> `kd_mg_ht` are fitted to a crust the model no longer produces. §25.12 (the reproducible-database
-> switch) forces the same exercise, so both should be redone together — one calibration, not two.
-> Everything already on disk, including the pilot and the §26 tau runs, predates both changes.
+> 🔴 **Added 2026-08-25 (§27.5), updated 2026-08-27.** The §22 Earth calibration was redone in
+> §28.1 after hedenbergite moved the anchor −8.2 K. That recalibration is **itself now stale**: it
+> ran at the implicit `pe = 4`, and §28.3 changed the default to −3.0, which is worth +11.5 K. The
+> anchor needs re-fitting at the production redox before the paper figures are final.
+>
+> Also open from §28.2: **`alpha` is not identifiable from Earth** (concentrations move < 6% across
+> a 41× change) while the land-free sweeps are kinetically limited (Da ~ 0.005), where `F ∝ alpha`
+> linearly. Production runs at `alpha = 2` as a stated choice, with the alpha arm (2, 10, 50)
+> carrying the sensitivity argument. The feedback STRENGTH is alpha-invariant to 7% over 40×, which
+> is what the composition figures report.
 
 1. **Raise or taper the CO₂ ceiling** to the maximum-greenhouse peak (§9.2/§13), instellation-
    dependent rather than a flat 10 bar. The thermodynamic branch *is* the rising-pCO₂ branch, so it
@@ -3514,3 +3520,517 @@ phases and conserved iron.
   the carbon budget; what mattered was that fayalite is the fastest-dissolving phase in the
   assemblage, so moving mass out of it lowers total crust reactivity. Rate-constant ratios are not
   a proxy for model sensitivity.
+
+---
+
+## 28. The Earth recalibration, the `alpha` problem, and the redox assumption nobody set (2026-08-26 → 08-27)
+
+Three things, in the order they happened, because each one forced the next. §27 invalidated the §22
+calibration, so it was re-run; the re-run exposed that `alpha` is unidentifiable in a way that
+matters for the paper; and a question about whether Goethite can form on an anoxic planet revealed
+that the model had been silently assuming an oxygenated ocean since it was written.
+
+### 28.1 The recalibration
+
+`experiments/calibrate_earth.py`, re-run after §27. Converged on its own tolerance at **25 of 60**
+evaluations, best cost 0.1077.
+
+```
+K_CL_SUBDUCTION   = 1.373251e-04   (analytic, unchanged)
+K_NA_CONT_REMOVAL = 4.272026e-03   (was 2.194806e-03;  §22 got 3.904380e-03)
+KD_MG_HT          = 1.394362e-02   (was 7.0e-02;       §22 got 1.898657e-02)
+ALPHA_REF         = 0.487612       (was 1.43;          §22 got 0.908383)
+```
+
+Earth: `converged`, **T = 294.4 K, pH 7.76, pCO₂ 694 ppm**, `|dlnP/dlnt| = 0.002`, zero fabricated
+derivatives.
+
+| | Na | Ca | **Mg** | Alk | C |
+|---|---|---|---|---|---|
+| this run | −8.3% | +3.0% | **+37.0%** | +33.1% | +32.1% |
+| §22 | −0.9% | +2.9% | +4.0% | +24% | +25% |
+
+**The Mg residual is a consequence of §27, not a solver failure.** The deleted correction reaction
+was `hedenbergite + ½ forsterite → diopside + ½ fayalite`, which consumed forsterite (Mg-only) and
+produced **diopside** (Ca and Mg, 1:1) — it was manufacturing a Ca source out of an Mg-only mineral.
+Removing it changes the Earth-anchor assemblage:
+
+| phase | before §27 | after | |
+|---|---|---|---|
+| Diopside | 0.2447 | 0.1817 | **−25.7%** |
+| Forsterite | 0.1395 | 0.1603 | **+14.9%** |
+
+Rate-weighted at Earth conditions: **Ca supply −9.5%, Mg supply +12.3%, Ca/Mg ratio −19.4%**. The
+calibration's own split metric moved **−24%** (0.990 → 0.752). Those two independent numbers agree,
+so the residual is fully explained by the crust change. `kd_mg_ht` can only trade Mg *for* Ca
+mole-for-mole, so with Ca on target there is no way to pull Mg down; the solver stopped at the
+compromise where Ca wins.
+
+One fix was needed in the script itself: `TAU_PREC_INIT` was pinned at 100 kyr while §26 made
+`tau_prec` depth-scaled, so at Earth's 3700 m the calibration was fitting at a timescale the model
+never uses there. It now resolves through `planet.TAU_PREC_REF` (123 kyr at that depth).
+
+### 28.2 `alpha` cannot be identified from Earth, and the sweeps run where it matters most
+
+The fit reports `alpha = 0.4876`, but that number is not a measurement. Paired evaluations differing
+only in `alpha` return identical oceans, exactly as §22.2 found. Measured directly: across a **41×
+change in `alpha`** (0.4876 → 20, with `K_na`/`kd_mg` fixed at the calibrated values), Earth
+concentrations move **< 6%**:
+
+| alpha | Na | Ca | Mg | seafloor Alk |
+|---|---|---|---|---|
+| 0.4876 | −8.3% | +3.0% | +37.0% | 0.11 Teq/yr |
+| 20 | −9.7% | +5.7% | +42.6% | 7.57 Tmol/yr primary |
+
+The reason is structural, and it is the worst possible arrangement for this paper: **Earth is
+transport-limited, the water worlds are not.** Measured over 19 land-free pilot states, the
+Damköhler number has **median 0.005 and 0/19 above 1**, so `F → A_r·k ∝ alpha` linearly, with
+elasticity `d ln F/d ln alpha` = **0.998 median**. Earth cannot see `alpha` because continental
+weathering dominates at `land_fraction = 0.3`; the sweeps run at land_fraction 0, where `alpha`
+carries the entire thermostat.
+
+**What survives: the FEEDBACK is alpha-invariant.** In the kinetic limit `alpha` is a multiplicative
+constant on the flux, and a constant cancels out of `d ln F/dT`:
+
+| alpha | F(300 K) | **d ln F/dT** |
+|---|---|---|
+| 0.4876 | 1.31e−11 | **0.0781** |
+| 2.0 | 4.85e−11 | **0.0806** |
+| 20.0 | 4.18e−10 | **0.0752** |
+| 200.0 | 3.03e−09 | 0.0402 |
+
+Flat to **7% over a 40× range**, degrading only near 200 where the system starts leaving the kinetic
+limit. So `alpha` sets the absolute CO₂ offset, not the strength or the composition-dependence of
+the feedback — which is what the Mg/Si and ΔIW figures report.
+
+**A degeneracy that only half holds.** At steady state `alpha·g(T, pCO₂) = F_out`, so the solution
+should depend on `F_out/alpha` alone. Tested at fixed ratio 0.05:
+
+| alpha | outgassing | T |
+|---|---|---|
+| 0.4876 | 0.02438 | 306.73 |
+| 2.0 | 0.100 | 308.46 |
+| 20.0 | 1.000 | **327.83** |
+
+4.1× in `alpha` costs 1.7 K, but the full 41× costs **21 K**. It breaks at the top end, where the
+alpha-independent sinks (HT exchange and the Na sink, both ∝ `J_total`) stop rescaling. The
+degeneracy is a low-alpha approximation, not a symmetry, and should not be leaned on.
+
+**Production value: `alpha = 2`, chosen not fitted.** `calibrate_earth.py`'s own diagnostic puts the
+~1 Tmol/yr primary seafloor anchor at `alpha = 10.4`, but adopting it censors the data:
+
+| S | Mg/Si | alpha = 2 | alpha = 10 |
+|---|---|---|---|
+| 0.8 | 1.25 | 296.93 | **279.99** |
+| 1.0 | 1.25 | 308.46 | 298.62 |
+| 1.0 | 0.50 | 339.87 | 316.75 |
+| 1.2 | 1.25 | out_of_domain | out_of_domain |
+
+`alpha = 10` does not rescue the hot end and pushes the cold end under: `CROSS_INSTELLATION` starts
+at 0.50, and a uniform −17 K puts S ≤ 0.7 at or below freezing, removing the cold half of the
+feedback curve. The **alpha arm** (2, 10, 50 — all still in the kinetic limit, Da ≤ 0.13) carries the
+argument instead, which is the stronger claim anyway.
+
+> ⚠️ **The `ALPHA_REF` primary-dissolution anchor is 97% dissolved Fe²⁺.** §22.3 measured 88% and
+> rejected the anchor on those grounds. §27 made it **worse**, not better: fayalite fell 27% but
+> diopside — the main fast Ca source — fell 25.7% while slow anorthite was unchanged, so Ca's share
+> collapsed faster than Fe's. At the calibrated state, `Fe 3.682 Tmol/yr (97.3% of charge)` against
+> `Ca 0.001`. Anchoring `alpha` to Coogan's measured seafloor flux is therefore still unavailable:
+> the model and the observation agree on a magnitude while disagreeing about which ion carries it.
+
+### 28.3 The ocean was oxidising, and nobody had said so
+
+The user asked whether an anoxic atmosphere would affect Goethite formation. It does, and the
+question exposed a genuine defect.
+
+**`chemistry._solution_block` set no `pe` and no `redox`**, so PHREEQC fell back to its own default
+of **pe = 4.0** — firmly oxidising at seawater pH. Goethite (FeOOH, **ferric**) sat unconditionally
+in `clay_minerals`, used for both pore and ocean precipitation. The model is **abiotic by
+construction**: there is no oxygenic photosynthesis, so there is no source of free O₂, and its
+oceans should be reducing.
+
+The code already contained the contradiction. `chemistry.py:92` charges Fe as **+2** in the
+alkalinity balance, justified as *"soluble/conservative under the anoxic conditions where it is
+mobile; oxic Fe precipitates as Goethite"* — the anoxic charge convention and the oxic mineralogy at
+once.
+
+**`fO2` was plumbed through the whole module and did nothing.** Measured from 1 PAL down to 1e−14
+PAL: identical fluxes, Goethite SI 2.939 at every value. The cause is structural — the Pitzer
+database's only redox couple is `Fe+2 = Fe+3 + e-`, and its oxygen master `Oxg` is a decoupled inert
+gas (`Oxg = Oxg`), so imposing `Oxg(g)` fugacity sets dissolved O₂ and touches nothing else.
+`lt_weathering_sit.dat` does carry a proper `O(0)` master and would respond, at ~9× the runtime
+(§25.12).
+
+**`pe` works, and the scan is diagnostic** (Earth pore conditions, 50 µM Fe):
+
+| pe | Goethite SI | Siderite SI | |
+|---|---|---|---|
+| +12 | +7.65 | −9.33 | modern oxic seawater |
+| +4 | +7.64 | −1.34 | **PHREEQC's default = the old behaviour** |
+| 0 | +5.65 | **+0.43** | siderite (ferrous) takes over |
+| −3 | +3.66 | +0.43 | anoxic marine pore water |
+| −6 | **−0.34** | +0.43 | goethite finally undersaturated |
+| unset | **+7.64** | **−1.34** | identical to pe = 4 |
+
+### 28.4 What anoxia does to the climate
+
+`pe` is now a `Planet` parameter, **default −3.0**, plumbed through `_solution_block` →
+`solve_solution` → `get_b_eq` / `get_precipitation` / `get_precipitation_by_mineral` →
+`get_weathering_flux`, and into all four `planet.py` call sites (pore weathering, fast ocean,
+reverse weathering, shelf). Recorded in `planet_config`.
+
+End-to-end at S = 1.0, 3 km, Mg/Si 1.25, dIW −2, alpha 2:
+
+| pe | T | pH | pCO₂ | ocean Fe | Mg | Alk | fallbacks |
+|---|---|---|---|---|---|---|---|
+| **None** | **309.79** | 7.868 | 0.0108 | 0 | 15.76 | 15.65 | 0 |
+| **4.0** | **309.79** | 7.868 | 0.0108 | 0 | 15.76 | 15.65 | 0 |
+| 0.0 | 320.61 | 7.671 | 0.0390 | 0 | 24.13 | 32.16 | 2 |
+| −3.0 | **321.31** | 7.656 | 0.0418 | 0 | 24.62 | 33.18 | 0 |
+| −6.0 | 321.31 | 7.656 | 0.0419 | 0.08 µM | 24.62 | 33.19 | 9 |
+
+`None` reproduces `pe = 4.0` **to every digit** — the hidden assumption, demonstrated at full-model
+level. Anoxia is worth **+11.5 K**.
+
+Two properties make this a well-behaved parameter, unlike `alpha`:
+
+- **It saturates below pe ≈ 0.** pe of 0, −3 and −6 all give 321.3 K, so the value does not need
+  tuning; what matters is the binary oxic/anoxic distinction.
+- **pe = −3 is the numerically cleanest** (0 fallbacks, against 2 at pe = 0 and 9 at pe = −6) and is
+  the middle of the measured range for anoxic marine pore water.
+
+Reference values: modern oxic seawater ~ **+12.5**; anoxic marine pore water ~ **−3 to −5**; Archean
+ocean reconstructions ~ **−3 to 0**.
+
+> **A correction recorded because the first answer was wrong.** An initial test removed Goethite by
+> hand while leaving `pe` at PHREEQC's default of 4, and reported anoxia as **−19 to −30 K** with
+> ocean Fe reaching ~1 mM. That configuration is inconsistent: at pe = 4 **Siderite is also
+> undersaturated**, so iron had no sink at all and piled up unphysically. Done properly, Siderite
+> (FeCO₃) takes over below pe ≈ 0 — the real Archean iron sink, already in `carbonate_minerals` —
+> iron is still removed, and the answer is **+11.5 K, the opposite sign and a third the magnitude**.
+> The mechanism is a stoichiometry swap: Goethite removes 2 eq alkalinity per Fe and no carbon;
+> Siderite removes 2 eq alkalinity **and a mole of carbon**, so the carbon balance closes elsewhere.
+
+**`pe` is a distinct quantity from the two dIW values.** Those set the oxygen fugacity of the
+MANTLE (at core formation, and of the melt); `pe` is the ambient redox of the WATER–ROCK system.
+They must not be conflated.
+
+### 28.5 Consequences
+
+- **Every run on disk predates this**, including the §28.1 calibration itself, which was performed at
+  the implicit `pe = 4`. The Earth anchor should be re-fitted at the production `pe`.
+- **§28.4 roughly doubles the influence of the crust dIW axis.** Iron only matters to the carbon
+  cycle when it stays dissolved, and under anoxia ocean Fe spans 273 → 3022 µM across the dIW range.
+  The §29 measurement that dIW is a weak, phase-boundary-gated control was made at `pe = 4` and is
+  conditional on it.
+- **The `fO2` argument threaded through `chemistry.py` remains inert on the Pitzer database.** It is
+  left in place because it is correct on SIT, but it must not be mistaken for a working control.
+
+### 28.6 Cross-cutting lessons
+
+- **"No setting" is not "no assumption".** Leaving `pe` unset did not make the model agnostic about
+  redox; it made it silently oxidising, because PHREEQC has a default. Every library default that is
+  not written down is a modelling choice made by someone else.
+- **A plumbed parameter is not a working parameter.** `fO2` was threaded through five functions and
+  verified inert only when someone finally scanned it. The database, not the call signature, decides
+  whether a control does anything.
+- **An inconsistent test can invert a result.** Removing Goethite without setting `pe` produced a
+  confident answer of the wrong sign. The check that caught it was asking which sink replaces the
+  one being removed.
+- **A parameter that saturates is worth more than one that is merely fitted.** `pe` has a
+  well-measured natural range and its effect plateaus inside it; `alpha` has neither property, and
+  the difference is why one is a default and the other needs a sensitivity arm.
+
+---
+
+## 29. What the first full sweep shows: Mg/Si dominates, ΔIW is a switch, depth inverts (2026-08-26)
+
+2045 runs in `/home/pavan/PhD/sweep_output` — a basic (outgassing × crust) sweep, a 10-point depth
+sweep, a near-factorial 8 × 7 composition sweep, and a 3-point alpha arm at the reference crust. All
+at `alpha = 2`, the §28.1 constants, and **`pe = 4` (the pre-§28.3 implicit default)**, so every
+number here is conditional on an oxidising ocean.
+
+### 29.1 Mg/Si is ~5× stronger than ΔIW
+
+Across 722 in-domain composition runs (3 km, out = 0.1, crust = 1):
+
+| axis | median T range | mean |
+|---|---|---|
+| **Mg/Si**, at fixed (ΔIW, S) | **45.9 K** | 45.7 K |
+| **ΔIW**, at fixed (Mg/Si, S) | **6.8 K** | 8.9 K |
+
+The Mg/Si ordering is also **stable across redox**: Mg/Si 0.5 is the hottest line in every ΔIW
+column and Mg/Si 2.0 the coldest, so the Mg/Si result does not depend on which ΔIW is chosen.
+
+### 29.2 ΔIW is a phase-boundary switch, not a lever
+
+The ΔIW effect is not a weak continuous trend — it is flat, punctuated by cliffs:
+
+| Mg/Si | ΔIW T-range | assemblage across the axis |
+|---|---|---|
+| 1.00 | 3.1 K | unchanged |
+| 1.75 | 2.6 K | unchanged |
+| 2.00 | 1.6 K | unchanged |
+| **0.80** | **16.6 K** | **quartz out, olivine in** |
+| **1.50** | **13.3 K** | **åkermanite appears** |
+| **1.25** | **12.4 K** | **åkermanite appears** |
+
+**Mean 1.8 K where the mineral assemblage is unchanged; 11.9 K where a phase boundary is crossed.**
+
+**One variable explains the whole grid.** Temperature tracks the rate-weighted Ca+Mg supply from the
+crust with **r = −0.992** across all 44 populated cells, slope **−30.6 K per decade of supply**.
+ΔIW controls mantle FeO, which changes fayalite and hedenbergite — but iron is not a carbon-cycle
+cation (ocean Fe is ~0 in every run at `pe = 4`; it precipitates as Goethite). What matters is when
+the extra FeO shifts the norm across silica saturation or the desilication threshold, because that
+changes how much **Ca and Mg** the crust delivers.
+
+> ⚠️ **Two of the three steps rest on the åkermanite proxy.** Swapping the §25 bracket:
+>
+> | step | slow | mid (default) | fast |
+> |---|---|---|---|
+> | Mg/Si 0.8, silica saturation | −16.8 K | −16.8 K | −16.8 K |
+> | Mg/Si 1.25, åkermanite | **−1.2 K** | −4.6 K | **−21.6 K** |
+> | Mg/Si 1.5, åkermanite | **−5.1 K** | −8.1 K | **−24.0 K** |
+>
+> The **silica-saturation step is proxy-independent** — quartz-out/olivine-in is a real
+> petrological transition and the supply jumps 3.6× regardless. The two åkermanite steps span
+> **−1 to −24 K** on an unmeasured rate and must be reported with the bracket, not as point values.
+
+### 29.3 Ocean depth: three competing effects, and the sign of the temperature response flips
+
+| depth | S = 0.5 | S = 0.8 | S = 1.0 |
+|---|---|---|---|
+| 3 km | 292.2 | 298.3 | 309.8 |
+| 20 km | **266.7** | 308.2 | **343.5** |
+| 30 km | **259.8** | 309.2 | **345.6** |
+
+At **S = 1.0 deep oceans run 34 K hotter**; at **S = 0.5 they run 32 K colder**. Three mechanisms,
+each verified independently:
+
+1. **Weathering is areal, the ocean is volumetric.** The sink per unit ocean mass scales as
+   area/mass = 1/depth, so a 50 km ocean has 1/17th the drawdown per kg of a 3 km ocean. This
+   dominates when warm: pCO₂ goes 0.011 → 0.79 bar at S = 1.0.
+2. **Pressure suppresses carbonate precipitation.** At identical composition and T, calcite SI falls
+   monotonically with pore pressure — **+2.05 at 300 m, +0.02 at 30 km, −1.02 at 50 km**. Below
+   ~30 km calcite stops precipitating, so Ca and alkalinity accumulate instead of being buried. This
+   dominates when cold: at S = 0.5, 20 km, alkalinity reaches 102 mM against 57 at 3 km, holding
+   carbon as DIC rather than atmospheric CO₂.
+3. **Chloride is a clock, not an equilibrium.** `Cl × depth` converges to ~58,000 for every deep
+   ocean but is only 15,900 at 300 m: deep oceans still hold *all* the Cl ever outgassed, while
+   shallow ones have reached the source–sink balance. The relaxation time scales with ocean mass, so
+   at 2 Gyr the deep ones are still filling.
+
+So the deep ocean is a **CO₂ buffer whose sign depends on temperature**: warm → it releases (weak
+sink), cold → it absorbs (no carbonate burial).
+
+**Salinity changes composition, not just magnitude.** At S = 1.0, 3 km → 30 km: Cl falls
+0.58 → 0.07 g/kg while dissolved **Si rises 0.40 → 8.75 g/kg**, becoming 68% of the salt. Shallow
+oceans are chloride brines; deep oceans are silica solutions, because silica has no
+pressure-suppressed sink the way calcite does.
+
+**Deep-ocean points are the least trustworthy in the sweep**: 115 runs terminated `wall_timeout`,
+concentrated at depth, and 50 km is non-monotonic against 30 km at S = 1.0. Treat ≥ 30 km as
+indicative.
+
+---
+
+## 30. Analysis tooling: making the figures reproducible and fast (2026-08-26 → 08-27)
+
+Not physics, but it was blocking the physics.
+
+### 30.1 The plotting code was 30 minutes per invocation, and it was PHREEQC
+
+`_add_diag_columns` re-ran the weathering chemistry for every plotted run to recover the Damköhler
+number, which drives the solid/dashed line styling and is not in the run JSON.
+
+| | |
+|---|---|
+| `_diag_from_json`, per run | **921 ms** |
+| runs in the sweep | 2045 |
+| **total** | **~31 min**, on every invocation |
+| load_data + import + style | 3.4 s |
+
+Over 99% of wall time; matplotlib was never involved. Two fixes, in order of correctness:
+
+**`Planet.time_evolve` now writes the diagnostics it already computed.** `dY_dt` produces `Da`,
+`pH_seafloor`, the ocean SI dict and `b_pore` on every step and was discarding them. The final-state
+re-evaluation that `time_evolve` already performs (§27-era fix for `self._T`) now records:
+
+```json
+"diagnostics": {"da": …, "calcite_si": …, "ocean_si": …, "alk_flux": …, "pH_seafloor": …}
+```
+
+Cost: **one extra PHREEQC solve per run** — the pore-fluid calcite SI, the only one not part of an
+equilibrium `dY_dt` already performs. Verified against the plotting recompute on the same file:
+`da`, `ocean_si` and `pH` agree to 15 significant figures, `calcite_si` and `alk_flux` to 8 (solver
+tolerance from reconstructing the state). `alk_flux` uses the same `A_SEAFLOOR_EARTH` normalisation
+the plots use. Reading the block is **~300,000× faster** than recomputing it.
+
+**A sidecar cache for runs that predate that.** `.plot_diag_cache.json` beside the runs, keyed on
+each file's size and mtime so re-running a sweep invalidates its own entries. **31 min → 28 s.**
+Verified exact: computing 40 runs with and without the cache gives `maxdiff = 0.000e+00` on all five
+columns with matching NaN patterns.
+
+Two bugs surfaced while doing this:
+
+- **`_add_diag_columns` used the FIGURE output directory to locate the run JSONs.** Identical in
+  `__main__`, so it worked there, but any caller rendering elsewhere got *every diagnostic silently
+  NaN* — the bare `except Exception` swallowed the missing-file errors. Fixed with `RUN_PATH`,
+  recorded by `load_data`.
+- **`_save_diag_cache` overwrote instead of merging**, so a partial render shrank a complete cache to
+  the subset that process touched (observed: 2045 → 40 entries).
+
+### 30.2 `_recompute_T` deleted; the source-side fix works
+
+`plot_results` had been recomputing surface temperature from (instellation, P_CO2) because
+`self._T` was a `dY_dt` side effect that could be left on a Jacobian probe's value. `time_evolve`
+now re-evaluates the final state, so this is redundant — measured over all 2045 runs: **mean |ΔT|
+0.0013 K, max 0.30 K, zero runs above 0.5 K**, against the 11 K error it was written for.
+
+It was also becoming harmful: it always called `get_T_surface_analytic` regardless of the run's
+`climate_model`, so it would have silently substituted the analytic model for a clima-interpolator
+run. Moved to `plot_legacy.recompute_T`, applied only under `--legacy` and only to analytic runs.
+
+**Every run above 0.01 K is a `wall_timeout`**, and that is mechanistic: the deadline check sits at
+the top of `dY_dt`, so when `time_evolve` makes its final-state re-call the deadline has already
+passed, the call raises, and `self._T` keeps the aborted probe's value. A real (0.3 K) gap in the
+source-side fix; clearing `self._wall_deadline` before that re-call would close it.
+
+### 30.3 Legacy handling split out
+
+`plot_results.py` now assumes the current run schema and nothing else. `experiments/plot_legacy.py`
+holds a one-way **schema upgrade** (`upgrade(df)`) rather than a second copy of the plotting code —
+old terminations (`snowball`, `hothouse`, `co2_ceiling`, `acid_ocean`, `co2_floor`) map onto
+`out_of_domain` + a `domain_wall`, named crust compositions (`_comp_basalt_49`) map onto the
+reference crust or are given NaN axes, and discontinued `crust_carbonate_content` runs are dropped.
+After `upgrade()`, every current figure renders old data unchanged. Invoked with `--legacy`.
+
+Two of those mappings are **deliberate reclassifications, not translations**, and are documented as
+such: `acid_ocean` was not a CO₂ wall but did stop mid-evolution, and `co2_floor` used to count as a
+snowball outcome but now becomes "unknown fate".
+
+The current 2045-run sweep exercises **none** of the legacy paths.
+
+### 30.4 Page-based figure sizing
+
+Figures are now sized to the page rather than to whatever looked right on screen:
+
+```python
+COLUMN_WIDTH_IN = 240 / 72.27   # 3.32 in -- one MNRAS column
+TEXT_WIDTH_IN   = 504 / 72.27   # 6.97 in -- both columns
+figure_size(width='single'|'double', height=<inches>)
+```
+
+Every publication figure calls it; `diagnostic_size()` covers the wide on-screen grids, which are
+explicitly exempt. `_add_figure_legend` measures the rendered legend and drops a column at a time
+until it fits inside the panel block, so a single-column figure can never be widened by its own
+legend.
+
+**`bbox_inches='tight'` had to go** for publication figures: the style already sets
+`constrained_layout`, and `tight` then re-cropped to the content box and came out **larger** than
+requested (3.43 against 3.32 in). A figure wider than the column gets scaled down by
+`\includegraphics`, shrinking the type below what the style chose.
+
+The style file path was also resolved **relative to the working directory**, so the module raised
+`OSError` at import from anywhere but the repository root. Now resolved against `__file__`, with
+`KAMINO_PRESENTATION=1` selecting the presentation style.
+
+### 30.5 Crust figures were missing the phases the model emits
+
+Enumerated over all 153 table cells:
+
+| mineral | cells | max wt | in `plot_crust_grid` | in `plot_crust_composition` |
+|---|---|---|---|---|
+| Hedenbergite | **153** | 0.157 | ✗ | ✗ |
+| Ferrosilite | 83 | **0.394** | ✗ | ✗ |
+| Akermanite | 46 | 0.117 | ✓ | ✗ |
+| Quartz | 29 | 0.462 | ✓ | ✗ |
+
+Hedenbergite is in **every cell** and both scripts dropped it; `plot_crust_composition` was missing
+four phases, so its stacked bands did not sum to 1 and the shortfall was invisible. Derived
+endmembers now take their parent's hue with a hatch (Akermanite ← Diopside, Hedenbergite ←
+Diopside, Ferrosilite ← Enstatite), which keeps `plot_crust_grid`'s CVD-validated hue ring intact.
+
+`plot_crust_composition.py` was additionally **broken outright** — it called
+`oxide_composition(T_p, mg_si)` with the pre-ΔIW signature, filtered CSV columns such that
+`float("fixed-F")` was attempted, and ignored the `delta_iw` axis entirely (collapsing 153 rows onto
+the Mg/Si axis with 9 stacked at each point).
+
+**0 of 153 cells are now mass-violating** — the åkermanite reroute (§25.5) closed that hole
+completely, and the "beyond norm" exclusion path no longer triggers anywhere.
+
+---
+
+## 31. The sweep design after `pe`: every sweep in both redox states (2026-08-27)
+
+§28.3 made ocean redox a parameter with no defensible single value — the model is abiotic and so
+should be reducing, but every result on disk was produced at the implicit oxidising default, and the
+difference is +11.5 K. `parameter_sweep.py` therefore runs **every sweep under both states** rather
+than choosing:
+
+```python
+PE_REDUCING  = -3.0   # abiotic planet; Siderite (FeCO3) is the iron sink
+PE_OXIDISING = +4.0   # oxygenated ocean; ferric Goethite strips dissolved Fe
+PE_STATES = [PE_REDUCING, PE_OXIDISING]
+```
+
+`+4.0` rather than modern seawater's `+12.5` because it is the value the pre-2026-08-27 sweeps
+implicitly ran at, so the oxidising arm reproduces them exactly. The iron system is saturated by
+then anyway (Goethite SI +7.64 at pe 4 against +7.65 at pe 12).
+
+**Three new sweeps resolve the axis rather than bracketing it**, on `pe_arm = [12, 4, 0, −3, −6]`,
+which spans oxic seawater to below the Goethite saturation boundary (~ −5.8) and straddles the
+Goethite→Siderite switch at pe ≈ 0:
+
+| sweep | runs | what it answers |
+|---|---|---|
+| `pe` | 95 | the redox response curve at 3 km |
+| `pe_deep` | 95 | the same at 20 km — worth separating, because Siderite is a CARBONATE and the deep ocean is where carbonate precipitation is pressure-suppressed (§29.3), so the redox switch and the depth effect may not be independent |
+| `pe_composition` | 630 | **pe × Mg/Si and pe × ΔIW** — whether the composition signal survives the redox choice |
+
+`pe_composition` is the one that matters most. §29.2 measured ΔIW as a weak, phase-boundary-gated
+control, but that was at `pe = 4`, where Goethite strips dissolved iron so it cannot affect the
+carbon cycle at all. Under anoxia iron stays in solution and ΔIW is the parameter that sets how much
+there is, so **the ΔIW result may be substantially redox-dependent** and §29.2 should not be quoted
+without that caveat until this sweep has run.
+
+### 31.1 The resume trap this created, and the guard
+
+A run at the model's own default (`pe = −3`) is deliberately **untagged**, so its filename is
+identical to one from before `pe` existed — which was produced at the implicit `pe = 4`. With
+`RERUN = False`, a reducing sweep pointed at the existing 2045-run directory would have found those
+files and returned them as reducing results: **2045 oxidising runs silently relabelled**. This is
+the fast_13 resume trap in a new costume.
+
+`run_simulation` now checks the `pe` recorded in the JSON against what was requested and re-runs on
+any mismatch, including the `ABSENT` case that identifies pre-`pe` output:
+
+```
+re-running planet_s_1.0_..._kna0.00427203: stored pe='ABSENT' != requested pe=-3.0
+  (output predates the pe parameter?)
+```
+
+Verified end to end: the same configuration under both states produces **309.79 K (oxidising)** and
+**321.31 K (reducing)** with distinct filenames, reproducing §28.4 exactly; and stripping the `pe`
+field from a stored run triggers the guard while the correctly-tagged sibling is still reused.
+
+### 31.2 Cost
+
+Doubling every sweep doubles its cost. Measured per-run times from the pilot (2.72 min shallow,
+15.46 min deep — the deep figure predates §26's `tau_prec` speedup and is an upper bound):
+
+| sweep | runs | CPU-h | wall-h @ 3 |
+|---|---|---|---|
+| `cross` | 252 | 11.4 | 3.8 |
+| `pe` | 95 | 4.3 | 1.4 |
+| `pe_deep` | 95 | 24.5 | 8.2 |
+| `pe_composition` | 630 | 28.6 | 9.5 |
+| `cross_deep` | 252 | 64.9 | 21.6 |
+| `alpha_composition` | 756 | 34.3 | 11.4 |
+| `basic` | 1862 | 84.4 | 28.1 |
+| `basic_deep` | 1862 | **479.8** | 159.9 |
+
+`basic_deep` and `composition_deep` (411 CPU-h) are now firmly overnight-cluster jobs rather than
+laptop jobs. The cheap, high-value order for the paper is **`cross` → `pe` → `pe_composition`**,
+which is ~15 wall-hours at 3 workers and answers the three composition figures plus the redox
+question.
