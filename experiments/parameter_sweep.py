@@ -27,34 +27,31 @@ MAX_CHEMISTRY_FALLBACKS = 5000
 KD_MG_CALIB = 1.394362e-02
 K_NA_CALIB  = 4.272026e-03
 
-# ALPHA is NOT from the fit. The Earth calibration cannot identify it -- measured, ocean
-# concentrations move <6% across a 41x change -- because Earth is transport-limited (Da >> 1)
-# while the land-free worlds these sweeps target are kinetically limited (measured Da ~ 0.005
-# over 19 pilot states, 0/19 with Da > 1), where F is linear in alpha.
+# alpha is STILL NOT identified by the Earth fit, even though it is now the same number the
+# fit reports. Measured, ocean concentrations move <6% across a 41x change in alpha -- because
+# Earth is transport-limited (Da >> 1) while the land-free worlds these sweeps target are
+# kinetically limited (measured Da ~ 0.005 over 19 pilot states, 0/19 with Da > 1), where F is
+# linear in alpha. So ALPHA_REF is a value the joint least-squares solver happened to land on
+# while fitting Na/Ca/Mg (which alpha barely affects), not a measurement of alpha itself -- see
+# development_history.md section 28.2.
 #
-# calibrate_earth.py's own diagnostic puts the ~1 Tmol/yr primary seafloor dissolution anchor
-# that weathering.py documents at alpha = 10.4. That is worth CITING as where alpha would sit,
-# but it is NOT adopted as the production value, because it censors the data:
+# 2026-09-01: production now runs at ALPHA_REF rather than a separately pinned round number, so
+# the main sweeps and the module default can never drift apart again (the drift check in
+# _warn_constant_drift becomes a tautology for alpha specifically, which is the point).
 #
-#     S     Mg/Si   alpha=2   alpha=10
-#     0.8   1.25     296.93     279.99   (-16.9 K)
-#     1.0   1.25     308.46     298.62   ( -9.8 K)
-#     1.0   0.50     339.87     316.75   (-23.1 K)
-#     1.2   1.25   out_of_domain  out_of_domain
+# Re-ran the domain-coverage check (section 28.2) with ALPHA_REF (~1.10015) added as a column:
 #
-# alpha = 10 does not rescue the hot end (S = 1.2 still leaves the domain at 389 K) and pushes
-# the cold end under. CROSS_INSTELLATION starts at 0.50, and a uniform -17 K puts S <= 0.7 at or
-# below freezing, removing the cold half of the feedback curve -- the figure this sweep exists
-# to produce.
+#     S     Mg/Si   alpha=2    alpha=1.10   alpha=10
+#     0.8   1.25    298.33 K   304.49 K     280.01 K
+#     1.0   1.25    321.31 K   327.22 K     310.35 K
+#     1.0   0.50    346.11 K   348.34 K     335.99 K
+#     1.2   1.25    out_of_domain (all three, alpha-independent)
 #
-# So production runs at alpha = 2 and the alpha ARM carries the argument instead. That is the
-# stronger claim anyway: the FEEDBACK STRENGTH is alpha-invariant -- d ln F/dT measured
-# 0.078 / 0.081 / 0.075 at alpha = 0.49 / 2 / 20, flat to 7% over a 40x range (degrading only
-# near 200, where the system starts leaving the kinetic limit). Showing the Mg/Si and dIW
-# orderings unchanged across the arm answers the "alpha is unconstrained" objection directly,
-# where picking a single anchored value would not.
-ALPHA_CALIB = 2.0
-alpha = [2, 10, 50]   # the sensitivity arm; all three stay in the kinetic limit (Da <= 0.13)
+# ALPHA_REF is WARMER than alpha=2 at every point (lower alpha -> weaker weathering -> less
+# cooling), so nothing that stayed in-domain at alpha=2 falls out at ALPHA_REF; the S=1.2 wall is
+# unrelated to alpha entirely. This move relaxes the cold-end constraint, it does not tighten it.
+ALPHA_CALIB = ALPHA_REF
+alpha = [ALPHA_REF, 10, 50]   # the sensitivity arm; all three stay in the kinetic limit (Da <= 0.13)
 
 # ── Ocean redox ───────────────────────────────────────────────────────────────────────────────
 # Every sweep is run under BOTH redox states, because the model has no basis for preferring one
@@ -399,6 +396,14 @@ k_na_default = [K_NA_CALIB]
 mantle_mg_si_default = [EARTH_MANTLE_MG_SI]
 delta_iw_default = [EARTH_DELTA_IW]
 
+# The two Mg/Si end-members the basic sweep is repeated at. They are the mineralogical limits
+# already used for the composition axes: below ~0.8 the mantle goes olivine-free and above ~1.6
+# orthopyroxene-free (Guimond et al. 2024), and past 1.6 the norm is mass-violating and the melts
+# ultracalcic (development history 25.4). So these bracket the range the crust model is valid
+# over, rather than being an arbitrary +/- around Earth's 1.25.
+mantle_mg_si_low = [0.8]
+mantle_mg_si_high = [1.6]
+
 
 # ── The crust-composition cross sweep ──────────────────────────────────────────
 # Axes for the three figures the crust-composition results need: the feedback curve, the Mg/Si
@@ -459,6 +464,25 @@ def sweep_basic_deep(output_path=OUTPUT_PATH, pe=PE_STATES):
                      alpha_default, k_mg_default, k_na_default, pe=pe, output_path=output_path)
 
 
+def sweep_basic_low_mgsi(output_path=OUTPUT_PATH, pe=PE_STATES):
+    """As sweep_basic, on the low-Mg/Si (0.8) crust -- the olivine-free, silica-rich end-member."""
+    return run_sweep(instellation, outgassing, crust_production_rate, ocean_depth_default,
+                     reverse_weathering_default, mantle_mg_si_low, delta_iw_default,
+                     alpha_default, k_mg_default, k_na_default, pe=pe, output_path=output_path)
+
+
+def sweep_basic_high_mgsi(output_path=OUTPUT_PATH, pe=PE_STATES):
+    """As sweep_basic, on the high-Mg/Si (1.6) crust -- the orthopyroxene-free, olivine-rich end.
+
+    Paired with sweep_basic_low_mgsi, this is the outgassing x crust-production plane repeated at
+    both ends of the composition axis, so the feedback strength can be read as a function of
+    crust chemistry rather than only along the one-axis cut the cross design takes.
+    """
+    return run_sweep(instellation, outgassing, crust_production_rate, ocean_depth_default,
+                     reverse_weathering_default, mantle_mg_si_high, delta_iw_default,
+                     alpha_default, k_mg_default, k_na_default, pe=pe, output_path=output_path)
+
+
 def sweep_depth(output_path=OUTPUT_PATH, pe=PE_STATES):
     """Instellation x ocean depth."""
     return run_sweep(instellation, outgassing_default, crust_production_rate_default, ocean_depth,
@@ -485,6 +509,26 @@ def sweep_composition_deep(output_path=OUTPUT_PATH, pe=PE_STATES):
                      alpha_default, k_mg_default, k_na_default, pe=pe, output_path=output_path)
 
 
+def sweep_basic_oxidised(output_path=OUTPUT_PATH):
+    """As sweep_basic, oxidising arm (pe = +4) only.
+
+    basic/composition/depth already cover both redox states by default (§31), so this is not a
+    new axis -- it lets the oxidising arm be launched on its own, e.g. split across a machine from
+    the reducing arm, rather than paying for both every time the sweep is (re)started.
+    """
+    return sweep_basic(output_path=output_path, pe=(PE_OXIDISING,))
+
+
+def sweep_composition_oxidised(output_path=OUTPUT_PATH):
+    """As sweep_composition, oxidising arm (pe = +4) only. See sweep_basic_oxidised."""
+    return sweep_composition(output_path=output_path, pe=(PE_OXIDISING,))
+
+
+def sweep_depth_oxidised(output_path=OUTPUT_PATH):
+    """As sweep_depth, oxidising arm (pe = +4) only. See sweep_basic_oxidised."""
+    return sweep_depth(output_path=output_path, pe=(PE_OXIDISING,))
+
+
 def sweep_alpha(output_path=OUTPUT_PATH, pe=PE_STATES):
     """The alpha sensitivity arm at the Earth-reference crust. alpha is a CHOICE (see
     ALPHA_CALIB), so any result sensitive to the absolute CO2 level needs this reported."""
@@ -497,7 +541,7 @@ def sweep_alpha_composition(output_path=OUTPUT_PATH, pe=PE_STATES):
     """alpha x Mg/Si and alpha x dIW: does the composition signal survive the alpha choice?
 
     This is the sweep that answers the referee question directly -- if the Mg/Si and dIW
-    orderings are the same at alpha = 2, 10 and 50, the conclusions do not rest on alpha.
+    orderings are the same at alpha = ALPHA_REF, 10 and 50, the conclusions do not rest on alpha.
     """
     combos = []
     for pe_ in pe:
@@ -580,9 +624,14 @@ def sweep_cross_deep(output_path=OUTPUT_PATH, pe=PE_STATES):
 SWEEPS = {
     'basic':             ('instellation x outgassing x crust production, 3 km', sweep_basic),
     'basic_deep':        ('instellation x outgassing x crust production, 20 km', sweep_basic_deep),
+    'basic_low_mgsi':    ('basic at Mg/Si = 0.8, 3 km', sweep_basic_low_mgsi),
+    'basic_high_mgsi':   ('basic at Mg/Si = 1.6, 3 km', sweep_basic_high_mgsi),
     'depth':             ('instellation x ocean depth', sweep_depth),
     'composition':       ('instellation x Mg/Si x dIW factorial, 3 km', sweep_composition),
     'composition_deep':  ('instellation x Mg/Si x dIW factorial, 20 km', sweep_composition_deep),
+    'basic_oxidised':    ('basic, oxidising arm only', sweep_basic_oxidised),
+    'composition_oxidised': ('composition, oxidising arm only', sweep_composition_oxidised),
+    'depth_oxidised':    ('depth, oxidising arm only', sweep_depth_oxidised),
     'cross':             ('cross design: Mg/Si and dIW cuts, 3 km', sweep_cross),
     'cross_deep':        ('cross design: Mg/Si and dIW cuts, 20 km', sweep_cross_deep),
     'alpha':             ('alpha sensitivity arm', sweep_alpha),
@@ -595,7 +644,7 @@ SWEEPS = {
     'chemistry':         ('kd_mg_ht / k_na on-off', sweep_chemistry),
 }
 
-DEFAULT_SWEEPS = 'cross'
+DEFAULT_SWEEPS = 'basic,depth,composition,alpha,pe,basic_oxidised'
 
 
 # Measured per-run wall cost, from the 20-run pilot (2026-08-25): 27.2 min for 10 shallow runs,
@@ -610,11 +659,12 @@ def _sweep_shape(name):
     n = _sweep_size(name)
     if name in ('basic_deep', 'composition_deep', 'cross_deep', 'pe_deep'):
         return 0, n
-    if name == 'depth':
+    if name in ('depth', 'depth_oxidised'):
         deep = sum(1 for d in ocean_depth if d >= DEEP_OCEAN_M)
         per_state = len(instellation)
-        return (per_state * (len(ocean_depth) - deep) * len(PE_STATES),
-                per_state * deep * len(PE_STATES))
+        states = 1 if name == 'depth_oxidised' else len(PE_STATES)
+        return (per_state * (len(ocean_depth) - deep) * states,
+                per_state * deep * states)
     return n, 0
 
 
@@ -634,9 +684,14 @@ def _sweep_size(name):
     sizers = {
         'basic':            len(instellation)*len(outgassing)*len(crust_production_rate)*n_redox,
         'basic_deep':       len(instellation)*len(outgassing)*len(crust_production_rate)*n_redox,
+        'basic_low_mgsi':   len(instellation)*len(outgassing)*len(crust_production_rate)*n_redox,
+        'basic_high_mgsi':  len(instellation)*len(outgassing)*len(crust_production_rate)*n_redox,
         'depth':            len(instellation)*len(ocean_depth)*n_redox,
         'composition':      len(instellation)*len(mantle_mg_si)*len(delta_iw)*n_redox,
         'composition_deep': len(instellation)*len(mantle_mg_si)*len(delta_iw)*n_redox,
+        'basic_oxidised':   len(instellation)*len(outgassing)*len(crust_production_rate),
+        'composition_oxidised': len(instellation)*len(mantle_mg_si)*len(delta_iw),
+        'depth_oxidised':   len(instellation)*len(ocean_depth),
         'cross':            n_cross*n_redox,
         'cross_deep':       len(cross_combos(CROSS_INSTELLATION, CROSS_MG_SI, CROSS_DELTA_IW,
                                              ocean_depth_deep_default))*n_redox,
