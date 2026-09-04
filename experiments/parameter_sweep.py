@@ -396,13 +396,14 @@ k_na_default = [K_NA_CALIB]
 mantle_mg_si_default = [EARTH_MANTLE_MG_SI]
 delta_iw_default = [EARTH_DELTA_IW]
 
-# The two Mg/Si end-members the basic sweep is repeated at. They are the mineralogical limits
-# already used for the composition axes: below ~0.8 the mantle goes olivine-free and above ~1.6
-# orthopyroxene-free (Guimond et al. 2024), and past 1.6 the norm is mass-violating and the melts
-# ultracalcic (development history 25.4). So these bracket the range the crust model is valid
-# over, rather than being an arbitrary +/- around Earth's 1.25.
+# The two Mg/Si end-members the basic sweep is repeated at, bracketing Earth's 1.25.
+# 0.8 is the low limit of the composition axes: below it the mantle is olivine-free and the crust
+# quartz-normative (Guimond et al. 2024; development history 25.4).
+# 1.8 sits at mantle (Mg+Fe)/Si = 1.98, PAST the ~1.69 ceiling 25.4 measured -- but that was
+# measured before Akermanite closed the norm (25.5); at 1.8 the assemblage now sums to 1.0 with
+# no mass-balance warning, Akermanite taking 11 wt%. State this if these runs are published.
 mantle_mg_si_low = [0.8]
-mantle_mg_si_high = [1.6]
+mantle_mg_si_high = [1.8]
 
 
 # ── The crust-composition cross sweep ──────────────────────────────────────────
@@ -472,7 +473,7 @@ def sweep_basic_low_mgsi(output_path=OUTPUT_PATH, pe=PE_STATES):
 
 
 def sweep_basic_high_mgsi(output_path=OUTPUT_PATH, pe=PE_STATES):
-    """As sweep_basic, on the high-Mg/Si (1.6) crust -- the orthopyroxene-free, olivine-rich end.
+    """As sweep_basic, on the high-Mg/Si (1.8) crust -- the orthopyroxene-free, olivine-rich end.
 
     Paired with sweep_basic_low_mgsi, this is the outgassing x crust-production plane repeated at
     both ends of the composition axis, so the feedback strength can be read as a function of
@@ -625,7 +626,7 @@ SWEEPS = {
     'basic':             ('instellation x outgassing x crust production, 3 km', sweep_basic),
     'basic_deep':        ('instellation x outgassing x crust production, 20 km', sweep_basic_deep),
     'basic_low_mgsi':    ('basic at Mg/Si = 0.8, 3 km', sweep_basic_low_mgsi),
-    'basic_high_mgsi':   ('basic at Mg/Si = 1.6, 3 km', sweep_basic_high_mgsi),
+    'basic_high_mgsi':   ('basic at Mg/Si = 1.8, 3 km', sweep_basic_high_mgsi),
     'depth':             ('instellation x ocean depth', sweep_depth),
     'composition':       ('instellation x Mg/Si x dIW factorial, 3 km', sweep_composition),
     'composition_deep':  ('instellation x Mg/Si x dIW factorial, 20 km', sweep_composition_deep),
@@ -644,7 +645,7 @@ SWEEPS = {
     'chemistry':         ('kd_mg_ht / k_na on-off', sweep_chemistry),
 }
 
-DEFAULT_SWEEPS = 'basic,depth,composition,alpha,pe,basic_oxidised'
+DEFAULT_SWEEPS = 'basic_high_mgsi,basic_low_mgsi'
 
 
 # Measured per-run wall cost, from the 20-run pilot (2026-08-25): 27.2 min for 10 shallow runs,
