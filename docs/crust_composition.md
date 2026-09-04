@@ -11,23 +11,19 @@ a line of code and a citation.
 
 ## 0. What you actually need to read
 
-The pipeline is ~1000 lines across two files, but the *method* is eight functions:
+The pipeline is ~440 lines across two files, and the *method* is seven functions:
 
 | function | file | lines | role |
 |---|---|---|---|
 | `feo_from_delta_iw` | both | 5 / 19 | ΔIW → mantle FeO |
-| `mantle_composition` | `.jl` | 12 | build the bulk mantle on the two axes |
-| `T_at_entropy` | `.jl` | 13 | track the isentrope (MAGEMin has no isentropic mode) |
-| `isentropic_melt` | `.jl` | 12 | decompression melting path |
+| `mantle_composition` | both | 14 / 16 | build the bulk mantle on the two axes |
 | `melt_oxides` | `.jl` | 11 | extract the liquid composition |
-| `Tp_for_F` | `.jl` | 11 | solve T_p for the target melt fraction |
+| `T_for_F` | `.jl` | 9 | solve temperature for the target melt fraction |
 | `oxide_composition` | `.py` | 18 | interpolate the resulting table |
 | `cipw_norm` | `.py` | ~40 of 179 | melt oxides → normative minerals |
 
-The remaining ~850 lines are CLI/sharding/validation tooling (`check_crust_table.py`,
-`merge_crust_slices.py`, `--probe`, `--calibrate`, `--points`) and rationale comments recording
-approaches that were tried and rejected. Those exist so the dead ends are not re-derived; none of
-them is method.
+The rest is the grid loop, `--points` for spot checks, and `check_crust_table.py`. None of it is
+method.
 
 ---
 
@@ -82,7 +78,7 @@ reduced-end ΔIW labels against Young's without a two-point recalibration.
 
 ### 1.3 What is deliberately not an axis
 
-- **T_p** — not observable, and not free (a mantle that cannot melt cannot transport heat
+- **Temperature** — not observable, and not free (a mantle that cannot melt cannot transport heat
   magmatically). It is *solved* per composition, not prescribed.
 - **C/O** — see §1.4; it is rejected on three independent grounds, and its real effect is
   atmospheric rather than crustal.
@@ -178,7 +174,7 @@ run their pMELTS grids the same way.
 
 ---
 
-## 3. Melting  [`isentropic_melt`, `T_at_entropy`, `Tp_for_F`]
+## 3. Melting  [`T_for_F`, `melt_oxides`]
 
 **Code:** MAGEMin (Riel et al. 2022) with the Holland, Green & Powell (2018) igneous dataset.
 Chosen over pMELTS because pMELTS fails above molar Mg/Si ≈ 1.6 (its solution models do not span the
@@ -186,33 +182,46 @@ ferropericlase-bearing assemblages stable there) and extrapolates badly below �
 ~69 wt% SiO₂ rhyolites. MAGEMin converges across 0.5–2.0 and stabilises nepheline and ferropericlase
 on its own.
 
-**Path:** isentropic decompression melting, 3.0 → 1.0 GPa in 0.2 GPa steps, batch (the melt stays
-with the residue, so the final liquid is the pooled primary melt).
+**Path: none — isobaric batch melting at 1.0 GPa.** Temperature is solved for the target melt
+fraction at that single pressure, and the resulting liquid is the crust composition.
 
-- The start temperature is set from a solid adiabat, T(P) = (T_p + 273.15)·exp(αP/ρc_p) − 273.15,
-  with α = 3×10⁻⁵ K⁻¹, ρ = 3300 kg m⁻³, c_p = 1200 J kg⁻¹ K⁻¹.
-- MAGEMin is a fixed-(P,T) Gibbs minimiser with **no isentropic mode**, so the isentrope is tracked
-  by root-finding the temperature that holds entropy constant at each pressure step (secant
-  iteration, clamped to ±60 K per step so a flat secant near a phase boundary cannot throw the
-  iterate across the melting interval). This matters: prescribing the solid adiabat instead ignores
-  latent heat and over-melts, by ~50 K at T_p = 1350.
-- **1.0 GPa is the melt segregation pressure, not the base of the crust.** Under batch melting the
-  liquid re-equilibrates at every step, so carrying it to 0.2 GPa yields an over-equilibrated
-  andesite. 1 GPa is a representative mean segregation depth beneath a ridge.
+- **1.0 GPa is the melt segregation pressure, not the base of the crust.** A representative mean
+  segregation depth beneath a ridge. Carrying the liquid to 0.2 GPa instead yields an
+  over-equilibrated andesite, because under batch melting it re-equilibrates at every condition.
+- **Why no decompression path is needed.** Batch melting keeps the melt with the residue, so every
+  state is a full equilibrium minimisation of one fixed bulk composition — and equilibrium is
+  path-independent, a function of (bulk, P, T) alone. At fixed bulk and pressure, F is monotonic in
+  T, so *F = 0.20 at 1 GPa determines T uniquely*, whatever route was taken to get there.
+- **Measured, not assumed.** This pipeline previously tracked an isentrope from 3.0 → 1.0 GPa,
+  root-finding temperature at each of 11 pressure steps to hold entropy constant. Re-solving all
+  153 cells of that grid isobarically reproduces it: temperature agrees to **mean 0.60 °C, max
+  2.10** (within the two bisection tolerances), every melt oxide to **mean 0.006–0.026 wt%, max
+  0.093**, and the residual assemblage is identical in **151/153** cells. The isentrope's only
+  product was the potential-temperature label; it cost ~130 s per grid point against ~1 s.
+- The corollary is worth stating, because it bounds the simplification: this holds **only for batch
+  melting**. Under fractional melting the residue evolves, history matters, and a decompression
+  path would be required.
 
 **Closure — melt fraction fixed at F = 0.20.** This is the value Guimond et al. (2024) adopt, on the
 grounds that for typical Earth mantle it is the degree at which clinopyroxene leaves the melting
 assemblage, beyond which melting is much less productive (Katz et al. 2003). Using their number
 makes the table directly comparable to their Figure 9.
 
-T_p is then **solved** per composition, by bisection on F over [1150, 1900] °C to ±5 °C. Holding F
-rather than T_p is deliberate: mantle temperature is self-regulated, not free, because a mantle that
-cannot melt cannot transport heat by magmatism. Holding T_p fixed instead makes refractory
-compositions look like planets that barely melt, which is an artifact of the closure, not a result.
+Temperature is then **solved** per composition, by bisection on F over [900, 2200] °C to ±1 °C, and
+reported as `T_melt`. Holding F rather than temperature is deliberate: mantle temperature is
+self-regulated, not free, because a mantle that cannot melt cannot transport heat by magmatism.
+Fixing temperature instead makes refractory compositions look like planets that barely melt, which
+is an artifact of the closure, not a result. A composition that cannot reach F = 0.20 below 2200 °C
+returns NaN and fails the grid rather than being extrapolated through; none does.
 
 **Validation of the closure.** Solving instead for clinopyroxene exhaustion at the Earth anchor
-returns **F = 0.213** — a 6.5% independent confirmation of Guimond et al.'s choice of 0.20, from a
-different thermodynamic dataset. It is not an assumption inherited on trust.
+returned **F = 0.213** — a 6.5% independent confirmation of Guimond et al.'s choice of 0.20, from a
+different thermodynamic dataset. It is not an assumption inherited on trust. (Measured under the
+isentropic closure; see development history §24.5. That code path has since been removed.)
+
+> ⚠️ `T_melt` is the melting temperature at 1 GPa, **not** a mantle potential temperature, and the
+> two differ by the adiabatic gradient plus latent heat — at the Earth anchor, 1328 °C against the
+> 1383 °C the isentropic version reported as T_p. Do not quote it as T_p.
 
 ---
 
@@ -276,9 +285,9 @@ which floods Ca.
 > so a pyrolite upgrade that breaks the trick fails loudly rather than quietly.
 
 **Cross-check against a hand-rolled norm.** The original bespoke implementation is retained as
-`_cipw_norm_native`. Across all 153 grid cells the two agree to ≤0.01 wt% on quartz, anorthite,
-enstatite and fayalite, and **107 of 153 cells agree to <0.5 wt% on every phase** — precisely the
-107 cells with no silica deficit. The remaining 46 differ only in how that deficit is absorbed
+`_cipw_norm_native`. Measured on the 153-cell grid that preceded the current one: the two agree to
+≤0.01 wt% on quartz, anorthite, enstatite and fayalite, and **107 of 153 cells agree to <0.5 wt% on
+every phase** — precisely the 107 cells with no silica deficit. The remaining 46 differ only in how that deficit is absorbed
 (native converts diopside→åkermanite directly; pyrolite absorbs it into larnite first), reaching
 6.2 wt% on diopside in the Mg/Si ≥ 1.7 corner already flagged as ultracalcic.
 
@@ -308,11 +317,36 @@ akermanite-bearing cells that depend on Ca or carbonate burial must sweep the br
 
 ## 5. The table and its interpolation  [`load_crust_table`, `oxide_composition`]
 
-The melting calculation runs offline and writes `crust_compositions.csv`: a full **17 × 9** grid
-(Mg/Si 0.5–2.0 non-uniform, ΔIW −5 to −1 at 0.5 spacing — uniform in log FeO). At runtime the model
-bilinearly interpolates it. FeO is interpolated in **log** space because it spans nearly two orders
-of magnitude across the redox axis; a linear interpolant is up to 17% high mid-interval. Off-grid
-requests raise rather than extrapolate.
+The melting calculation runs offline and writes `crust_compositions.csv`: a full **26 × 25** grid
+(650 cells, ~9 min serial). At runtime the model bilinearly interpolates it. FeO is interpolated in
+**log** space because it spans nearly two orders of magnitude across the redox axis; a linear
+interpolant is up to 17% high mid-interval. Off-grid requests raise rather than extrapolate.
+
+**Both axes are deliberately non-uniform, dense where the assemblage changes:**
+
+| axis | coarse | dense |
+|---|---|---|
+| Mg/Si | 0.1 over 1.0–1.2, then 1.9–2.0 | **0.05** over 0.5–0.9 and 1.3–1.8 |
+| ΔIW | 0.5 over −5.0 to −3.0 | **0.1** over −2.9 to −1.0 |
+
+The density buys resolution of the phase boundaries, and uniform refinement would have been mostly
+waste: below ΔIW −3 the melt barely responds (SiO₂ moves 0.08 wt% between −5 and −4.5), while the
+quartz-out boundary crosses the grid diagonally from (Mg/Si 0.5, ΔIW −1.05) to (0.8, −2.82) and
+never crosses at all above Mg/Si 0.9. Earth's anchors (1.25, −2.0) sit exactly on grid.
+
+**What that resolution changed.** On the previous 17 × 9 grid the largest step between adjacent
+cells along ΔIW was **21.5 wt% SiO₂** — at Mg/Si 0.5, where the melt appeared to leap from 71 to
+50 wt% in a single step, taking normative quartz to zero with it. That step is not a cliff but a
+monotonic ramp, and 0.1 spacing resolves it:
+
+```
+ΔIW    -2.0   -1.5   -1.4   -1.3   -1.2   -1.1   -1.0
+SiO₂   72.66  71.34  71.02  70.32  64.21  57.40  49.87     (Mg/Si = 0.5, wt%)
+```
+
+The largest adjacent-cell step is now 7.5 wt%, and the temperature step falls from 203 to 114 °C.
+Interpolating the old grid across that interval blended a quartz rhyolite with an Fe-pyroxenite —
+a mixture that was not itself a MAGEMin solution.
 
 ---
 
@@ -322,12 +356,13 @@ requests raise rather than extrapolate.
 
 | check | result |
 |---|---|
-| Grid completeness | 153/153 cells, 0 failures |
-| Mass balance, every oxide | **153/153 within 0.05 wt%** |
+| Grid completeness | 650/650 cells, 0 failures, 0 warnings |
+| Mass balance, every oxide | **650/650 within 0.05 wt%** |
 | Earth anchor FeO | 8.050 wt%, exact by calibration |
-| Earth melt | T_p 1383 °C, F 0.201, SiO₂ 47.88, CaO/Al₂O₃ 0.85 — basaltic |
-| Misfit to PRIMELT primary melt | 4.85 wt% (vs 2.22 at F = 0.117; the cost of adopting F = 0.20) |
+| Earth melt | T_melt 1328 °C, F 0.201, SiO₂ 47.88, CaO/Al₂O₃ 0.85 — basaltic |
+| Misfit to PRIMELT primary melt | 4.84 wt% (vs 2.22 at F = 0.117; the cost of adopting F = 0.20) |
 | PHREEQC end-to-end | equilibrates at Mg/Si 0.5, 1.25, 2.0 |
+| Isobaric vs isentropic closure | 153 shared cells: T to 0.60 °C mean, oxides to 0.026 wt% mean (§3) |
 
 Run `python src/kamino/data/check_crust_table.py` to reproduce.
 
@@ -335,18 +370,19 @@ Run `python src/kamino/data/check_crust_table.py` to reproduce.
 
 | claim | theirs | ours | verdict |
 |---|---|---|---|
-| Mantle olivine-free below Mg/Si | ≲ 0.8 | **0.70** | ✓ (see note) |
-| Mantle orthopyroxene-free above Mg/Si | ≳ 1.6 | **1.50** | ✓ (see note) |
+| Mantle olivine-free below Mg/Si | ≲ 0.8 | **0.55** | ✓ (see note) |
+| Mantle orthopyroxene-free above Mg/Si | ≳ 1.6 | **1.55** | ✓ (see note) |
 | Excess SiO₂ / (Mg,Fe)O form their own phases | predicted | quartz at ≤ 0.6, ferropericlase at ≥ 1.7 | ✓ |
 | Melt-vs-mantle relations (§4.2) | 5 relations | **20/20** across 4 compositions | ✓ |
 | Melt variance vs mantle variance (Fig. 10) | SiO₂/MgO less, others greater | **6/7** | ✓ (see note) |
 | Mantle FeO controls melting temperature (§4.1) | up to ~100 °C | **+53 °C mean** | ~ |
 | F = 0.20 is where cpx is lost | assumed | **F = 0.213** solved | ✓ |
 
-*Boundary note.* Their boundaries are subsolidus mantle mineralogy; ours is the residue after 20%
-melting, which is depleted and therefore more olivine-rich. Olivine should therefore persist to
-*lower* Mg/Si than in their mantle, and opx should vanish at *lower* Mg/Si — both offsets are in the
-predicted direction and within 0.1.
+*Boundary note.* Ours are the extreme Mg/Si at which the phase appears anywhere on the grid, now
+resolved at 0.05 rather than 0.1 spacing. Their boundaries are subsolidus mantle mineralogy; ours is
+the residue after 20% melting, which is depleted and therefore more olivine-rich. Olivine should
+therefore persist to *lower* Mg/Si than in their mantle, and opx should vanish at *lower* Mg/Si —
+both offsets are in the predicted direction.
 
 *Variance note.* SiO₂ fails (1.11) on the full grid but passes (0.76) once restricted to the
 ordinary olivine + opx field they sample; the failure is our uniform grid oversampling the exotic
@@ -355,9 +391,11 @@ attributable to our ΔIW axis spanning a 100× range in mantle FeO where their H
 varies it only modestly. Not like-for-like on that element.
 
 *Boundary reproduced without being encoded.* Guimond name mantle (Mg+Fe)/Si as a better predictor of
-olivine/orthopyroxene than Mg/Si, with the boundary near 0.8. Along Mg/Si = 0.5 our melt switches
-from 71 wt% SiO₂ (quartz-normative) to 50 wt% (basaltic) exactly between the cells where (Mg+Fe)/Si
-crosses 0.702 → 0.894. Nothing in the pipeline knows about that threshold.
+olivine/orthopyroxene than Mg/Si, with the boundary near 0.8. Along Mg/Si = 0.5 our melt drops from
+71 wt% SiO₂ (quartz-normative) to 50 wt% (basaltic), and on the 0.1-spaced ΔIW axis that drop is
+resolved well enough to locate it: the steepest segment is ΔIW −1.3 → −1.1, where (Mg+Fe)/Si passes
+through **0.799**. Nothing in the pipeline knows about that threshold. (On the old 0.5-spaced axis
+this could only be bracketed as 0.702 → 0.894.)
 
 ### 6.3 Against experiment — Brugman et al. (2021)
 
@@ -385,7 +423,7 @@ incompatible and would raise melt FeOtot. **This is the weakest link in the vali
 should be reported as such.**
 
 Their solidus statement — HEX1's is *"the same as Earth's nominally anhydrous peridotite solidus"* —
-is consistent with ours: T_p at Mg/Si 1.4 and 1.25 differ by only 12 °C.
+is consistent with ours: T_melt at Mg/Si 1.4 and 1.25 differ by only 11 °C.
 
 ### 6.4 Against the standard melting parameterisation — Katz et al. (2003)
 
@@ -409,14 +447,39 @@ Katz 0.23–0.26 — agree within about 20%. The closure is not an arbitrary inh
 
 ---
 
+### 6.5 NOT a validation target — MORB
+
+The figures carry an average MORB pie (`MORB_OXIDES`, Gale et al. 2013 — **values unverified
+against the paper, check before publishing**) as an *orientation* reference: real oceanic crust
+through the same norm. It is not a target, and the Earth cell does not reproduce it:
+
+| | ours (F = 0.20) | MORB |
+|---|---|---|
+| MgO / Mg# | 12.48 / 0.743 | 7.64 / 0.564 |
+| Na₂O | 1.74 | 2.81 |
+| normative olivine | 24.1 | 11.3 |
+
+Both causes are understood and quantified in development history §32.10: erupted MORB is
+**differentiated** (the whole Mg# gap), and F = 0.20 is roughly **1.7× MORB's melt fraction** —
+Na₂O and TiO₂ are near-perfectly incompatible here (D = 0.007, 0.020) and independently invert to
+F ≈ 0.128 and 0.119 for MORB, inside the 0.08–0.12 range real MORB occupies. §6.1's PRIMELT misfit
+agrees: 4.84 wt% at F = 0.20 against 2.22 at F = 0.117.
+
+The comparison a *primary* melt should be judged against is PRIMELT (§6.1), not MORB. The
+consequence to carry into the caveats: this crust weathers faster than real oceanic crust and
+over-delivers Mg and Ca while under-delivering Na. In the Earth cell's assemblage the two olivines
+are 1.3–3.3 orders of magnitude faster than every other phase present (`K_FUNCTIONS` at 25 °C,
+pH 6.5: Fayalite −8.64, Forsterite −9.57, against Diopside −10.90, Anorthite −11.02, Albite −11.04,
+Hedenbergite −11.92), and we carry twice as much olivine as MORB.
+
 ## 7. Known limitations, for the caveats paragraph
 
-1. **Ultracalcic melts at high Mg/Si.** 41/153 cells have CaO/Al₂O₃ > 1.2, reaching 1.87, against
+1. **Ultracalcic melts at high Mg/Si.** 182/650 cells have CaO/Al₂O₃ > 1.2, reaching 1.87, against
    MORB's ~0.78. Médard et al. (2004) exclude such melts from a volatile-free fertile lherzolite
    source, which is what this is. This is **not** a closure artifact above Mg/Si ≈ 1.5: those mantles
    are already orthopyroxene-free, so the melts are ultracalcic however far melting proceeds
    (verified — solving for cpx-out instead still gives CaO/Al₂O₃ = 1.28 at Mg/Si 1.6).
-2. **Silicic melts at low Mg/Si.** 27/153 cells give SiO₂ > 60 wt%, up to 76 wt% at Mg/Si 0.5 under
+2. **Silicic melts at low Mg/Si.** 113/650 cells give SiO₂ > 60 wt%, up to 76 wt% at Mg/Si 0.5 under
    reducing conditions — quartz-normative crusts. Physically coherent (those mantles are
    olivine-free and quartz-bearing, and pMELTS gives ~69 wt% at the same corner), but at the edge of
    what a peridotite melting model should be trusted for.

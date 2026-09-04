@@ -118,6 +118,24 @@ _K_CATIONS = sum(
 # Earth's BSE FeO, the anchor for the whole redox axis (McDonough & Sun 1995).
 EARTH_MANTLE_FEO = 8.05  # wt%
 
+# Average mid-ocean ridge basalt, for reference ONLY -- nothing in the model consumes it. It is
+# the observational anchor the figures compare the computed crusts against: real oceanic crust,
+# put through the same norm.
+#
+# Gale, Dalton, Langmuir, Su & Schilling (2013), G3 14, 489 -- "The mean composition of ocean
+# ridge basalts", the global "All MORB" average.
+#
+# !! THESE NUMBERS ARE UNVERIFIED AGAINST THE PAPER. It is paywalled and no accessible secondary
+# source quotes the table, so they were not confirmed at the primary source. They are internally
+# consistent with what this repository already asserts about MORB (CaO/Al2O3 = 0.775 against the
+# ~0.78 quoted in docs/crust_composition.md section 7; Mg# 0.564, in the usual 0.55-0.60 range;
+# oxides summing to 99.56) and the norm returns a textbook basalt (53 wt% plagioclase, 25 wt%
+# clinopyroxene) -- but CHECK THEM AGAINST GALE ET AL. BEFORE PUBLISHING A FIGURE THAT USES THEM.
+MORB_OXIDES = {
+    'SiO2': 50.47, 'TiO2': 1.68, 'Al2O3': 14.70, 'FeOt': 10.43, 'MnO': 0.18,
+    'MgO': 7.58, 'CaO': 11.39, 'Na2O': 2.79, 'K2O': 0.16, 'P2O5': 0.18,
+}
+
 # Metal-silicate activity constant, X_Fe(metal) / gamma_FeO, in
 #     X_FeO(silicate, cation mole fraction) = _FEO_ACTIVITY_CONST * 10 ** (dIW / 2)
 #
@@ -163,6 +181,30 @@ def delta_iw_from_feo(feo_wt: float) -> float:
     if not 0.0 < feo_wt < 100.0:
         raise ValueError('feo_wt must be in (0, 100)')
     return 2 * np.log10(_x_feo_from_feo_wt(feo_wt) / _FEO_ACTIVITY_CONST)
+
+
+def mantle_composition(mantle_mg_si: float = EARTH_MANTLE_MG_SI,
+                       delta_iw: float = EARTH_DELTA_IW) -> dict[str, float]:
+    """Bulk mantle oxides (wt%) on the two axes -- the INPUT to the melting calculation.
+
+    Mirrors `mantle_composition` in make_crust_compositions.jl and must stay identical to it: iron
+    first from dIW, renormalising the non-Fe oxides to (100 - FeO) at their pyrolite proportions,
+    then MgO/SiO2 re-split at fixed (MgO + SiO2) mass to hit the target molar ratio. Applied the
+    other way round the two axes would not be orthogonal.
+
+    Iron is reported as 'FeOt' to match `oxide_composition`, though the mantle is all-ferrous by
+    construction (the MAGEMin `O` component is 0.0), so FeOt == FeO here.
+    """
+    if mantle_mg_si <= 0:
+        raise ValueError('mantle_mg_si must be positive')
+    feo = feo_from_delta_iw(delta_iw)
+    scale = (100.0 - feo) / sum(PYROLITE_NON_FE.values())
+    ox = {o: v * scale for o, v in PYROLITE_NON_FE.items()}
+    total_mg_si = ox['MgO'] + ox['SiO2']
+    si = total_mg_si / (1 + mantle_mg_si * OXIDE_MOLAR_MASS['MgO'] / OXIDE_MOLAR_MASS['SiO2'])
+    ox['SiO2'], ox['MgO'] = si, total_mg_si - si
+    ox['FeOt'] = feo
+    return ox
 
 
 # Iron-wustite buffer, log10 fO2_IW = A/T + B + C*(P-1)/T with T in K and P in bar
@@ -257,7 +299,8 @@ def load_crust_table(path: str = CRUST_TABLE) -> tuple[RegularGridInterpolator, 
                                            bounds_error=True)
     axes = {
         'mg_si': mg_si, 'delta_iw': d_iw,
-        'T_p': df['T_p'].to_numpy().reshape(shape),
+        # T_melt in isobaric tables, T_p in the older isentropic ones.
+        'T_melt': (df['T_melt'] if 'T_melt' in df else df['T_p']).to_numpy().reshape(shape),
         'melt_fraction': df['melt_fraction'].to_numpy().reshape(shape),
         'mantle_feo': df['mantle_feo'].to_numpy().reshape(shape),
         'CaO_Al2O3': df['CaO_Al2O3'].to_numpy().reshape(shape),
@@ -487,7 +530,7 @@ def cipw_norm(oxides: dict[str, float], emit_quartz: bool = True, kfeldspar: boo
     if verbose:
         print(f'  pyrolite: ' + ', '.join(f'{c} {v:.2f}' for c, v in sorted(wt.items())
                                           if v > 1e-3 and c not in _PYROLITE_GROUPS))
-        print(f'  corrections: hedenbergite {hd:.4g}, ferrosilite {fs:.4g}, larnite {lar:.4g} mol')
+        print(f'  corrections: larnite {lar:.4g} mol')
     for m in warn_msgs:
         warnings.warn(m, stacklevel=2)
 

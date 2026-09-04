@@ -43,6 +43,10 @@ FORMULA = {
     'Nepheline':    {'Na2O': 0.5, 'Al2O3': 0.5, 'SiO2': 1},
     'Anorthite':    {'CaO': 1, 'Al2O3': 1, 'SiO2': 2},
     'Diopside':     {'CaO': 1, 'MgO': 1, 'SiO2': 2},
+    # Fe endmembers of the two pyroxenes, emitted directly by the norm rather than exchanged into
+    # fayalite, so mass closure has to account for them.
+    'Hedenbergite': {'CaO': 1, 'FeOt': 1, 'SiO2': 2},
+    'Ferrosilite':  {'FeOt': 1, 'SiO2': 1},
     'Akermanite':   {'CaO': 2, 'MgO': 1, 'SiO2': 2},
     'Wollastonite': {'CaO': 1, 'SiO2': 1},
     'Enstatite':    {'MgO': 1, 'SiO2': 1},
@@ -100,7 +104,9 @@ def main(table: str, skip_chemistry: bool) -> int:
         check(abs(feo_from_delta_iw(EARTH_DELTA_IW) - EARTH_MANTLE_FEO) < 1e-9,
               'python/julia FeO mappings agree')
         check(44 <= r['SiO2'] <= 52, 'Earth melt is basaltic', f"SiO2 {r['SiO2']:.2f} wt%")
-        print(f"      T_p {r['T_p']:.0f} C   F {r['melt_fraction']:.3f}   "
+        # T_melt in isobaric tables, T_p in the older isentropic ones.
+        t_col = 'T_melt' if 'T_melt' in r else 'T_p'
+        print(f"      {t_col} {r[t_col]:.0f} C   F {r['melt_fraction']:.3f}   "
               f"MgO {r['MgO']:.2f}   Al2O3 {r['Al2O3']:.2f}   CaO {r['CaO']:.2f}   "
               f"CaO/Al2O3 {r['CaO_Al2O3']:.2f}")
         print(f"      PRIMELT reference:  SiO2 48.76  MgO 11.27  Al2O3 17.05  CaO 11.91")

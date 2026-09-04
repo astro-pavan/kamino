@@ -3,18 +3,22 @@
 Two figures:
   crust_mineralogy_mgsi.png  — stacked normative mineralogy vs mantle Mg/Si, comparing the old
                                SiO2-rescale proxy with the MAGEMin melts.
-  crust_reactivity_mgsi.png  — the potential temperature the constant-F closure requires, and
+  crust_reactivity_mgsi.png  — the melting temperature the constant-F closure requires, and
                                what the resulting mineralogy delivers: cation charge per kg of
                                rock, and the charge-weighted and Na dissolution rate constants.
 
 Reads the CSV written by src/kamino/data/make_crust_compositions.jl. That table is generated at
-CONSTANT MELT FRACTION, not constant T_p — a mantle that cannot melt cannot transport heat by
-magmatism, so it warms until it does — which means T_p VARIES along the Mg/Si axis and is itself
-a result, not a control. Mg/Si is the only independent variable here, so nothing is faceted by
-T_p (an earlier version did, and produced one single-point panel per composition).
+CONSTANT MELT FRACTION, not constant temperature — a mantle that cannot melt cannot transport heat
+by magmatism, so it warms until it does — which means T_melt VARIES along the Mg/Si axis and is
+itself a result, not a control. Mg/Si is the only independent variable here, so nothing is faceted
+by temperature (an earlier version did, and produced one single-point panel per composition).
+
+T_melt is the melting temperature at the 1 GPa segregation pressure, NOT a mantle potential
+temperature; the two differ by the adiabatic gradient plus latent heat.
 
 Usage:
-    python plot_crust_composition.py --csv <crust_compositions.csv> [--outdir output]
+    python experiments/plot_crust_composition.py            # the model's own table, no arguments
+    python experiments/plot_crust_composition.py --csv other.csv --delta-iw -1.0
 """
 
 import argparse
@@ -31,53 +35,28 @@ from matplotlib.patches import Patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../src"))
 
-from kamino.crust_composition import cipw_norm, oxide_composition
+from kamino.crust_composition import CRUST_TABLE, cipw_norm, oxide_composition
 from kamino.mineral_info import MINERAL_MOLAR_MASS
 from kamino.chemistry import stoichiometry, elements, ION_CHARGE, get_k, al_idx, na_idx
 from kamino.constants import EARTH_DELTA_IW, EARTH_MANTLE_MG_SI
 
 _STYLE = os.path.join(os.path.dirname(__file__), "planetary-chem-paper.mplstyle")
 
-# Fixed mineral order and colours -- petrological grouping (feldspars, feldspathoid, pyroxenes,
-# olivines), so a mineral keeps its colour across every panel and figure. Hues are the project's
-# own axes.prop_cycle (Paul Tol 'bright', published colourblind-safe), consumed unchanged so
-# these figures match the rest of the paper.
-# Every phase `cipw_norm` can emit, silica-rich -> silica-poor, each Fe/desilication endmember
-# placed next to the parent it derives from. Quartz, Akermanite, Hedenbergite and Ferrosilite were
-# added 2026-08-27: the norm has emitted Quartz since the silica-oversaturated crusts were made
-# mass-conservative, Akermanite since larnite was rerouted through diopside, and the two
-# Fe-pyroxenes unconditionally since the Fe-pyroxene adoption (development history 25 and 27).
-# Before that they were missing here, so the stacked bands did not sum to 1 and the shortfall was
-# invisible -- at reduced silica-rich compositions the Fe-pyroxenes alone reach ~39 wt%.
-#
-# Hues are the project's own axes.prop_cycle (Paul Tol 'bright', published colourblind-safe).
-# There are more phases than Tol hues, so each derived endmember shares its PARENT's hue and is
-# separated by hatching -- semantically exact, and it keeps the palette unextended.
-MINERAL_ORDER = ["Quartz", "Anorthite", "Albite", "Nepheline",
-                 "Diopside", "Hedenbergite", "Akermanite",
-                 "Enstatite", "Ferrosilite", "Forsterite", "Fayalite"]
-MINERAL_COLOUR = {
-    "Quartz":       "#332288",
-    "Anorthite":    "#4477AA",
-    "Albite":       "#EE6677",
-    "Nepheline":    "#228833",
-    "Diopside":     "#CCBB44",
-    "Hedenbergite": "#CCBB44",
-    "Akermanite":   "#CCBB44",
-    "Enstatite":    "#66CCEE",
-    "Ferrosilite":  "#66CCEE",
-    "Forsterite":   "#AA3377",
-    "Fayalite":     "#BBBBBB",
-}
-MINERAL_HATCH = {"Hedenbergite": "...", "Akermanite": "///", "Ferrosilite": "..."}
+# Mineral order, colours and textures are IMPORTED from plot_crust_grid, not defined again here.
+# This module used to carry a second palette (Paul Tol 'bright', hue by structure) which was
+# internally fine but meant a mineral changed colour between this figure and the pie charts. Hue
+# now encodes the mineral family and dotting means Ca-bearing in every figure in the paper; see
+# plot_crust_grid.COLORS for the mapping and its colour-vision validation.
+from plot_crust_grid import COLORS as MINERAL_COLOUR
+from plot_crust_grid import HATCHED as MINERAL_HATCH
+from plot_crust_grid import MINERALS as MINERAL_ORDER
+from plot_crust_grid import hatch_ink
+
 LINE_COLOUR = "#4477AA"
 
 # Pore conditions for the rate constants, matching the ocean-world state used throughout the
 # Mg/Si analysis (T_pore 343 K, pH 6.6).
 K_PRESSURE, K_TEMPERATURE, K_PH = 3.0e7, 343.0, 6.6
-
-# Earth's calibrated potential temperature, drawn as a reference line on the T_p panel.
-EARTH_TP = 1325.0
 
 # dIW values for the redox panel. Grid nodes of the MAGEMin table, so nothing is interpolated.
 DIW_CUT = [-5.0, -4.5, -4.0, -3.5, -3.0, -2.5, -2.0, -1.5, -1.0]
@@ -97,7 +76,7 @@ OXIDE_COLUMNS = ("SiO2", "TiO2", "Al2O3", "Cr2O3", "FeO", "MgO", "CaO", "Na2O", 
 
 
 def load_table(path, delta_iw=None):
-    """Read one dIW slice of the CSV into (mg_si, T_p, melt_fraction, oxides), ordered by Mg/Si.
+    """Read one dIW slice of the CSV into (mg_si, T_melt, melt_fraction, oxides), by Mg/Si.
 
     The table is a 2-D (Mg/Si x dIW) grid. This function returns a single dIW CUT through it,
     because everything downstream plots against Mg/Si alone. Without that, all 153 rows collapsed
@@ -115,10 +94,12 @@ def load_table(path, delta_iw=None):
     if not rows:
         raise SystemExit(f"no rows at delta_iw={delta_iw}; table has {available}")
     mg_si = np.array([float(r["mg_si"]) for r in rows])
-    T_p = np.array([float(r["T_p"]) for r in rows])
+    # T_melt in isobaric tables, T_p in the older isentropic ones.
+    t_col = "T_melt" if "T_melt" in rows[0] else "T_p"
+    t_melt = np.array([float(r[t_col]) for r in rows])
     melt_fraction = np.array([float(r["melt_fraction"]) for r in rows])
     oxides = [{k: float(r[k]) for k in OXIDE_COLUMNS if k in r} for r in rows]
-    return mg_si, T_p, melt_fraction, oxides, diw
+    return mg_si, t_melt, melt_fraction, oxides, diw
 
 
 def norm_series(oxide_list):
@@ -159,11 +140,12 @@ def stacked_panel(ax, x, stack, title):
     """One stacked-area panel of normative mineralogy."""
     polys = ax.stackplot(x, stack, colors=[MINERAL_COLOUR[m] for m in MINERAL_ORDER],
                          edgecolor="white", linewidth=0.6)
-    # Derived endmembers share their parent's hue, so they are separated by texture instead.
+    # Phases of one family share a hue and are separated by texture; the texture is drawn in the
+    # edge colour, so it has to be flipped light-on-dark or it vanishes on the dark fills.
     for poly, mineral in zip(polys, MINERAL_ORDER):
         if mineral in MINERAL_HATCH:
             poly.set_hatch(MINERAL_HATCH[mineral])
-            poly.set_edgecolor("white")
+            poly.set_edgecolor(hatch_ink(MINERAL_COLOUR[mineral]))
     # Direct-label at most the four thickest bands -- the legend carries the rest. Placement is
     # restricted to interior x so a label cannot overhang the panel edge or collide with the
     # y-axis ticks, which is what happens if a band peaks at the first or last point.
@@ -180,8 +162,10 @@ def stacked_panel(ax, x, stack, title):
             candidates.append((stack[i][j], i, j, mineral))
     for _, i, j, mineral in sorted(candidates, reverse=True)[:LABEL_MAX_COUNT]:
         y = cumulative[i, j] - stack[i][j] / 2.0
+        # Label colour follows the band it sits on -- white on the dark fills, ink on the light
+        # ones. Hard-coding white was legible under the old palette but not under this one.
         ax.text(x[j], y, mineral, ha="center", va="center", fontsize=6,
-                color="white", fontweight="bold", clip_on=True)
+                color=hatch_ink(MINERAL_COLOUR[mineral]), fontweight="bold", clip_on=True)
     ax.set_xlim(x.min(), x.max())
     ax.set_ylim(0, 1)
     ax.set_title(title, fontsize=8, pad=4)
@@ -208,8 +192,9 @@ def figure_mineralogy(mg_si, oxides, diw, outdir):
                   f"{MODEL_LABEL}\nvarying $\\Delta$IW at Mg/Si = {EARTH_MANTLE_MG_SI:g}")
     axes[1].set_xlabel("core-formation $\\Delta$IW")
 
-    handles = [Patch(facecolor=MINERAL_COLOUR[m], edgecolor="white", linewidth=0.6,
-                     hatch=MINERAL_HATCH.get(m), label=m) for m in MINERAL_ORDER]
+    handles = [Patch(facecolor=MINERAL_COLOUR[m], linewidth=0.6, label=m,
+                     edgecolor=hatch_ink(MINERAL_COLOUR[m]) if m in MINERAL_HATCH else "white",
+                     hatch=MINERAL_HATCH.get(m)) for m in MINERAL_ORDER]
     fig.legend(handles=handles, loc="outside lower center", ncol=4, fontsize=6.5,
                handlelength=1.2, columnspacing=1.0, borderpad=0.2)
     path = os.path.join(outdir, "crust_mineralogy_mgsi.png")
@@ -218,10 +203,10 @@ def figure_mineralogy(mg_si, oxides, diw, outdir):
     print(f"Saved {path}")
 
 
-def figure_reactivity(mg_si, T_p, oxides, outdir):
+def figure_reactivity(mg_si, t_melt, oxides, outdir):
     charge, k_charge, k_na = zip(*[reactivity(o) for o in oxides])
     fig, axes = plt.subplots(4, 1, figsize=(3.33, 6.4), sharex=True)
-    series = [(T_p, "$T_p$ required\n($^\\circ$C)", False),
+    series = [(t_melt, "$T_\\mathrm{melt}$ required\n($^\\circ$C)", False),
               (charge, "cation charge\n(eq kg$^{-1}$ rock)", False),
               (k_charge, "charge-weighted $k$\n(mol m$^{-2}$ s$^{-1}$)", False),
               (k_na, "$k$[Na]\n(mol m$^{-2}$ s$^{-1}$)", True)]
@@ -231,8 +216,11 @@ def figure_reactivity(mg_si, T_p, oxides, outdir):
         if logscale:
             ax.set_yscale("log")
         ax.grid(True, linestyle=":", linewidth=0.4, alpha=0.5)
-    axes[0].axhline(EARTH_TP, color="0.45", linestyle="--", linewidth=0.8)
-    axes[0].text(mg_si.min(), EARTH_TP, " Earth", fontsize=6, color="0.35",
+    # Read Earth's reference off the plotted slice rather than hard-coding it: the old constant
+    # was a POTENTIAL temperature, and this axis is the melting temperature at 1 GPa.
+    earth_t = float(np.interp(EARTH_MANTLE_MG_SI, mg_si, t_melt))
+    axes[0].axhline(earth_t, color="0.45", linestyle="--", linewidth=0.8)
+    axes[0].text(mg_si.min(), earth_t, " Earth", fontsize=6, color="0.35",
                  va="bottom", ha="left")
     axes[-1].set_xlabel("mantle Mg/Si (molar)")
     path = os.path.join(outdir, "crust_reactivity_mgsi.png")
@@ -244,7 +232,8 @@ def figure_reactivity(mg_si, T_p, oxides, outdir):
 def main():
     global MODEL_LABEL
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--csv", required=True, help="CSV from make_crust_compositions.jl")
+    parser.add_argument("--csv", default=CRUST_TABLE,
+                        help="CSV from make_crust_compositions.jl (default: the model's own table)")
     parser.add_argument("--outdir", default=os.path.join(os.path.dirname(__file__), "../output"))
     parser.add_argument("--model-label", default=MODEL_LABEL,
                         help="Name of the melting model that produced the CSV.")
@@ -255,13 +244,13 @@ def main():
 
     plt.style.use(_STYLE)
     os.makedirs(args.outdir, exist_ok=True)
-    mg_si, T_p, melt_fraction, oxides, diw = load_table(args.csv, args.delta_iw)
+    mg_si, t_melt, melt_fraction, oxides, diw = load_table(args.csv, args.delta_iw)
     print(f"Loaded {len(mg_si)} compositions at dIW {diw:+g}: "
           f"Mg/Si {mg_si.min():g}-{mg_si.max():g}, "
-          f"T_p {T_p.min():.0f}-{T_p.max():.0f} degC, "
+          f"T_melt {t_melt.min():.0f}-{t_melt.max():.0f} degC, "
           f"F {melt_fraction.min():.3f}-{melt_fraction.max():.3f}")
     figure_mineralogy(mg_si, oxides, diw, args.outdir)
-    figure_reactivity(mg_si, T_p, oxides, args.outdir)
+    figure_reactivity(mg_si, t_melt, oxides, args.outdir)
 
 
 if __name__ == "__main__":
