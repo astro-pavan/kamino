@@ -13,8 +13,10 @@ from kamino.constants import (
     EARTH_CONTINENTAL_WEATHERING_REF,
 )
 
-# Seafloor reactive-surface-area scaling. Calibrated by experiments/calibrate_earth.py to give ~1 Tmol/yr seafloor Alk flux at modern Earth pore conditions with modern seawater composition.
-ALPHA_REF = 1.43
+# Seafloor reactive-surface-area scaling. Fitted jointly with KD_MG_HT and K_NA_CONT_REMOVAL by
+# experiments/calibrate_earth.py's least-squares calibration against modern Na/Ca/Mg seawater
+# (2026-09-01, refit after the crust_composition.py rewrite invalidated the prior fit).
+ALPHA_REF = 1.100155
 
 def seafloor_reactive_area(T: float, pH: float, rate: float, alpha: float, clog: bool=True, cover: bool=True, sedimentation_rate: float | None = None) -> float:
 

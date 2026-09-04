@@ -10,7 +10,7 @@ from kamino.constants import (
     G, YR, SOLAR_CONSTANT, M_EARTH, R_EARTH,
     EARTH_OUTGASSING, EARTH_CRUST_PRODUCTION_RATE_PER_AREA,
     EARTH_HYDROTHERMAL_FLUX_PER_AREA, EARTH_MANTLE_MG_SI, EARTH_DELTA_IW,
-    A_SEAFLOOR_EARTH
+    A_SEAFLOOR_EARTH, EARTH_CL_OUTGASSING_RATIO
 )
 from kamino.chemistry import elements, get_ocean_state, c_idx, si_idx, alk_idx, ca_idx, mg_idx, na_idx, cl_idx, so4_idx, ChemistryError
 from kamino.weathering import get_weathering_flux, get_continental_weathering_flux, ALPHA_REF
@@ -29,11 +29,9 @@ from kamino.utils import august_roche_magnus_formula
 output_path = os.path.join(os.path.dirname(__file__), '../../output/')
 os.makedirs(output_path, exist_ok=True)
 
-KD_MG_HT = 0.07
+KD_MG_HT = 1.394755e-02
 K_CL_SUBDUCTION = 1.373251e-04
-K_NA_CONT_REMOVAL = 2.194806e-03
-
-ALPHA = 20
+K_NA_CONT_REMOVAL = 4.234317e-03
 
 _S_TERR_EARTH = 5 / (1e6 * YR)   # m/s at land_fraction = 0.3
 
@@ -97,6 +95,7 @@ _TAU_PREC_REF_K    = 3e6 * YR
 PE_DEFAULT = -3.0
 
 TAU_PREC_REF = 100e3 * YR
+TAU_RW_REF = 5e6 * YR 
 OCEAN_DEPTH_REF = 3000.0   # m; the depth at which TAU_PREC_REF applies
 
 TAU_ATM = 1e4 * YR
@@ -141,15 +140,15 @@ class Planet:
             ocean_depth: float,
             land_fraction: float=0.0,
             reverse_weathering: bool=True,
-            alpha: float=ALPHA,
+            alpha: float=ALPHA_REF,
             water_rock_ratio: float=WATER_ROCK_RATIO_LT,
             f_HT: float=0.0,
-            cl_outgassing_ratio: float=0.02,
+            cl_outgassing_ratio: float=EARTH_CL_OUTGASSING_RATIO,
             mantle_mg_si: float=EARTH_MANTLE_MG_SI,
             delta_iw: float=EARTH_DELTA_IW,
             pe: float | None=PE_DEFAULT,   # ocean/pore redox; see PE_DEFAULT
             tau_prec: float | None=None,   # None -> scaled with ocean depth, see TAU_PREC_REF
-            tau_rw: float=5e6 * YR,
+            tau_rw: float=TAU_RW_REF,
             kd_mg_ht: float=KD_MG_HT,
             k_na_cont_removal: float=K_NA_CONT_REMOVAL,
             k_cl_subduction: float=K_CL_SUBDUCTION,
@@ -489,6 +488,72 @@ class Planet:
 
         return dYdt
 
+    def _final_diagnostics(self, t_state, Y_state, ca_amount):
+        """Weathering diagnostics for a state the trajectory has already reached.
+
+        `dY_dt` computes Da, pH, the ocean SI dict and b_pore on every call, so this just
+        re-evaluates it once more at (t_state, Y_state) and reads them off `self._state`. That
+        re-evaluation is a diagnostic query on an already-reached state, not new integration
+        work, so both abort mechanisms are suspended for the duration of this one call and
+        restored immediately after -- exactly as a Jacobian probe must never be allowed to trip
+        either of them.
+
+        Used for both the accepted final state of a normal completion AND the abort state of a
+        wall_timeout/fallback_limit run. The abort state is just as real a state as a converged
+        one -- solve_ivp had already reached it, `dY_dt` had already evaluated it once, and this
+        merely re-evaluates that same state a second time under a suspended deadline -- but
+        before this method existed, the early `return` in the wall_timeout/fallback_limit except
+        branch skipped this step entirely, so every such run recorded da=NaN regardless of how
+        close to a real answer its abort state actually was. As a side effect this also fixes
+        `self._T`/`self._pH` for that abort state, which previously could be left holding
+        whichever intermediate call (possibly a Jacobian probe) happened to run last before the
+        wall-clock limit fired.
+
+        `ca_amount` is the ocean Ca inventory (mol/kgw) at (t_state, Y_state), used only to gate
+        ocean_si (PHREEQC returns a spurious -inf once Ca is exhausted).
+        """
+        diagnostics = {"da": np.nan, "calcite_si": np.nan, "ocean_si": np.nan,
+                       "alk_flux": np.nan, "pH_seafloor": np.nan}
+
+        _saved = (self._fallback_limit, self._wall_deadline, self._chem_fallbacks,
+                 self._chem_ok, self._dYdt_last_good)
+        self._fallback_limit = None
+        self._wall_deadline = None
+        try:
+            self.dY_dt(t_state, Y_state)
+        except Exception:
+            pass
+        finally:
+            (self._fallback_limit, self._wall_deadline, self._chem_fallbacks,
+             self._chem_ok, self._dYdt_last_good) = _saved
+
+        _final = getattr(self, '_state', None)
+        if _final:
+            diagnostics["da"] = float(_final.get('Da', np.nan))
+            diagnostics["pH_seafloor"] = float(_final.get('pH_seafloor', np.nan))
+            # Tmol eq/yr, normalised on A_SEAFLOOR_EARTH (0.7 of Earth's surface) -- the
+            # same fixed normalisation plot_results uses, so the two agree exactly.
+            diagnostics["alk_flux"] = (float(_final.get('alk_flux_lt', np.nan))
+                                       * A_SEAFLOOR_EARTH * YR / 1e12)
+            # Ocean calcite SI is only meaningful while there is calcium left to saturate with;
+            # at the ODE floor PHREEQC returns a spurious -inf.
+            _ocean_si = (_final.get('ocean_SI') or {}).get('Calcite', np.nan)
+            if ca_amount > 1e-6:
+                diagnostics["ocean_si"] = float(_ocean_si)
+            _b_pore = _final.get('b_pore')
+            if _b_pore is not None:
+                try:
+                    _, _, _si_p = get_precipitation(
+                        _final['P_pore'], _final['T_pore'],
+                        np.maximum(np.asarray(_b_pore, dtype=float), 0.0),
+                        precipitating_minerals=['Calcite'],
+                        precipitation_timescale=1e6 * YR, pe=self.pe)
+                    diagnostics["calcite_si"] = float(_si_p.get('Calcite', np.nan))
+                except Exception:
+                    pass
+        return {k: (None if v is None or not np.isfinite(v) else v)
+                for k, v in diagnostics.items()}
+
     def time_evolve(self, t_end=2e9 * YR, jac_epsilon=0.01, b0=None, initial_pco2=1000,
                     convergence_threshold=0.05, max_chemistry_fallbacks=None,
                     void_fraction=0.5, max_wall_seconds=None):
@@ -635,9 +700,16 @@ class Planet:
                 print()
                 print(f'Aborted: {_why} -- {exc}')
 
+            # The abort state is a real state the trajectory reached, not a discard -- recover
+            # its weathering diagnostics (and re-settle self._T/self._pH onto it) the same way a
+            # normal completion's accepted final state is. See _final_diagnostics.
+            diagnostics = self._final_diagnostics(
+                self._abort_t, self._abort_Y, self._abort_Y[2 + ca_idx])
+
             with open(self._output_filename, 'r') as f:
                 output_data = json.load(f)
             output_data.update({
+                "diagnostics": diagnostics,
                 "simulation_time_seconds": end - start,
                 "termination": _why,
                 "domain_wall": None,
@@ -687,71 +759,26 @@ class Planet:
             print(f'Simulation time: {end - start:.0f} s')
             print(f'Y: {sol.y[2:, -1]} mol/kgw')
 
-        # Recompute T and pH from the ACTUAL final accepted state. self._T/self._pH are set as
-        # a side effect on EVERY call to dY_dt -- including Jacobian finite-difference probes
-        # and solve_ivp's internal event-root-finding trials -- so whichever call happened to
-        # run LAST is not guaranteed to be the accepted (sol.t[-1], sol.y[:, -1]) state also
-        # used for "P_CO2" below. Near a domain wall this matters: the climate response can be
-        # a genuine cliff (e.g. approaching the runaway threshold at high instellation), so a
-        # routine 1% Jacobian perturbation is enough to flip between a real ~389 K state and the
-        # analytic model's literal 400.0 "no equilibrium found" sentinel -- corrupting the
-        # reported T/pH with a value that has nothing to do with the reported P_CO2. Verified:
-        # at one S=1.15 'hot' termination this reported T=400.0 while the true final P_CO2
-        # (0.07644 bar) evaluates to T=388.99 K; a +1% Jacobian probe of that P_CO2 lands
-        # exactly on the 400.0 rail, which is what got left in self._T.
-        #
-        # Must not perturb the run's own diagnostics: this is a re-evaluation of a state already
-        # reached, not a new trajectory step. fallback_limit is suspended so it cannot trip the
-        # abort budget, and the fallback/ok counters + last-good derivative are snapshotted and
-        # restored so this extra call is invisible to fabricated_fraction and every other
-        # trajectory statistic. Any failure (state genuinely unsolvable at the exact final point)
-        # just leaves self._T/self._pH at whatever the solver's last call set -- no worse than
-        # before this fix.
-        _saved_diag_state = (self._fallback_limit, self._chem_fallbacks, self._chem_ok,
-                             self._dYdt_last_good)
-        self._fallback_limit = None
-        try:
-            self.dY_dt(sol.t[-1], sol.y[:, -1])
-        except Exception:
-            pass
-        finally:
-            (self._fallback_limit, self._chem_fallbacks, self._chem_ok,
-             self._dYdt_last_good) = _saved_diag_state
-
-        # Weathering diagnostics for the accepted final state. `dY_dt` already computes all of
-        # these on every step, so recording them here costs one extra PHREEQC solve per RUN (the
-        # pore-fluid calcite SI, which is not part of any equilibrium dY_dt performs). Without
-        # them the plotting code has to reconstruct the whole final state and re-run the
-        # weathering chemistry for every run it draws -- about 0.9 s each, so ~30 minutes for a
-        # 2000-run sweep, every time a figure is regenerated.
-        diagnostics = {"da": np.nan, "calcite_si": np.nan, "ocean_si": np.nan,
-                       "alk_flux": np.nan, "pH_seafloor": np.nan}
-        _final = getattr(self, '_state', None)
-        if _final:
-            diagnostics["da"] = float(_final.get('Da', np.nan))
-            diagnostics["pH_seafloor"] = float(_final.get('pH_seafloor', np.nan))
-            # Tmol eq/yr, normalised on A_SEAFLOOR_EARTH (0.7 of Earth's surface) -- the
-            # same fixed normalisation plot_results uses, so the two agree exactly.
-            diagnostics["alk_flux"] = (float(_final.get('alk_flux_lt', np.nan))
-                                       * A_SEAFLOOR_EARTH * YR / 1e12)
-            # Ocean calcite SI is only meaningful while there is calcium left to saturate with;
-            # at the ODE floor PHREEQC returns a spurious -inf.
-            _ocean_si = (_final.get('ocean_SI') or {}).get('Calcite', np.nan)
-            if sol.y[2 + ca_idx, -1] > 1e-6:
-                diagnostics["ocean_si"] = float(_ocean_si)
-            _b_pore = _final.get('b_pore')
-            if _b_pore is not None:
-                try:
-                    _, _, _si_p = get_precipitation(
-                        _final['P_pore'], _final['T_pore'],
-                        np.maximum(np.asarray(_b_pore, dtype=float), 0.0),
-                        precipitating_minerals=['Calcite'],
-                        precipitation_timescale=1e6 * YR, pe=self.pe)
-                    diagnostics["calcite_si"] = float(_si_p.get('Calcite', np.nan))
-                except Exception:
-                    pass
-        diagnostics = {k: (None if v is None or not np.isfinite(v) else v)
-                       for k, v in diagnostics.items()}
+        # Recompute T, pH and the weathering diagnostics from the ACTUAL final accepted state.
+        # self._T/self._pH are set as a side effect on EVERY call to dY_dt -- including Jacobian
+        # finite-difference probes and solve_ivp's internal event-root-finding trials -- so
+        # whichever call happened to run LAST is not guaranteed to be the accepted
+        # (sol.t[-1], sol.y[:, -1]) state also used for "P_CO2" below. Near a domain wall this
+        # matters: the climate response can be a genuine cliff (e.g. approaching the runaway
+        # threshold at high instellation), so a routine 1% Jacobian perturbation is enough to
+        # flip between a real ~389 K state and the analytic model's literal 400.0 "no
+        # equilibrium found" sentinel -- corrupting the reported T/pH with a value that has
+        # nothing to do with the reported P_CO2. Verified: at one S=1.15 'hot' termination this
+        # reported T=400.0 while the true final P_CO2 (0.07644 bar) evaluates to T=388.99 K; a
+        # +1% Jacobian probe of that P_CO2 lands exactly on the 400.0 rail, which is what got
+        # left in self._T. `_final_diagnostics` re-evaluates dY_dt at the exact accepted state
+        # (with both abort mechanisms suspended, so this extra call can never trip either) and
+        # also records da/calcite_si/ocean_si/alk_flux/pH_seafloor from it -- one extra PHREEQC
+        # solve per run (the pore-fluid calcite SI, the only part not already covered by an
+        # equilibrium dY_dt performs), which is far cheaper than the plotting code reconstructing
+        # this same state and re-running the weathering chemistry for every run it draws (about
+        # 0.9 s each, ~30 minutes for a 2000-run sweep, every time a figure is regenerated).
+        diagnostics = self._final_diagnostics(sol.t[-1], sol.y[:, -1], sol.y[2 + ca_idx, -1])
 
         with open(self._output_filename, 'r') as f:
             output_data = json.load(f)

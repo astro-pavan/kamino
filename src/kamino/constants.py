@@ -104,6 +104,9 @@ EARTH_CONTINENTAL_WEATHERING_REF = (8e12 / YR) / A_LAND_EARTH  # mol_eq / m² / 
 
 EARTH_SEAFLOOR_WEATHERING_REF = (1e12 / YR) / A_SEAFLOOR_EARTH  # mol_eq / m² / s
 
+EARTH_CL_OUTGASSING_RATIO = 0.02
+
+
 # Mantle potential temperature is no longer a model INPUT: it is solved per composition by
 # make_crust_compositions.jl as the T_p that delivers the target melt fraction, and read back
 # from crust_compositions.csv. Kept only as the label for the legacy PRIMELT anchor.
@@ -117,27 +120,8 @@ EARTH_MANTLE_POTENTIAL_TEMPERATURE = 1350
 # mantles go olivine-free below ~0.8 and orthopyroxene-free above ~1.6 (Guimond et al. 2024).
 EARTH_MANTLE_MG_SI = 1.25
 
-# Core-formation oxygen fugacity, log10 units relative to the iron-wustite buffer. This is
-# the metal-silicate equilibrium that decides how much Fe stayed in the mantle as FeO versus
-# went to the core as metal: dIW = 2 log10(a_FeO_silicate / a_Fe_metal). Earth's core formed
-# near IW-2, which reproduces BSE FeO = 8.05 wt%.
-#
-# The axis is LOGARITHMIC in mantle FeO -- -5 to -1 spans 0.26 to 24 wt%, i.e. everything from
-# a Mercury-like reduced mantle up to the ~25 wt% ceiling above which the thermodynamic models
-# are unreliable (Guimond et al. 2024, section 3.1.1). Do not sweep above -1.
 EARTH_DELTA_IW = -2.0
 
-# Self-oxidation offset between the core-formation fO2 above and the fO2 of a modern melt.
-# These are NOT the same quantity: after core formation the mantle self-oxidises by Fe
-# disproportionation (3FeO -> Fe0 + Fe2O3, favoured at bridgmanite pressures; Guimond et al.
-# 2024 section 2.4). The Fe0 sinks to the core, leaving the same TOTAL Fe but a higher
-# Fe3+/SigmaFe and hence a much higher fO2, with no change to the planet's oxygen budget.
-# Earth: core formation ~IW-2, modern upper mantle ~FMQ ~ IW+3.5, so the offset is ~5.5.
-#
-# This is an EARTH ANCHOR, not a law. The true offset scales with mantle pressure (a bigger
-# planet stabilises more bridgmanite and self-oxidises further) and with water-loss history.
-# It does not affect the crust at all -- only the value handed to the outgassing module -- so
-# it is held fixed here and left overridable at the call site.
 DELTA_IW_SELF_OXIDATION = 5.5
 
 T_REF = 288
