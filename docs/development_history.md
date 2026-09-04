@@ -10,7 +10,10 @@ where they conflict; §20 records the iron charge-leak fix, §21 removes reverse
 space (which invalidates the transition evidence in §20.4, see below). **§25 is the current authority
 on the CRUST PIPELINE** — it replaces the (T_p, Mg/Si) axes with (Mg/Si, core-formation ΔIW), closes
 the CIPW norm with akermanite, and records validation against Guimond et al., Brugman et al. and Katz
-et al.; it supersedes §5, §23 and most of §24, though §24.6's literature refocus stands. §22 remains the authority on
+et al.; it supersedes §5, §23 and most of §24, though §24.6's literature refocus stands. **§32 now
+supersedes §25 on how the melt is COMPUTED** — isobaric batch melting at 1 GPa replaces the
+isentrope, the grid is 26 × 25, and `T_p` becomes `T_melt`; §25's norm, akermanite closure and
+validation against the literature all stand unchanged. §22 remains the authority on
 CALIBRATION — it records the Earth calibration, shows `alpha` is not identifiable from Earth, and
 establishes that the LT seafloor flux carries the wrong ion relative to Coogan & Dosso. §22.0 also
 corrects two stale entries in §11/§15.
@@ -82,6 +85,7 @@ with LSODA.
 | **Aug 19–20** | **Earth calibration** (§22): `K_na` and `kd_mg_ht` fitted and alpha-independent; `alpha` shown to be unidentifiable from Earth; the 1 Tmol/yr anchor found to be 88% Fe measured without pore precipitation; **Coogan & Dosso LT fluxes adopted as the literature target**, exposing the Mg/Ca composition mismatch. |
 | **Aug 21** | **MAGEMin + Mg/Si sweep** (§24): pMELTS replaced, Earth basalt calibrated at T_p = 1325, constant-F closure adopted and homologous-temperature rejected, ultracalcic melts diagnosed and fixed by stopping at cpx-out — then **§24.6: most of it was already published by this group** (Guimond et al. 2024). |
 | **Aug 20** | **Crust-composition pipeline** (§23): the flat T_p/Mg-Si trends traced to a broken oxide mapping plus CIPW clipping; **pMELTS brought online** (superseding §5) and `make_crust_compositions.py` written; **Nepheline added** to the database, rates, norm and build path. |
+| **Sep 3** | **Crust pipeline audited** (§32): the Mg/Si 0.5 / ΔIW −1 "vanishing quartz" traced to a real phase boundary aliased by the ΔIW axis; the isentrope shown redundant under batch melting and **replaced by an isobaric solve** (577 → 219 lines, 130 s → 1 s per point); grid 17 × 9 → **26 × 25**; `check_crust_table.py` found broken since §25.13 and fixed. |
 
 ---
 
@@ -4034,3 +4038,467 @@ Doubling every sweep doubles its cost. Measured per-run times from the pilot (2.
 laptop jobs. The cheap, high-value order for the paper is **`cross` → `pe` → `pe_composition`**,
 which is ~15 wall-hours at 3 workers and answers the three composition figures plus the redox
 question.
+
+---
+
+## 32. The crust pipeline audited: the isentrope was redundant and the grid was aliasing (2026-09-03)
+
+Triggered by distrust of the crust-composition generator, and specifically by one pie in
+`output/crust_grid.png`: at Mg/Si = 0.5, ΔIW = −1, all normative quartz had vanished and been
+replaced by ferrosilite, while every other cell in that column was quartz-rich. It looked like a
+broken norm. It was not — but three real problems came out of chasing it, and the pipeline is now
+half the size and 35× faster.
+
+### 32.1 The anomaly is a real phase boundary, aliased by the ΔIW axis
+
+The melt at that cell genuinely is what the norm says: SiO₂ 49.9 wt%, FeO 25.2, no free silica, so
+pyrolite's own Fe/Mg pyroxene split puts nearly all the pyroxene in the Fe endmember. The jump was
+upstream, in the table: between two *adjacent* grid cells the melt moved 21.5 wt% in SiO₂ and the
+solved temperature 150 °C.
+
+The mechanism is stoichiometric and needs no thermodynamics to see. Adding FeO at fixed molar Mg/Si
+adds a **silica-consuming** component — Fe needs Si for pyroxene — without adding SiO₂, so the
+source's free normative quartz is progressively eaten. Solving for where it reaches zero:
+
+| Mg/Si | 0.50 | 0.60 | 0.70 | 0.80 | ≥ 0.90 |
+|---|---|---|---|---|---|
+| ΔIW at quartz-out | −1.05 | −1.34 | −1.80 | −2.82 | never |
+
+A steep diagonal confined to Mg/Si ≤ 0.8 and ΔIW ∈ [−2.9, −1.0]. Once quartz and feldspar are gone
+the rock no longer starts melting at a low-T near-eutectic, so the temperature needed for F = 0.20
+climbs steeply. On a 0.5-spaced ΔIW axis that whole transition fell inside **one grid step** at
+Mg/Si = 0.5, which is why it read as a discontinuity.
+
+**This is the boundary §6.2 of `crust_composition.md` already claimed as a validation success** —
+Guimond's (Mg+Fe)/Si ≈ 0.8 predictor, reproduced without being encoded. The suspicious corner was
+the headline result, landing between two cells.
+
+### 32.2 `check_crust_table.py` had not run since Hedenbergite went direct
+
+The validator that should have caught a per-cell problem crashed on the first cell containing
+Hedenbergite:
+
+```
+File "check_crust_table.py", line 65, in reconstruct
+    for ox, k in FORMULA[m].items():
+KeyError: 'Hedenbergite'
+```
+
+Its `FORMULA` table (used for the every-oxide mass-closure check) was never updated when §25.13's
+`EMIT_FE_PYROXENE` work moved `clinoferrosilite → Hedenbergite` and `ferrosilite → Ferrosilite`
+into `_PYROLITE_DIRECT`. Hedenbergite is present in **every** cell, so the script could not complete
+a single run. Added `Hedenbergite` = CaFeSi₂O₆ and `Ferrosilite` = FeSiO₃ (both verified against
+`MINERAL_MOLAR_MASS` to ≤0.002 g/mol); the §6.1 claims are reproducible again.
+
+> **The lesson is the one §30.1 already taught in a different costume:** a validator that fails
+> loudly still fails silently if nobody runs it. Two separate documented results — "153/153 cells
+> mass-balance" and "0 of 153 cells are mass-violating" — were being quoted from a script that
+> could not execute.
+
+Also removed: `cipw_norm`'s `verbose=True` branch referenced undefined `hd`/`fs`, left behind by the
+same change, so the debug path raised `NameError`.
+
+### 32.3 The isentrope was doing nothing but manufacturing a label
+
+`isentropic_melt` tracked an isentrope from 3.0 → 1.0 GPa in 2 kbar steps, secant-solving for the
+temperature holding entropy constant at each one, inside a bisection on T_p. That is ~130 s per grid
+point and the reason `--slice` sharding and `merge_crust_slices.py` existed at all.
+
+It cannot affect the answer. The melting is **batch** — `minim(data, X, P, T)` is called with the
+same bulk `X` at every step, melt is never extracted — so every state is a full equilibrium
+minimisation of one fixed composition, and equilibrium is path-independent: a function of
+(bulk, P, T) alone. Both closures end at 1 GPa with F = 0.20; at fixed bulk and pressure F is
+monotonic in T, so that temperature is unique. The two **must** agree.
+
+Measured across all 153 cells of the old grid, isobaric against isentropic:
+
+| quantity | agreement |
+|---|---|
+| temperature (old `T_end` vs new `T_melt`) | mean **0.60 °C**, max 2.10 |
+| melt oxides (SiO₂, FeO, MgO, Al₂O₃, CaO, Na₂O) | mean **0.006–0.026 wt%**, max 0.093 |
+| residual assemblage identical | **151/153** (the two are trace cpx/spl within 1 °C of their limits) |
+
+Within the two bisection tolerances. The isentrope's sole product was the potential-temperature
+label; the melt composition never depended on it.
+
+**The condition matters and should be quoted with the result:** this holds only for batch melting.
+Under fractional melting the residue evolves, history is real, and the path would be required.
+
+### 32.4 `make_crust_compositions.jl`: 577 → 219 lines
+
+Rewritten for the isobaric procedure alone. Removed: `PSTART`/`DP`/`adiabat_T`/`T_at_entropy`/
+`isentropic_melt` (the isentrope), `Tp_for_F`/`Tp_for_cpx_out`/`--closure`, `shard`/`--slice`,
+`--probe`, `--calibrate`, `--validate`/`--bulk`, `--fixed-p`, `core_mass_fraction`, and the CSV
+columns `T_end`, `closure`, `mg_number`, `delta_iw_melt`, `core_mass_fraction`, `warnings` — each
+verified to be read by **zero** callers first. `merge_crust_slices.py` deleted with `--slice`.
+
+Two things worth not re-deriving:
+
+- **`T_p` → `T_melt`.** Under an isobaric closure there is no potential temperature, and keeping the
+  old column name would have been exactly the mislabelling §31.1 was written about. `T_melt` is the
+  melting temperature at 1 GPa (Earth: 1328 °C, against the 1383 °C the isentropic version reported
+  as T_p — the difference is the adiabatic gradient plus latent heat). Three readers referenced the
+  old name (`crust_composition.py`, `check_crust_table.py`, `plot_crust_composition.py`) and now
+  accept either, so old tables still load.
+- **`T_for_F` returns NaN when the target is unreachable below 2200 °C**, and `grid_point` warns if
+  the converged F is more than 0.05 off target. The old `isobaric_melt` helper had neither guard and
+  would have returned a bracket end as though it were a root.
+
+### 32.5 The grid: 17 × 9 → 26 × 25, non-uniform on both axes
+
+At ~1 s per point, density is essentially free, so the axes are now dense where §32.1 says the
+assemblage changes and coarse where nothing happens:
+
+| axis | coarse | dense |
+|---|---|---|
+| Mg/Si | 0.1 over 1.0–1.2, 1.9–2.0 | **0.05** over 0.5–0.9 and 1.3–1.8 |
+| ΔIW | 0.5 over −5.0 to −3.0 | **0.1** over −2.9 to −1.0 |
+
+650 cells in **9.0 min serial, 0 failures, 0 warnings** — against 5.5 h for 153. Uniform refinement
+would have been waste: below ΔIW −3 the melt moves 0.08 wt% SiO₂ per half-unit.
+
+The transition resolves into a monotonic ramp, which is the whole point:
+
+```
+ΔIW    -2.0   -1.5   -1.4   -1.3   -1.2   -1.1   -1.0
+SiO₂   72.66  71.34  71.02  70.32  64.21  57.40  49.87     (Mg/Si = 0.5, wt%)
+```
+
+| | largest adjacent-cell step along ΔIW |
+|---|---|
+| old 17 × 9 | **21.5 wt%** SiO₂, 203 °C |
+| new 26 × 25 | **7.5 wt%** SiO₂, 114 °C |
+
+Interpolating the old grid across that interval blended a quartz rhyolite with an Fe-pyroxenite — a
+mixture that was not itself a MAGEMin solution. Two side benefits: Guimond's (Mg+Fe)/Si ≈ 0.8
+threshold is now located at **0.799** rather than bracketed as 0.702 → 0.894, and the
+olivine-out/opx-out boundaries are measured at 0.05 resolution (0.55 and 1.55, both in the direction
+their depleted-residue argument predicts).
+
+`DIW_SHOW` in `plot_crust_grid.py` gained the 0.1 steps from −1.5 up, so the figure shows the ramp
+instead of aliasing it in one row; the grid is now 10 × 10 = 100 pies.
+
+### 32.6 The operational trap that cost the most time: juliaup and a full `$HOME`
+
+Not physics, but it burned an hour and filled a 5 GB home directory twice.
+
+`julia` on this machine is a **juliaup launcher**. juliaup stores toolchains in `<depot>/juliaup`,
+and when `JULIAUP_DEPOT_PATH` is unset it falls back to `JULIA_DEPOT_PATH` — which `.bashrc` sets to
+`/data/pt426/julia_depot`. But `.bashrc` line 7 is:
+
+```bash
+[ -z "$PS1" ] && return          # before line 41's export
+```
+
+So in any **non-interactive** shell (a tool, a hook, `ssh host julia …`, an IDE language server)
+neither variable is set, juliaup defaults to `~/.julia/juliaup`, finds no toolchain, and downloads
+~830 MB of Julia into `$HOME` — where it then fails to extract, because `$HOME` is 5 GB and nearly
+full. A working 1.12.7 toolchain was on `/data` the whole time.
+
+Fixed environment-independently, rather than by adding another export that some contexts would also
+miss:
+
+```
+~/.julia -> /data/pt426/julia_depot
+```
+
+Verified with `env -i` (no Julia variables at all): `julia --version` → 1.12.7, no download, home
+unchanged. Optional belt-and-braces, not applied: move the `JULIA_DEPOT_PATH` export above
+`.bashrc`'s interactivity guard and add `JULIAUP_DEPOT_PATH` explicitly.
+
+### 32.7 Mineral colours re-encoded by family
+
+The pie chart's hues grouped the pyroxenes by STRUCTURE — clinopyroxene pink, orthopyroxene green
+— with hatching marking derived endmembers and, per the caption, proxied kinetics. Two hues did
+all the work and the texture meant something different in each case.
+
+Now **hue is the mineral family and texture is the cation within it**, so eleven phases read as
+six groups, and *dotted means calcium-bearing everywhere it appears*:
+
+| family | hue | plain | dotted (Ca) | lines |
+|---|---|---|---|---|
+| quartz | amber | Quartz | | |
+| feldspar / feldspathoid | green | Albite | **Anorthite** | Nepheline |
+| pyroxene, Mg | light blue | Enstatite | **Diopside** | |
+| pyroxene, Fe | dark blue | Ferrosilite | **Hedenbergite** | |
+| melilite | purple | | **Akermanite** | |
+| olivine | red | Fayalite | | Forsterite |
+
+Nepheline is not a plagioclase; it takes the feldspar hue because it *is* the desilicated albite
+(norm step 5b converts one into the other), so the cascade shows up as a texture change rather
+than a hue change. Akermanite gets its own hue: it is a melilite, and giving it the Mg-pyroxene
+hue plus dots would have made it identical to Diopside.
+
+**Three findings from validating this, none of which were guessable:**
+
+1. **Adjacent-pair checking was too weak a test here.** The first search optimised ring adjacency
+   and returned worst ΔE 15.3 — but it chose *purple* for Quartz, which co-dominates the low-Mg/Si
+   cells with the *dark blue* Fe-pyroxenes without ever touching them in the ring. Re-scored over
+   **all pairs**, that assignment is bad. The rule: check all pairs whenever two phases are large
+   in the same cells.
+2. **The specified green and red do not pass on their own.** At the textbook values the
+   green/red pair sits at ΔE **7.2**, inside the 6–8 floor band. Deepening the green to `#0a5c28`
+   and lightening the red to `#ef5350` lifts the whole palette to **worst all-pairs ΔE 11.8,
+   tritan 9.5, normal-vision 18.8** — better than any previous version of this figure.
+3. **Hatching is drawn in the EDGE colour, so it vanishes on dark fills.** Near-black dots on the
+   dark blue Fe-pyroxenes (relative luminance 0.032) or the dark green feldspars (0.079) are
+   invisible. `hatch_ink` flips the texture to the surface colour below luminance 0.22, so
+   Hedenbergite, Anorthite and Akermanite carry *white* dots and the rest carry dark ones.
+
+The caption changed with the semantics: hatching no longer means "proxied kinetics", so that
+caveat moved into its own sentence rather than riding on a visual channel that now means Ca.
+
+> ⚠️ **The mineral and oxide palettes now overlap, and that is unavoidable.** The diagnostic
+> figure (§32.8) shows oxide pies beside a mineral pie, and the two encodings are independent —
+> mineral hue means family, and no oxide palette can mirror that. They collide exactly once:
+> Al₂O₃ and Quartz are both `#eda100`. Identity is carried by direct labels on every significant
+> slice and by two separate legends, but if the collision proves confusing the fix is to move
+> Quartz off amber, not to re-anchor the two palettes to each other.
+
+**`plot_crust_composition.py` now imports this palette** rather than defining a second one. It
+had carried its own (Paul Tol 'bright', hue by structure) which was internally fine but meant a
+mineral changed colour between the stack plot and the pie charts. It imports `MINERALS`, `COLORS`,
+`HATCHED` and `hatch_ink` directly, so order, hue and texture cannot drift apart again, and it now
+runs with **no CLI arguments** (`--csv` defaults to `CRUST_TABLE`).
+
+Two defects surfaced while doing it, both of the same shape — a hard-coded value that was right
+under the old palette and wrong under the new one:
+
+- **Direct band labels were hard-coded white.** Legible on the old dark hues; nearly invisible on
+  amber Quartz and light-blue Enstatite/Diopside. They now take `hatch_ink` of their own band.
+- **A `T_p` reference line on a `T_melt` axis.** The panel drew `EARTH_TP = 1325` — a *potential*
+  temperature — as "Earth" on an axis that has plotted the melting temperature since §32.4. The
+  two agree to 3 °C at the anchor purely by coincidence. The line is now read off the plotted
+  slice (`np.interp` at Earth's Mg/Si), the axis is labelled `T_melt`, and the local variable is
+  no longer called `T_p`.
+
+### 32.8 `plot_crust_diagnostic.py`: the pipeline as three pies
+
+New figure, because the grid figure shows only the *output* of the pipeline and the question that
+started this whole section was about the steps before it. Per composition, three pies side by side
+— **bulk mantle oxides → primary melt oxides → normative minerals** — every slice labelled with
+its own percentage, under a header carrying `T_melt` and F. One row per composition reads left to
+right as one parcel of rock going through the whole calculation.
+
+Two forms: individual figures for a selection of cells (`--points`, default Earth plus the
+quartz-out transition and two corners), and the requested **3 × 3 grid** at Mg/Si = [0.5, 1.25,
+2.0] × ΔIW = [−1, −2, −5], 27 pies in nine cells. A companion CSV carries every value, including
+the slices too small to label.
+
+Three things worth keeping:
+
+- **`mantle_composition` now exists in Python** (`crust_composition.py`), mirroring the `.jl` — the
+  bulk mantle was previously computable only inside the generator, so nothing downstream could
+  plot the pipeline's input. Verified identical to the Julia construction (Mg/Si 0.5, ΔIW −1:
+  SiO₂ 51.25, MgO 17.19, FeOt 24.14).
+- **The oxide pies share the mineral hue ring**, and the shared hues mean the same thing on both
+  sides: SiO₂/Quartz blue, MgO/Mg-pyroxene pink, FeOt/Fe-pyroxene green, Na₂O/Albite orange. So a
+  wedge can be followed by colour from mantle to crust. The four unanchored hues were assigned by
+  exhausting all 24 permutations against the CVD checks and keeping the best: worst adjacent
+  pair ΔE 9.2, tritan 9.6, normal-vision 20.8.
+- **Pie labels need a de-collision pass.** Two thin adjacent slices put their labels at nearly the
+  same angle and matplotlib stacks them; `_spread_labels` pushes them apart per side, which is what
+  makes 9-phase assemblages legible. Also: do NOT override matplotlib's per-angle horizontal
+  alignment on pie labels — with `ha='center'` long names run back over the wedges.
+
+### 32.9 A MORB reference, and a paper-sized grid
+
+**MORB reference pie.** Every grid figure now carries average mid-ocean ridge basalt put through
+the *same* CIPW norm as the computed crusts, so the grid is read against something measured rather
+than only against itself. `MORB_OXIDES` lives in `crust_composition.py` beside the pyrolite
+constants; nothing in the model consumes it.
+
+The norm returns a textbook basalt — **53 wt% plagioclase (Anorthite 28.3, Albite 24.3), 25 wt%
+clinopyroxene (Diopside 13.0, Hedenbergite 11.5)**, the rest olivine and orthopyroxene — which
+sits visibly close to the Earth anchor cell, as it should.
+
+> ⚠️ **The MORB numbers are UNVERIFIED against the primary source.** They are attributed to Gale,
+> Dalton, Langmuir, Su & Schilling (2013), G3 14, 489 (the global "All MORB" average), but that
+> paper is paywalled (HTTP 403) and no accessible secondary source quotes its table, so the values
+> were not confirmed. What *was* checked is internal consistency: CaO/Al₂O₃ = 0.775 against the
+> ~0.78 this repository already quotes for MORB, Mg# 0.564 (normal range 0.55–0.60), oxides
+> summing to 99.56, and a normative assemblage that is a real basalt. **Check them against Gale et
+> al. before publishing.** The constant is one dict, deliberately easy to correct.
+
+**`--paper`.** `plot_crust_grid.py --paper` writes `crust_grid_paper.*` at MNRAS text width
+(504 pt) with **5 × 5 = 25 pies** instead of 100: Mg/Si [0.5, 0.9, 1.25, 1.6, 2.0] × ΔIW
+[−5, −3, −2, −1.3, −1]. The −1.3 row is kept deliberately — it is the transition §32.1 is about,
+and dropping it would put the figure back to aliasing the thing the section exists to show. The
+title block is dropped (a figure in a paper is captioned by LaTeX; repeating it above the axes
+costs a third of the height the pies need) and all type is stepped down to stay legible at print
+size.
+
+**Two traps hit while building this:**
+
+- **Importing `plot_results` for its page-width constant applies a global matplotlib style.**
+  `plot_results.py:46` runs `plt.style.use()` at import, and that style sets
+  `constrained_layout: True`, which silently disables the `subplots_adjust` this figure's whole
+  layout depends on — matplotlib says so in a warning and carries on. It would have broken the
+  existing full-size figure too, not just the new one. `TEXT_WIDTH_IN` is now duplicated locally
+  with a comment saying why.
+- **An axes added to a figure that uses subfigures is painted over by them.** The MORB pie was
+  invisible on the diagnostic grid until it was added to the title *subfigure* rather than to the
+  parent figure.
+
+Also fixed here: a stale `wedge.set_edgecolor(INK)` left one line below the new
+`hatch_ink` call in `plot_crust_grid`, so the pies were drawing dark hatching while the legend
+drew light. The two disagreed for exactly as long as §32.7's hatch-contrast fix had been in.
+
+### 32.10 Why the Earth cell is not MORB, and what that costs
+
+Adding the MORB reference (§32.9) made an offset visible, so it was worth pinning down. It is not
+a bug, and the causes are separable and quantifiable.
+
+| oxide (wt%) | ours, F = 0.20 | MORB | diff |
+|---|---|---|---|
+| SiO₂ | 47.94 | 50.88 | −2.94 |
+| TiO₂ | 0.93 | 1.69 | −0.77 |
+| Al₂O₃ | 15.72 | 14.82 | +0.90 |
+| FeOt | 7.71 | 10.51 | −2.80 |
+| MgO | 12.48 | 7.64 | **+4.84** |
+| CaO | 13.33 | 11.48 | +1.85 |
+| Na₂O | 1.74 | 2.81 | **−1.07** |
+| **Mg#** | **0.743** | **0.564** | |
+
+**Cause 1 — MORB is not a primary melt.** Ours is a liquid in equilibrium with mantle residue;
+erupted MORB has crystallised in crustal chambers. That is the whole MgO/Mg# gap, and our values
+are where back-calculated *primary* MORB sits.
+
+**Cause 2 — F = 0.20 is about twice MORB's melt fraction.** In our own melting Na₂O and TiO₂ are
+near-perfectly incompatible (implied **D = 0.007 and 0.020**), so C_liq ≈ C_source/F. Inverting
+that for MORB's concentrations against *our* source:
+
+```
+Na2O  ->  F = 0.128
+TiO2  ->  F = 0.119
+```
+
+Two independent elements agreeing on **F ≈ 0.12**, inside the 0.08–0.12 range for real MORB that
+§24.2 already records. At F = 0.20 every incompatible is diluted ~1.7×, which is precisely the
+Na₂O and TiO₂ deficit. §6.1's PRIMELT misfit says the same thing from the other direction: 4.84
+wt% at F = 0.20 against 2.22 at F = 0.117.
+
+**A negative result worth keeping.** Fractionation alone does *not* reconcile the two. Removing
+12 wt% of equilibrium olivine (Fo86; Fe–Mg Kd = 0.30, Roeder & Emslie 1970 — a one-off diagnostic,
+not model code) puts MgO exactly on MORB's value but drives Al₂O₃ to 17.8 (MORB 14.8) and CaO to
+15.1 (MORB 11.5), and leaves Na₂O, TiO₂ and FeOt still short. Real MORB also fractionates
+plagioclase and cpx, which is what holds Al₂O₃ and CaO down. So cause 1 is real but partial, and
+the incompatible deficit belongs to cause 2.
+
+**What neither explains:** FeOt (7.71 vs 10.51) and CaO/Al₂O₃ (0.848 vs 0.775). The latter is the
+ultracalcic bias at F = 0.20 past cpx-out already in §7 of the methods doc. The FeOt gap is partly
+that ferric iron is off (MAGEMin `O` = 0, while MORB's FeOt includes ~10% Fe³⁺) and partly the
+single 1 GPa segregation pressure, where real MORB pools a column extending deeper and
+higher-pressure melts are more Fe-rich.
+
+**What it costs the weathering model — this is the part that matters.**
+
+| | ours | MORB |
+|---|---|---|
+| olivine | **24.1** | 11.3 |
+| orthopyroxene | 0.2 | 11.5 |
+| Anorthite / Albite | 35.4 / 14.9 | 28.3 / 24.3 |
+
+Total plagioclase is nearly the same (50.4 vs 52.6) but its Ca/Na split is not, and we carry
+**twice the olivine**. Against this repository's own `K_FUNCTIONS` at 25 °C, pH 6.5, the two
+olivines are 1.3–3.3 orders of magnitude faster than every other phase in the Earth cell:
+
+```
+log10 k_eff (mol/m2/s):  Fayalite -8.64  Forsterite -9.57
+                         Diopside -10.90  Anorthite -11.02  Albite -11.04  Hedenbergite -11.92
+```
+
+Use `K_FUNCTIONS`, not `RATE_FUNCTIONS`, for any such comparison: the latter omits Nepheline,
+Hedenbergite, Ferrosilite and Akermanite (which are proxied or carry effective constants) and its
+members do not share a call signature, so ranking across it silently mixes conventions. Ranked
+over the full assemblage the fast group is wider than olivine alone — **Akermanite ties Forsterite
+at −9.57** (it is proxied on forsterite) and **Nepheline is −9.82**.
+
+So the modelled crust weathers faster than real oceanic crust and **over-delivers Mg and Ca while
+under-delivering Na** — Na being exactly the ion that needed the K_NA sink to behave (§6). The
+Earth calibration was performed with this crust, so much of the bias is absorbed into the tuned
+constants; that is the caveat, not the defence. Those constants are not independently meaningful,
+and changing F would require recalibrating.
+
+**Verdict: keep F = 0.20.** It is independently corroborated inside this pipeline (the cpx-out
+closure returns F = 0.213 at the Earth anchor, §24.5) and it is the right closure for a *generic*
+planet, where Earth's particular melting regime cannot be assumed. Earth simply melts less than
+the cpx-out limit. The honest framing for the paper is: primary melts at a cpx-out-anchored melt
+fraction, validated against PRIMELT primary melts, with **MORB shown for orientation and never as
+a validation target**. Reproducing erupted crust needs a different closure — lower F plus an
+explicit fractionation step — which is a recalibration, not a parameter tweak.
+
+Trends across the grid are much safer than absolute values: the offset is systematic, so relative
+behaviour along Mg/Si and ΔIW carries over even where the absolute fluxes do not.
+
+**Tested directly: what F = 0.12 actually gives.** `--ftarget` was restored to
+`make_crust_compositions.jl` for this (it had been cut as unused tooling in §32.4; the F-sensitivity
+question is exactly what it is for):
+
+```
+julia src/kamino/data/make_crust_compositions.jl --points "1.25,-2.0" --ftarget 0.12
+```
+
+At the Earth composition, F = 0.120, **T_melt 1296 °C** (against 1328 at F = 0.20):
+
+| phase (wt%) | F = 0.20 | F = 0.12 | MORB |
+|---|---|---|---|
+| Albite | 14.9 | 16.9 | 24.3 |
+| Anorthite | 35.4 | 36.9 | 28.3 |
+| **Nepheline** | 0.0 | **3.0** | 0.0 |
+| Diopside | 18.2 | 14.5 | 13.0 |
+| Hedenbergite | 7.2 | 6.0 | 11.5 |
+| Forsterite | 16.0 | 15.0 | 5.4 |
+| Fayalite | 8.1 | 7.8 | 6.0 |
+| Enstatite / Ferrosilite | 0.1 / 0.1 | 0.0 / 0.0 | 5.7 / 5.8 |
+
+Grouped: plagioclase 50.4 → **53.8** (MORB 52.6, now matching), clinopyroxene 25.4 → **20.4**
+(MORB 24.6, worse), olivine 24.1 → **22.8** (MORB 11.3, essentially unmoved).
+
+> ⚠️ **Lowering F does not make the crust more MORB-like — it makes it silica-UNDERSATURATED.**
+> Nepheline appears at 3.0 wt%. A low-degree melt is alkali-rich relative to silica, i.e. an alkali
+> basalt; MORB is a tholeiite and is never nepheline-normative. Na₂O improves (1.74 → 2.61 against
+> MORB's 2.81) but Al₂O₃ degrades in step (15.7 → 17.6 against 14.8), so the RMS oxide misfit to
+> MORB barely moves: **2.40 → 2.29 wt%**.
+
+**Why that would be expensive here specifically.** Nepheline dissolves **1.22 decades faster than
+albite** (−9.82 vs −11.04), and albite-versus-nepheline is what sets ocean Na in this model (§6).
+Adopting F = 0.12 would therefore raise the Na flux twice over — more Na₂O in the melt, and that Na
+sitting in a far more reactive phase. It is a recalibration, not a refinement.
+
+**A third cause of the offset, revealed by the same run.** K₂O goes 0.14 → 0.23 and now *overshoots*
+MORB's 0.16. Source K₂O / F = 0.029 / 0.12 = 0.24, i.e. perfectly incompatible — and MORB's K₂O
+inverts to F ≈ 0.18, contradicting the F ≈ 0.12 that Na₂O and TiO₂ give. **No single F reconciles
+all three**, which is itself the evidence: we melt BSE pyrolite, whereas MORB comes from mantle
+already stripped of its most incompatible elements, and K is more incompatible than Na. Part of the
+offset is source depletion, not melt fraction, and no choice of F can absorb it.
+
+Neither of the two §7 limitations is relieved either: at F = 0.12 and ΔIW −2, Mg/Si 0.5 is still
+strongly quartz-normative (SiO₂ 72.4) and Mg/Si 2.0 is still ultracalcic (CaO/Al₂O₃ 1.78).
+
+All of which **reinforces keeping F = 0.20**: the closure is defensible on its own terms, and the
+one thing lowering F buys (Na₂O) costs silica saturation, Al₂O₃, K₂O and a recalibration.
+
+### 32.11 Where this leaves the crust pipeline
+
+- ✅ 650-cell isobaric table in place; `check_crust_table.py` passes every check including PHREEQC
+  at all three Mg/Si extremes; Earth anchor unchanged in composition (SiO₂ 47.88, CaO/Al₂O₃ 0.85).
+- ✅ `docs/crust_composition.md` rewritten for the isobaric method (§3, §5, §6, §7).
+- ⚠️ **Every stored sweep result predates this table.** The composition axis values themselves are
+  unchanged at the shared cells (§32.3), so results at those points stand; anything that
+  *interpolated* between ΔIW −1.5 and −1.0 at Mg/Si ≤ 0.7 was reading a blend of two rock types and
+  should be regenerated.
+- ⚠️ The cpx-out closure (`Tp_for_cpx_out`, F = 0.213 at the Earth anchor, §24.5) and the Brugman
+  experimental comparison (`--validate --bulk`, §6.3 of the methods doc) are recorded results whose
+  code is now deleted. Restore from git if either needs re-running.
+- ⚠️ `T_melt` is not a potential temperature. If the paper wants T_p, run the isentrope once for
+  that single number rather than per grid point.
+- ⚠️ **The Earth cell is a primary melt and does not reproduce erupted MORB** (§32.10): Mg# 0.74
+  against 0.56, Na₂O 1.74 against 2.81, twice the normative olivine. Two causes, both quantified —
+  MORB is differentiated, and F = 0.20 is ~1.7× the melt fraction MORB's own incompatibles imply
+  (F ≈ 0.12). Keep F = 0.20, but never present MORB as a validation target, and expect the crust
+  to over-deliver Mg and Ca and under-deliver Na.
+- ⚠️ **The MORB constant is unverified against Gale et al.** (§32.9). Check before publishing.
+- ✅ F = 0.12 tested directly and rejected (§32.10): it fixes Na₂O but turns the Earth melt
+  nepheline-normative, and nepheline is 1.2 decades faster-dissolving than albite. `--ftarget` is
+  back in the generator if the question needs revisiting.
