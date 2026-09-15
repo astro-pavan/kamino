@@ -87,8 +87,15 @@ with LSODA.
 | **Aug 19–20** | **Earth calibration** (§22): `K_na` and `kd_mg_ht` fitted and alpha-independent; `alpha` shown to be unidentifiable from Earth; the 1 Tmol/yr anchor found to be 88% Fe measured without pore precipitation; **Coogan & Dosso LT fluxes adopted as the literature target**, exposing the Mg/Ca composition mismatch. |
 | **Aug 21** | **MAGEMin + Mg/Si sweep** (§24): pMELTS replaced, Earth basalt calibrated at T_p = 1325, constant-F closure adopted and homologous-temperature rejected, ultracalcic melts diagnosed and fixed by stopping at cpx-out — then **§24.6: most of it was already published by this group** (Guimond et al. 2024). |
 | **Aug 20** | **Crust-composition pipeline** (§23): the flat T_p/Mg-Si trends traced to a broken oxide mapping plus CIPW clipping; **pMELTS brought online** (superseding §5) and `make_crust_compositions.py` written; **Nepheline added** to the database, rates, norm and build path. |
-| **Sep 7–8** | **Continental weathering and the crossover** (§33): `continental_baseline.py` rewritten as an Earth-like instellation sweep; a post-runaway hot-branch state found being counted as habitable; the **seafloor-area fix** (§33.3) which invalidates the Earth calibration; land-fraction series, coarse grid and alpha sweep; a TTG second-melt diagnostic showing high Mg/Si cannot make felsic continents; **alpha measured as the largest control** (f\* ∝ α^0.80–0.86). |
+| **Aug 24** | **The two-parameter crust pipeline** (§25): Mg/Si × ΔIW adopted as the axes, åkermanite closes the norm, three-source validation; the norm switched to pyrolite; the runtime database found unreproducible and made reproducible (§25.12–25.14). |
+| **Aug 25** | **Precipitation timescales** (§26): `tau_prec` depth-scaled, `tau_rw` deliberately not. **Hedenbergite adopted** (§27) — iron leaves fayalite, moving the Earth anchor −8.2 K. |
+| **Aug 26–27** | **Earth recalibration** (§28) after hedenbergite; `alpha` shown unidentifiable from Earth a second time; **the ocean was silently oxidising** and `pe = −3.0` adopted as the default (§28.3). First full sweep read (§29). Analysis tooling made reproducible and ~30× faster (§30). **Every sweep now runs in both redox states** (§31). |
+| **Sep 1** | **`alpha` decision and a second refit** (§34) — production moved to `ALPHA_REF` itself so the sweep and module default cannot drift. ⚠️ *Reconstructed from code on 09-09; no session record exists.* |
 | **Sep 3** | **Crust pipeline audited** (§32): the Mg/Si 0.5 / ΔIW −1 "vanishing quartz" traced to a real phase boundary aliased by the ΔIW axis; the isentrope shown redundant under batch melting and **replaced by an isobaric solve** (577 → 219 lines, 130 s → 1 s per point); grid 17 × 9 → **26 × 25**; `check_crust_table.py` found broken since §25.13 and fixed. |
+| **Sep 7–8** | **Continental weathering and the crossover** (§33): `continental_baseline.py` rewritten as an Earth-like instellation sweep; a post-runaway hot-branch state found being counted as habitable; the **seafloor-area fix** (§33.3) which invalidates the Earth calibration; land-fraction series, coarse grid and alpha sweep; a TTG second-melt diagnostic showing high Mg/Si cannot make felsic continents; **alpha measured as the largest control** (f\* ∝ α^0.80–0.86). |
+| **Sep 9** | **Charge balance and the Cl root cause** (§35): the carbon excess traced to the conservative-ion charge residual, τ_Cl = 5.6 Gyr against a 2 Gyr integration, `K_CL_ANALYTIC` found wrong since §33.3, SO₄ pinned at zero in every sweep; **sedimentation rate extended to all precipitating phases**; **MORB verified against Gale et al.** |
+
+*Rows Aug 24 – Sep 1 were missing entirely; Sep 3 and Sep 7–8 were inverted. Both fixed 2026-09-09.*
 
 ---
 
@@ -160,12 +167,17 @@ weathering ∝ climate** — that coupling is what carries the thermostat.
 
 ### Current tunable defaults (`planet.py`)
 
+> **Updated 2026-09-09.** This table had drifted three refits behind the code (it recorded
+> `KD_MG_HT = 0.07`, `K_NA = 2.194806e-03`, `alpha = 1.43` — the §18/§22-era values). The values
+> below are read from the working copy. **All three of the fitted constants are stale in a
+> different sense: they must be re-fitted after §33.3's seafloor-area fix (§35).**
+
 | Parameter | Value | Role |
 |---|---|---|
-| `KD_MG_HT` | **`0.07`** (was `1.197244e-02`) | HT Mg→Ca exchange; recalibrated 2026-08-17, see §18 |
-| `K_CL_SUBDUCTION` | `1.373251e-04` | Cl subduction |
-| `K_NA_CONT_REMOVAL` | `2.194806e-03` | Na sink (always-on, `J_total`-scaled) |
-| `alpha` | `1.43` | base reactive area per unit crust area |
+| `KD_MG_HT` | `1.394755e-02` | HT Mg→Ca exchange; §28.1 gave `1.394362e-02`, refit 2026-09-01 (§34) |
+| `K_CL_SUBDUCTION` | `1.373251e-04` | Cl subduction. ⚠️ Its analytic derivation is **wrong** post-§33.3 (§35.2) |
+| `K_NA_CONT_REMOVAL` | `4.234317e-03` | Na sink (always-on, `J_total`-scaled); §28.1 gave `4.272026e-03` |
+| `alpha` (`weathering.ALPHA_REF`) | `1.100155` | base reactive area per unit crust area; §28.1 gave `0.487612`, refit 2026-09-01 (§34) |
 | `f_HT` | `0.0` | vestigial |
 | `pe` | **−3.0** | ocean/pore redox; added 2026-08-27, see §28.3. Was silently PHREEQC's default of +4 |
 | `tau_prec` | **100 kyr x (ocean_depth / 3 km)** | fast precipitation; depth-scaled 2026-08-25, see §26 |
@@ -178,6 +190,13 @@ weathering ∝ climate** — that coupling is what carries the thermostat.
 > `K_NA=3.33e-3`, `f_HT=0.039`, and a convergence threshold of 0.5. **None of these match the
 > current code** (values above). That memory predates the Aug 3 switch-back and should be treated
 > as stale history, not current calibration.
+
+> ⚠️ **`parameter_sweep.py` pins its own copies and they do not match.** `KD_MG_CALIB` and
+> `K_NA_CALIB` (`parameter_sweep.py:34-35`) still hold the §28.1 values, so
+> `_warn_constant_drift()` fires on both today and every run is filename-tagged `_kmg…_kna…`
+> accordingly. `ALPHA_CALIB = ALPHA_REF` by construction since §34, so alpha cannot drift.
+> **After the recalibration, update `planet.py` and `parameter_sweep.py` together** or the new
+> sweep is again non-comparable to the module default.
 
 ---
 
@@ -704,6 +723,17 @@ Present in the working copy (uncommitted, on top of `f46de52`):
 - ✅ **CO₂ ceiling is the instellation-dependent maximum greenhouse**, not a flat 10 bar
   (`maximum_greenhouse` in `climate/analytic.py`, called once in `time_evolve`). This closes §15
   item 1; no sweep has been run with it yet.
+- ✅ **Sedimentation rate counts every precipitating phase** (added 2026-09-09, §35.4). Was
+  carbon-as-calcite plus silicon-as-**quartz**-density only; now each ocean-precipitating mineral
+  contributes its own volume via `mineral_info.PRECIPITATE_MOLAR_MASS` / `PRECIPITATE_DENSITY` and
+  `precipitation.sediment_volume_rate`. `get_precipitation_by_mineral` returns a fourth item
+  (per-mineral molar rates); `get_precipitation`'s 3-tuple signature is unchanged.
+- ❌ **The ocean is not seeded.** `time_evolve` zero-fills `Y0` and no sweep passes `b0`, so every
+  run starts from an empty ocean and SO₄ — which is *pinned* (`planet.py:466`) and has no source
+  term — stays at 0 forever. `calibrate_earth.py` seeds 23.45 mM. **The calibration and the sweeps
+  are running different oceans** (§35.1, §35.3).
+- ❌ **`K_CL_ANALYTIC` is wrong post-§33.3.** It assumes the Cl source and sink areas cancel, which
+  stopped being true at the seafloor-area fix (§35.2).
 
 ---
 
@@ -978,16 +1008,22 @@ confirms the user's position that **timeout runs have essentially converged**.
 was blocking convergence; the transition is now visible (§20.4). The binding constraint has moved from
 chemistry correctness to the **CO₂ ceiling** censoring the thermodynamic branch.
 
-> 🔴 **Added 2026-08-25 (§27.5), updated 2026-08-27.** The §22 Earth calibration was redone in
-> §28.1 after hedenbergite moved the anchor −8.2 K. That recalibration is **itself now stale**: it
-> ran at the implicit `pe = 4`, and §28.3 changed the default to −3.0, which is worth +11.5 K. The
-> anchor needs re-fitting at the production redox before the paper figures are final.
+> ✅ **RESOLVED — the redox half, checked 2026-09-09.** The concern was that §28.1 fitted at the
+> implicit `pe = 4` while §28.3 moved the default to −3.0. `calibrate_earth.py` does **not** pass
+> `pe` at all, so it inherits `planet.PE_DEFAULT = -3.0` (`planet.py:96`), which is exactly
+> `PE_REDUCING == PE_DEFAULT_SWEEP` (`parameter_sweep.py:85-87`). Calibration and the production
+> sweep arm anchor at the same redox. No action; any refit inherits this automatically.
 >
-> Also open from §28.2: **`alpha` is not identifiable from Earth** (concentrations move < 6% across
-> a 41× change) while the land-free sweeps are kinetically limited (Da ~ 0.005), where `F ∝ alpha`
-> linearly. Production runs at `alpha = 2` as a stated choice, with the alpha arm (2, 10, 50)
-> carrying the sensitivity argument. The feedback STRENGTH is alpha-invariant to 7% over 40×, which
-> is what the composition figures report.
+> ✅ **RESOLVED — the `alpha` half, 2026-09-01 (§34).** Production runs at `ALPHA_REF` itself
+> rather than a separately pinned round number, so the sweep and the module default cannot drift.
+> The *finding* below still stands and is not weakened by the decision: **`alpha` is not
+> identifiable from Earth** (concentrations move < 6% across a 41× change) while the land-free
+> sweeps are kinetically limited (Da ~ 0.005), where `F ∝ alpha` linearly. The alpha arm is now
+> (`ALPHA_REF`, 10, 50). The feedback STRENGTH is alpha-invariant to 7% over 40×, which is what
+> the composition figures report.
+>
+> 🔴 **Superseding both: the whole anchor is stale for a third reason** — §33.3's seafloor-area
+> fix, which `KD_MG_CALIB` and `K_NA_CALIB` absorbed as a 1.43×. See §35.
 
 1. **Raise or taper the CO₂ ceiling** to the maximum-greenhouse peak (§9.2/§13), instellation-
    dependent rather than a flat 10 bar. The thermodynamic branch *is* the rising-pCO₂ branch, so it
@@ -995,10 +1031,14 @@ chemistry correctness to the **CO₂ ceiling** censoring the thermodynamic branc
    main limit on settled fraction (~26%) and on seeing each transition line in full (§20.5).
 2. **Run a full-res sweep with the iron fix** (§20.3–20.4) to see the transition across many lines,
    not just the 4 that cleared ≥5 settled points in low-res fast_15.
-3. **Seed Cl analytically in the sweep** (§20.4). Cl's residence time ∝ 1/crust reaches ~10 Gyr, so
-   it never equilibrates from blank and drags many runs off "settled". `calibrate_earth.py` already
-   does this; the formula generalises to any (out, crust). Note Cl is *not* what sets the convergence
-   metric (Ca is) — this is about not discarding climatically-settled runs on a slow ion.
+3. **Seed Cl analytically in the sweep** (§20.4). ⬆️ **PROMOTED to the top of this list and
+   root-caused, 2026-09-09 (§35.1).** This is not merely a settling nuisance: it is the single
+   largest error in the model's ocean chemistry. Measured τ_Cl = **5571 Myr** against a 2 Gyr
+   integration, so a blank start reaches `1 − e^(−2/5.57) = 0.302` of steady state — 0.302 × 780 =
+   **235 mM**, the sweep's value to three digits. Because alkalinity is charge-derived (§7), that
+   315 mEq Cl deficit *becomes* carbonate alkalinity, and it is 54% of why DIC is 180× Earth's.
+   `calibrate_earth.py` seeds; **no sweep does** (`time_evolve` zero-fills, `parameter_sweep.py:241`
+   passes no `b0`).
 4. **Judge steadiness on pCO₂/T, not all species.** Many "drifting" timeouts are climate-settled
    (dP < 2%) while slow ions (Ca, Cl) equilibrate over >2 Gyr (§20.4). This is also why `converged`
    fires ~never (§14).
@@ -1018,9 +1058,10 @@ chemistry correctness to the **CO₂ ceiling** censoring the thermodynamic branc
    columns (~13%, exact).
 10. ~~**`calibrate_earth.py` is broken** (`f_bio=`), deliberately deprioritized.~~ **Fixed and run,
    §22.** The ill-posed `kd_mg_ht` ratio update (§18) was replaced by a bounded `least_squares`,
-   which is what the calcite-saturation bistability requires. **New top-priority item in its place:
-   decide `alpha` (§22.9) — it is not identifiable from Earth but carries the thermostat on the
-   land-free worlds the sweeps target.**
+   which is what the calcite-saturation bistability requires. ~~**New top-priority item in its place:
+   decide `alpha` (§22.9)**~~ — **decided 2026-09-01 (§34): production runs at `ALPHA_REF`.** It
+   remains unidentified *by Earth*; the decision is which convention to run, not a measurement.
+   **The top-priority item is now item 3 (seed the ocean) plus the §35 recalibration.**
 11. Consider the **equilibrated `b0`** to remove the unphysical spin-up U (§9.3).
 
 **Closed / superseded:**
@@ -2046,6 +2087,11 @@ KD_MG_HT          = 1.9e-2   (range 1.85e-2 – 1.90e-2)
 ```
 
 ### 22.9 What remains — the open decision
+
+> ✅ **DECIDED 2026-09-01 (§34): production runs at `ALPHA_REF`, currently 1.100155.** That is
+> option 3 below — the best Earth fit — so read option 3's warning as a live caveat on the
+> production configuration, not as a rejected branch. The rest of this section is the reasoning
+> as it stood, kept because the argument that Earth cannot identify `alpha` is unchanged.
 
 **`alpha` is undecided.** Four options, none free:
 
@@ -3549,6 +3595,12 @@ KD_MG_HT          = 1.394362e-02   (was 7.0e-02;       §22 got 1.898657e-02)
 ALPHA_REF         = 0.487612       (was 1.43;          §22 got 0.908383)
 ```
 
+> ⚠️ **SUPERSEDED by the 2026-09-01 refit (§34).** The shipped values are now `K_NA =
+> 4.234317e-03`, `KD_MG_HT = 1.394755e-02`, `ALPHA_REF = 1.100155`. `K_CL_SUBDUCTION` is
+> unchanged — and §35.2 shows its analytic derivation has been *wrong* since §33.3. Note
+> `parameter_sweep.py` still pins the §28.1 `K_NA`/`KD_MG` above, so the drift check fires
+> today (§3). Both are stale again regardless: see §35.
+
 Earth: `converged`, **T = 294.4 K, pH 7.76, pCO₂ 694 ppm**, `|dlnP/dlnt| = 0.002`, zero fabricated
 derivatives.
 
@@ -3578,6 +3630,10 @@ One fix was needed in the script itself: `TAU_PREC_INIT` was pinned at 100 kyr w
 never uses there. It now resolves through `planet.TAU_PREC_REF` (123 kyr at that depth).
 
 ### 28.2 `alpha` cannot be identified from Earth, and the sweeps run where it matters most
+
+> **Status 2026-09-01 (§34):** the *finding* here is unchanged and was re-measured, not overturned.
+> What changed is the operational choice — production moved from a pinned `alpha = 2` to `ALPHA_REF`
+> itself. Everything below about identifiability still holds.
 
 The fit reports `alpha = 0.4876`, but that number is not a measurement. Paired evaluations differing
 only in `alpha` return identical oceans, exactly as §22.2 found. Measured directly: across a **41×
@@ -4315,13 +4371,26 @@ The norm returns a textbook basalt — **53 wt% plagioclase (Anorthite 28.3, Alb
 clinopyroxene (Diopside 13.0, Hedenbergite 11.5)**, the rest olivine and orthopyroxene — which
 sits visibly close to the Earth anchor cell, as it should.
 
-> ⚠️ **The MORB numbers are UNVERIFIED against the primary source.** They are attributed to Gale,
-> Dalton, Langmuir, Su & Schilling (2013), G3 14, 489 (the global "All MORB" average), but that
-> paper is paywalled (HTTP 403) and no accessible secondary source quotes its table, so the values
-> were not confirmed. What *was* checked is internal consistency: CaO/Al₂O₃ = 0.775 against the
-> ~0.78 this repository already quotes for MORB, Mg# 0.564 (normal range 0.55–0.60), oxides
-> summing to 99.56, and a normative assemblage that is a real basalt. **Check them against Gale et
-> al. before publishing.** The constant is one dict, deliberately easy to correct.
+> ✅ **VERIFIED 2026-09-09 against the primary source.** The paper was obtained and every one of
+> the ten oxides in `MORB_OXIDES` matches Gale, Dalton, Langmuir, Su & Schilling (2013), G3 14,
+> 489, **Table 1, "ALL MORB", arithmetic mean** — which the table's own caption names as the
+> preferred composition ("the arithmetic mean (bold font) is our preferred ALL MORB composition").
+>
+> | | SiO₂ | TiO₂ | Al₂O₃ | FeOT | MnO | MgO | CaO | Na₂O | K₂O | P₂O₅ |
+> |---|---|---|---|---|---|---|---|---|---|---|
+> | Gale Table 1 | 50.47 | 1.68 | 14.70 | 10.43 | 0.184 | 7.58 | 11.39 | 2.79 | 0.160 | 0.184 |
+> | `MORB_OXIDES` | 50.47 | 1.68 | 14.70 | 10.43 | 0.18 | 7.58 | 11.39 | 2.79 | 0.16 | 0.18 |
+>
+> Two conventions confirmed rather than assumed: the mean **excludes back-arc spreading centers**
+> (that is Gale's "ALL MORB PLUS BAB", a different column), and iron is **FeOT, total iron as
+> FeO**, which is what the `FeOt` key means and what the norm needs. The internal-consistency
+> checks made when the numbers were unverified all hold at the verified values — CaO/Al₂O₃ =
+> 0.7748, Mg# = 0.564, sum 99.568.
+>
+> Note the `pdftotext` extraction of Table 1 is **column-scrambled**: the oxide labels and the
+> log-normal column are offset by a line, so a naive read pairs SiO₂ with 10.43. The assignment
+> above is the physically unambiguous one and was cross-checked against the log-normal column
+> (SiO₂ 50.41, MgO 7.69, FeOT 10.07, …), which is self-consistent only under this pairing.
 
 **`--paper`.** `plot_crust_grid.py --paper` writes `crust_grid_paper.*` at MNRAS text width
 (504 pt) with **5 × 5 = 25 pies** instead of 100: Mg/Si [0.5, 0.9, 1.25, 1.6, 2.0] × ΔIW
@@ -4501,7 +4570,8 @@ one thing lowering F buys (Na₂O) costs silica saturation, Al₂O₃, K₂O and
   MORB is differentiated, and F = 0.20 is ~1.7× the melt fraction MORB's own incompatibles imply
   (F ≈ 0.12). Keep F = 0.20, but never present MORB as a validation target, and expect the crust
   to over-deliver Mg and Ca and under-deliver Na.
-- ⚠️ **The MORB constant is unverified against Gale et al.** (§32.9). Check before publishing.
+- ✅ **The MORB constant is verified against Gale et al.** (§32.9, checked 2026-09-09): all ten
+  oxides match Table 1's ALL MORB arithmetic mean exactly. Safe to publish.
 - ✅ F = 0.12 tested directly and rejected (§32.10): it fixes Na₂O but turns the Earth melt
   nepheline-normative, and nepheline is 1.2 decades faster-dissolving than albite. `--ftarget` is
   back in the generator if the question needs revisiting.
@@ -4883,11 +4953,241 @@ numbers were.
   1.43×. Every land-bearing result in this section uses post-fix physics with pre-fix constants:
   Na 1.41× Earth, Mg 1.45×. The *ratios* are robust (10²–10³ effects against a 1.43× shift); the
   absolute ocean chemistry is not.
+  > **2026-09-09 (§35):** `K_CL_SUBDUCTION` absorbed the same 1.43× and was **not** on this list —
+  > its analytic derivation assumes the source and sink areas cancel, which §33.3 broke. Fix it
+  > *before* the refit; it is an input to the fit, not an output. Two further defects found in the
+  > same place: the ocean is never seeded (τ_Cl = 5.6 Gyr, so Cl reaches only 30% of steady state
+  > in 2 Gyr) and SO₄ is pinned at zero in every sweep while the calibration seeds 23.45 mM.
 - ⚠️ `CONTINENTAL_HZ_OUTER/INNER` were measured before the area fix. T moved −0.1%, so they should
   be unchanged, but the drift check will say so on the next run.
-- ⚠️ The Cl deficit (§7) is now implicated in the `fallback_limit` runs as well as the ocean
-  chemistry (§33.12).
+- ✅ The Cl deficit (§7) is now implicated in the `fallback_limit` runs as well as the ocean
+  chemistry (§33.12) — **root-caused 2026-09-09 (§35.1)**: it is an unseeded initial condition
+  against a 5.6 Gyr residence time, not a mis-set parameter. Seeding recovers Ca (0.36 → 12.4 mM),
+  which should remove the `fallback_limit` corner.
 - ⚠️ Both melting stages use MAGEMin's `"ig"` database. A metabasite set would be more defensible
   for stage 2 if it reaches the paper.
 - ⚠️ `parameter_sweep.py`'s "Earth is transport-limited (Da ≫ 1)" comment contradicts measurement
   (§33.8).
+
+---
+
+## 34. The `alpha` decision and the second refit (2026-09-01)
+
+*Numbered after §33 but chronologically before it: this session was only discovered on 09-09.*
+
+> ⚠️ **This section is RECONSTRUCTED FROM THE CODE on 2026-09-09, not written from a session
+> record.** No section covered 2026-09-01 — `development_history.md` jumped from §31 (08-27) to
+> §32 (09-03) — and the work was found only because `weathering.py`'s `ALPHA_REF` and
+> `parameter_sweep.py`'s comment block both carry that date. What follows is what the code
+> asserts. **The reasoning behind the numeric values is not recorded anywhere and could not be
+> recovered**; if the fit's own output still exists, attach it here.
+
+### 34.1 What changed
+
+`weathering.py:16-19` records a joint least-squares refit "after the `crust_composition.py`
+rewrite invalidated the prior fit":
+
+| | §28.1 (08-27) | 09-01 refit | shipped today |
+|---|---|---|---|
+| `ALPHA_REF` | 0.487612 | **1.100155** | 1.100155 |
+| `KD_MG_HT` | 1.394362e-02 | **1.394755e-02** | 1.394755e-02 |
+| `K_NA_CONT_REMOVAL` | 4.272026e-03 | **4.234317e-03** | 4.234317e-03 |
+
+`alpha` moved 2.26×; the other two moved by <1%, which is consistent with §22/§28's repeated
+finding that `alpha` is nearly free on Earth while `K_na` and `KD_mg` are tightly pinned by the
+Na/Ca/Mg targets.
+
+### 34.2 The operational decision, which is the durable part
+
+`parameter_sweep.py:45-47` — **production runs at `ALPHA_REF` itself rather than a separately
+pinned round number**, so `ALPHA_CALIB = ALPHA_REF` by construction and the drift check
+"becomes a tautology for alpha specifically, which is the point". The sensitivity arm became
+`[ALPHA_REF, 10, 50]` (was `[2, 10, 50]`).
+
+This closes the item §15 and §22.9 both called top-priority — but as a **convention, not a
+measurement**. `parameter_sweep.py:36-42` is explicit that nothing about identifiability changed:
+ocean concentrations still move <6% across a 41× change in `alpha`, because Earth is
+transport-limited while the land-free worlds the sweeps target are kinetically limited (Da ~ 0.005
+over 19 pilot states, 0/19 with Da > 1), where `F ∝ alpha` linearly.
+
+A domain-coverage check was re-run with `ALPHA_REF` added as a column:
+
+| S | Mg/Si | alpha=2 | alpha=1.10 | alpha=10 |
+|---|---|---|---|---|
+| 0.8 | 1.25 | 298.33 K | 304.49 K | 280.01 K |
+| 1.0 | 1.25 | 321.31 K | 327.22 K | 310.35 K |
+| 1.0 | 0.50 | 346.11 K | 348.34 K | 335.99 K |
+| 1.2 | 1.25 | \[out of domain, all three — alpha-independent\] |
+
+`ALPHA_REF` is warmer than `alpha = 2` everywhere (lower alpha → weaker weathering → less
+cooling), so the move **relaxes** the cold-end domain constraint rather than tightening it, and
+the S = 1.2 wall is unrelated to `alpha`.
+
+### 34.3 The caveat nobody wrote down
+
+§22.9 listed four options for `alpha` and warned about option 3 — the best Earth fit — in these
+terms: the net seafloor alkalinity flux falls to ~0.005 Teq/yr, **~180× below Coogan**, which
+"effectively switches seafloor weathering off, which is fatal on land-free worlds." `ALPHA_REF =
+1.100155` **is** that branch (§22.9 quoted 0.908 for it at the time).
+
+Nothing in the code records that this warning was revisited when the decision was made. The
+domain-coverage table above checks that the runs stay in the climate model's domain — it does not
+check the seafloor alkalinity flux against Coogan. **Measure the net seafloor flux at the refit
+value before the paper leans on the land-free thermostat.**
+
+---
+
+## 35. Charge balance, the Cl root cause, and the sedimentation rate (2026-09-09)
+
+Entry point was a plotting question (log y-axis on `continental_baseline_ions`), which exposed the
+ion panel: DIC 180× Earth, alkalinity 250×. The session then root-caused it.
+
+### 35.1 The carbon excess is a charge-balance artifact, and Cl is over half of it
+
+Tracked alkalinity equals the conservative-ion charge residual **exactly** — this is §7's design
+working, not a bug:
+
+```
+Na 678.6 + 2(76.8) + 2(0.36) − 235.1 = 597.8 mEq    vs    tracked Alk = 597.7
+```
+
+So DIC is *slaved* to alkalinity, and alkalinity is a small difference of large numbers.
+Decomposing the 587 mEq excess against Earth, at S = 1, land 0.3, 3000 m:
+
+| ion | model | Earth | Δcharge | share |
+|---|---|---|---|---|
+| Cl | 235.1 | 550 | **+315** | 54% |
+| Na | 678.6 | 480 | **+199** | 34% |
+| SO₄ | 0.0 | 28 | +56 | 9% |
+| Mg | 76.8 | 52.8 | +48 | 8% |
+| Ca | 0.36 | 10.3 | −20 | −3% |
+| K (untracked) | — | 10.2 | −10 | −2% |
+
+**Cl never converges.** Measured τ_Cl = **5571 Myr** against a 2 Gyr integration; from a blank
+ocean that reaches 30.2% of steady state, and 0.302 × 780 mM = 235 mM — the run's value to three
+digits. This also explains why every baseline run terminates `timeout` rather than `converged`.
+It is §15 item 3, promoted from a settling nuisance to the dominant error term.
+
+Seawater Cl is an inherited inventory from early degassing, with modern volcanic Cl being recycled
+subducted seawater Cl rather than primordial — [Kendrick et al., PNAS 2021](https://www.pnas.org/doi/10.1073/pnas.2116083118);
+[Sharp & Draper 2013, EPSL](https://www.sciencedirect.com/science/article/abs/pii/S0012821X13001192).
+The blank-ocean start is the unphysical case, so seeding is the literature-consistent choice, not
+a convenience.
+
+### 35.2 `K_CL_ANALYTIC` has been wrong since §33.3
+
+`calibrate_earth.py:126` derives it from a steady-state balance in which the source and sink areas
+cancel. **§33.3 broke that cancellation**: the Cl source is `F_vol`, over `surface_area`, while the
+sink is over `seafloor_area`. It is missing a factor `A_surf/A_sf = 1/0.7 = 1.43` — the same 1.43×
+`KD_MG_CALIB` and `K_NA_CALIB` absorbed, but here in closed form rather than through a fit.
+
+Consequence: the Cl *steady state* is 780 mM, not the 550 targeted. This is an **input** to the
+calibration (`calibrate_earth.py:269` passes it into the `Planet` the solver runs against), so it
+biases the fit for `K_na`, `alpha` and `KD_mg` — it must be fixed **before** the refit, not after.
+
+### 35.3 SO₄ is pinned at zero in every sweep
+
+`planet.py:466` sets `F_net[so4_idx] = 0.0` by design, so sulfate can only enter through `b0`.
+`calibrate_earth.py:244` seeds 23.45 mM; **no sweep seeds anything.** The calibration and the
+production sweeps have been running oceans that differ by 56 mEq of charge.
+
+Two follow-ons this raises, both **open decisions** rather than findings:
+
+- **Sulfate is redox-coupled and the model does not couple it.** 28 mM is an oxygenated ocean;
+  since §31 every sweep runs both redox arms, and the reducing arm should not carry oxic sulfate.
+- **The seed's scaling law is a first-order lever.** Ocean depth spans 300 m – 50 km in the sweep,
+  a **167× range in ocean mass**. Fixed-concentration and fixed-inventory seeding differ by that
+  factor. This interacts with §33.13: `calibrate_earth.py` runs 3700 m (0.98× Earth's ocean mass)
+  while the continental baseline runs 3000 m (0.79×), and `tau_prec` is depth-scaled, so the fit
+  is anchored at 123 kyr and the "Earth" figure runs at 100 kyr.
+
+### 35.4 The sedimentation rate now counts every precipitating phase
+
+`S_sed` feeds `weathering.seafloor_reactive_area` through the burial timescale `t_cover`. It was
+computed from carbon-as-calcite plus silicon-at-**quartz** density only, which both under-counted
+(clays, evaporites and the reverse-weathering phases contributed nothing) and mis-counted (a mole
+of Sepiolite(d) carries 6 mol Si but occupies 287 cm³, not 6 × 22.7 cm³ of SiO₂(am)).
+
+Now each ocean-precipitating mineral contributes its own volume. `get_precipitation_by_mineral`
+returns a fourth item — per-mineral **molar** rates, which the aqueous flux vectors cannot express
+(they carry only tracked elements, so a phase's H and O are invisible and halite's mass is split
+across two entries). `get_precipitation`'s 3-tuple signature is unchanged, so its ~15 call sites
+were untouched; the clamped sum was extracted to `sum_precipitation` because `Planet` applies it
+to the fast and reverse-weathering assemblages separately.
+
+Molar masses are computed from the formula the **runtime database** uses, not from the mineral
+name — Sepiolite(d) is the 6H₂O hydrate (647.8 g/mol) and Saponite-Na the non-integer Na₀.₃₄
+endmember (386.7 g/mol); an idealised formula would be badly wrong for both. Densities are
+Handbook of Mineralogy `D(meas.)`, or `D(calc.)` where none is given.
+
+Measured effect:
+
+| state | new/old | dominant phases |
+|---|---|---|
+| Earth seawater | 1.004× | Calcite 99% |
+| model blank-run ocean | 1.203× | SiO₂(am) 77%, Calcite 16%, Sepiolite(d) 7% |
+| Si-rich, low Ca | 1.081× | Calcite 86%, Sepiolite(d) 14% |
+
+Negligible at Earth (calcite dominates and was already counted), ~20% in the model's own high-Si
+ocean-world chemistry. End-to-end runs move <0.1%: `t_cover` combines harmonically with `t_clog`,
+so a 1.2× change in `S_sed` is heavily damped. **One behaviour change beyond "count everything":
+`SiO2(am)` density is now 2200, not quartz's 2650.**
+
+A phase missing from either table now **raises** rather than being silently skipped — a silent
+skip is exactly the failure this change exists to fix.
+
+### 35.5 What a corrected charge balance actually does
+
+Cumulative A/B, same planet, S = 1, land 0.3, 3000 m. `K_NA`/`KD_MG` here are hand-scaled by
+§33.3's 1.41/1.45, **not** re-fitted, so row 4 is an indication of direction and magnitude only:
+
+| | T | pCO₂ | Alk | C | Ca | Mg | Na | Cl |
+|---|---|---|---|---|---|---|---|---|
+| as-is | 295.2 | 824 | 597.7 | 363.4 | 0.36 | 76.8 | 678.6 | 235.1 |
+| + seawater seed | 295.0 | 797 | 160.1 | 103.1 | 0.36 | 80.6 | 671.5 | 619.3 |
+| + `K_CL` area fix | 295.0 | 796 | 226.0 | 143.0 | 0.36 | 79.4 | 669.4 | 549.0 |
+| + `K_NA`,`KD_MG` ×1.41/1.45 | 294.3 | **687** | **3.4** | **3.1** | **12.4** | 72.3 | 437.2 | 549.2 |
+| Earth | 288 | 280 | 2.3 | 2.0 | 10.3 | 52.8 | 480 | 550 |
+
+DIC goes 363 → 3.1 mM. **Ca recovers 0.36 → 12.4 mM**, confirming the Ca collapse was an
+alkalinity artifact, not a missing sink — and confirming §33.12's reading of the `fallback_limit`
+runs, which sit in exactly that near-zero-Ca corner and should disappear with the seed.
+
+The seed and the `K_CL` fix are **complementary, not redundant**: once the steady state *is* 550,
+seeding at 550 makes Cl stationary and the 5.6 Gyr timescale stops mattering.
+
+> ⚠️ **Two cautions.** (1) Row 3 → row 4 is violent: Alk 226 → 3.4 for a 1.41× change in `k_na`.
+> Near Earth's balance alkalinity is a ~0.4% residual of ~600 mEq terms, so it is **ill-conditioned
+> as a fit target** — fit the conservative ions and let Alk and DIC fall out. (2) pCO₂ is still
+> 687 ppm, 2.5× Earth, after all of this. That is **not** charge balance and needs its own
+> treatment.
+
+### 35.6 Mg will not be fixed by the recalibration
+
+The combined-fix run lands at Mg = 72.3 mM against Earth's 52.8 — **+36.9%**. §28.1 independently
+reports **+37.0%** and attributes it to §27: removing the hedenbergite correction reaction shifted
+the Earth assemblage (Diopside −25.7%, Forsterite +14.9%, Ca/Mg supply ratio −19.4%). Two
+independent routes to the same number, so treat it as structural. `kd_mg_ht` trades Mg for Ca
+mole-for-mole, so with Ca on target there is no way to pull Mg down. `kd_mg_ht` still has three
+disagreeing anchors: Earth fit 0.019, Coogan HT 0.005–0.009, §18 first-principles 0.07, against
+the shipped 0.0139.
+
+### 35.7 MORB verified
+
+§32.9's ⚠️ is closed: `MORB_OXIDES` matches Gale et al. (2013) Table 1's ALL MORB arithmetic mean
+on all ten oxides. Details and the extraction trap are recorded there.
+
+### 35.8 Status going into the recalibration
+
+- ✅ MORB constant verified against the primary source.
+- ✅ Sedimentation rate counts all precipitating phases.
+- ✅ `pe` concern from §27.5/§15 checked and closed — calibration and sweeps share `pe = −3.0`.
+- 🔴 **`K_CL_ANALYTIC` must be fixed before the refit** (§35.2) — it is an input to the fit.
+- 🔴 **`planet.py` and `parameter_sweep.py` constants must be updated together** after the refit,
+  or the drift check fires and every run is tagged non-comparable (§3).
+- ⚠️ **Open decisions, needed before the run:** the SO₄ background and whether it couples to `pe`;
+  fixed-concentration vs fixed-inventory seeding; and whether the continental baseline moves to
+  3700 m to match the calibration anchor or the calibration to 3000 m to match the sweeps (§33.13).
+- ⚠️ `alpha`'s seafloor alkalinity flux was never checked against Coogan at the 09-01 value (§34.3).
+- ⚠️ Old sweep output has been moved aside; the new sweep starts from an empty directory, so the
+  §32.11 "every stored result predates this table" caveat no longer applies.
