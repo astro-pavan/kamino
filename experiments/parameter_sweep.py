@@ -8,6 +8,7 @@ os.environ.setdefault('JAX_PLATFORMS', 'cpu')
 
 import kamino.planet as p2
 from kamino.planet import Planet, KD_MG_HT, K_NA_CONT_REMOVAL, PE_DEFAULT
+from kamino.chemistry import seawater_seed
 from kamino.weathering import ALPHA_REF
 from kamino.crust_composition import mineral_composition
 from kamino.constants import M_EARTH, R_EARTH, EARTH_MANTLE_MG_SI, EARTH_DELTA_IW
@@ -31,8 +32,8 @@ MAX_CHEMISTRY_FALLBACKS = 5000
 # The Mg residual is a consequence of §27, not a solver failure: the deleted Fe->fayalite
 # exchange had been manufacturing diopside (a Ca source) out of forsterite, so removing it cut
 # the rate-weighted Ca supply 9.5% and raised Mg supply 12.3%.
-KD_MG_CALIB = 1.394362e-02
-K_NA_CALIB  = 4.272026e-03
+KD_MG_CALIB = 1.969604e-02
+K_NA_CALIB  = 6.099720e-03
 
 # alpha is STILL NOT identified by the Earth fit, even though it is now the same number the
 # fit reports. Measured, ocean concentrations move <6% across a 41x change in alpha -- because
@@ -238,7 +239,15 @@ def run_simulation(s, o, c, d, rw, mgsi, diw, alpha, kd_mg, k_na, pe, output_pat
             pe=pe,
             name=run_name
         )
-        p.time_evolve(max_chemistry_fallbacks=MAX_CHEMISTRY_FALLBACKS,
+        # Seed the ocean with charge-balanced modern seawater rather than starting blank.
+        # Not optional: SO4 has no source term (it is pinned), and Cl relaxes on 5571 Myr against
+        # a 2 Gyr integration, so a blank start leaves Cl at 30% of steady state and the missing
+        # anion charge shows up as carbonate alkalinity. See chemistry.seawater_seed and
+        # development_history.md section 35. Every constant in this file was calibrated against
+        # a seeded ocean, so running unseeded would not merely be slower -- it would be a
+        # different model from the one the constants belong to.
+        p.time_evolve(b0=seawater_seed(),
+                      max_chemistry_fallbacks=MAX_CHEMISTRY_FALLBACKS,
                       max_wall_seconds=wall_budget(d))
         with open(p._output_filename) as fh:  # time_evolve records T and termination here
             result = json.load(fh)
@@ -701,7 +710,7 @@ SWEEPS = {
     'chemistry':         ('kd_mg_ht / k_na on-off', sweep_chemistry),
 }
 
-DEFAULT_SWEEPS = 'basic_high_mgsi,basic_low_mgsi'
+DEFAULT_SWEEPS = 'basic,composition,depth,alpha_outgassing,basic_high_mgsi,basic_low_mgsi,pe'
 
 
 # Measured per-run wall cost, from the 20-run pilot (2026-08-25): 27.2 min for 10 shallow runs,

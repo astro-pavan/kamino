@@ -120,7 +120,7 @@ GRID_ALPHA = [ALPHA_CALIB, 10, 50]
 #   'land'     : the land-fraction series at Earth outgassing and crust production
 #   'grid'     : the coarse instellation x land x outgassing x crust x Mg/Si factorial
 #   'alpha'    : instellation x land x outgassing x alpha, at Earth crust production and Mg/Si
-SWEEP = 'alpha'
+SWEEP = 'all'
 
 # These are ints on purpose. `_run_name` interpolates them with plain str(), so 1 and 1.0 give
 # 'crust_1' and 'crust_1.0' -- two names for one config, and the ocean arm would stop matching
@@ -1308,7 +1308,7 @@ if __name__ == '__main__':
                         help='Draw the figures from runs already on disk; run nothing.')
     parser.add_argument('--no-plots', action='store_true',
                         help='Run the sweep and stop, without drawing anything.')
-    parser.add_argument('--both-redox', action='store_true',
+    parser.add_argument('--both-redox', action='store_true', default=False,
                         help=f'Also run the oxidising arm (pe = {PE_OXIDISING:g}). The figures '
                              f'are drawn at one pe either way -- see --pe.')
     parser.add_argument('--pe', type=float, default=None,
@@ -1330,10 +1330,21 @@ if __name__ == '__main__':
             combos = _combos(land_arms=LAND_FRACTIONS, pe_states=pe_states)
         elif SWEEP == 'baseline':
             combos = _combos(land_arms=LAND_ARMS, pe_states=pe_states)
+        elif SWEEP == 'all':
+            combos = _grid_combos(crust=[CRUST_PRODUCTION], mg_si=[MG_SI_EARTH], alpha=GRID_ALPHA, pe_states=pe_states)
         else:
             raise SystemExit(f"SWEEP must be 'baseline', 'land' or 'grid', not {SWEEP!r}")
         print(f"sweep: {SWEEP}")
-        run(combos, output_path=args.path)
+
+        if SWEEP == 'all':
+            combos = _grid_combos(crust=[CRUST_PRODUCTION], mg_si=[MG_SI_EARTH], alpha=GRID_ALPHA, pe_states=pe_states)
+            run(combos, output_path=args.path)
+            combos = _combos(land_arms=LAND_FRACTIONS, pe_states=pe_states)
+            run(combos, output_path=args.path)
+            combos = _combos(land_arms=LAND_ARMS, pe_states=pe_states)
+            run(combos, output_path=args.path)
+        else:
+            run(combos, output_path=args.path)
 
     if not args.no_plots:
         make_plots(output_path=args.path, pe=args.pe)
