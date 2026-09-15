@@ -124,7 +124,7 @@ def diagnose(planet: Planet, Y: np.ndarray, t: float = 0.0) -> dict:
         if not mins:
             return {}
         try:
-            per_min, _, _ = get_precipitation_by_mineral(
+            per_min, _, _, _ = get_precipitation_by_mineral(
                 P, T, b_ocean, precipitating_minerals=mins, precipitation_timescale=tau)
         except ChemistryError:
             return {}

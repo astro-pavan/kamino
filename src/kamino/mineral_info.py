@@ -78,6 +78,46 @@ silica_minerals = ['SiO2(am)'] # Si sink
 reverse_weathering_minerals = ['Sepiolite(d)', 'Saponite-Na', 'Greenalite'] # Mg, (Mg+Na), Fe sinks (via reverse weathering). Saponite-Na (trioctahedral Mg-smectite, basalt alteration clay) is the Na sink; least Al-limited Na-smectite.
 evaporite_minerals = ['Halite'] # Cl (and Na) sink; only active when land_fraction > 0
 
+# Molar mass (g/mol) and density (kg/m^3) of every phase that can precipitate out of the ocean.
+# Used by Planet.dY_dt to turn molar precipitation rates into a sediment ACCUMULATION RATE, which
+# sets the burial timescale of the seafloor basalt in weathering.seafloor_reactive_area.
+#
+# Molar masses are computed from the formula the runtime database actually uses (lt_weathering_sit
+# .dat), not from the mineral name -- Sepiolite(d) is the 6H2O hydrate and Saponite-Na is the
+# non-integer Na0.34 endmember, and both would be badly wrong from an idealised formula.
+#
+# Densities are Handbook of Mineralogy (Anthony et al.) D(meas.), or D(calc.) where no measurement
+# is given. The clays and Sepiolite are the loosest numbers here (smectite density depends on
+# interlayer hydration state), but they are also the phases whose SEDIMENT is least well described
+# by a crystal density in the first place, so a more precise value would be false precision.
+# SiO2(am) is 2200, the density of amorphous silica -- NOT quartz's 2650, which is what the
+# C-and-Si-only sedimentation rate this table replaces was using.
+PRECIPITATE_MOLAR_MASS = {   # g/mol
+    'Calcite':      100.086,  # CaCO3
+    'Siderite':     115.853,  # FeCO3
+    'Nahcolite':     84.006,  # NaHCO3
+    'Kaolinite':    258.156,  # Al2Si2O5(OH)4
+    'Goethite':      88.851,  # FeOOH
+    'SiO2(am)':      60.083,  # SiO2
+    'Halite':        58.440,  # NaCl
+    'Sepiolite(d)': 647.819,  # Mg4Si6O15(OH)2:6H2O
+    'Saponite-Na':  386.700,  # Na0.34Mg3Al0.34Si3.66O10(OH)2
+    'Greenalite':   371.728,  # Fe3Si2O5(OH)4
+}
+
+PRECIPITATE_DENSITY = {      # kg/m^3
+    'Calcite':      2710.0,   # 2.71
+    'Siderite':     3960.0,   # 3.96
+    'Nahcolite':    2210.0,   # 2.21
+    'Kaolinite':    2600.0,   # 2.60
+    'Goethite':     4270.0,   # 4.27 D(calc.); D(meas.) 3.3-4.3
+    'SiO2(am)':     2200.0,   # amorphous silica
+    'Halite':       2165.0,   # 2.17
+    'Sepiolite(d)': 2260.0,   # D(calc.) 2.26
+    'Saponite-Na':  2270.0,   # D(meas.) 2.24-2.30
+    'Greenalite':   3000.0,   # D(meas.) 2.85-3.15
+}
+
 # Secondary phases allowed to precipitate DURING the low-temperature primary equilibrium
 # (get_b_eq) rather than only afterwards. The HT path has always done this (get_b_eq appends
 # ht_secondary_minerals); the LT path never has. The wiring exists so the two paths CAN be made

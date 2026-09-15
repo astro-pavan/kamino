@@ -125,12 +125,12 @@ EARTH_MANTLE_FEO = 8.05  # wt%
 # Gale, Dalton, Langmuir, Su & Schilling (2013), G3 14, 489 -- "The mean composition of ocean
 # ridge basalts", the global "All MORB" average.
 #
-# !! THESE NUMBERS ARE UNVERIFIED AGAINST THE PAPER. It is paywalled and no accessible secondary
-# source quotes the table, so they were not confirmed at the primary source. They are internally
-# consistent with what this repository already asserts about MORB (CaO/Al2O3 = 0.775 against the
-# ~0.78 quoted in docs/crust_composition.md section 7; Mg# 0.564, in the usual 0.55-0.60 range;
-# oxides summing to 99.56) and the norm returns a textbook basalt (53 wt% plagioclase, 25 wt%
-# clinopyroxene) -- but CHECK THEM AGAINST GALE ET AL. BEFORE PUBLISHING A FIGURE THAT USES THEM.
+# VERIFIED 2026-09-09 against the paper: Table 1, "ALL MORB", ARITHMETIC mean, which the caption
+# names as Gale et al.'s preferred composition. All ten oxides match (MnO and P2O5 are both 0.184
+# in the paper and rounded to 0.18 here). Two conventions, confirmed rather than assumed: the mean
+# EXCLUDES back-arc spreading centers (Gale's "ALL MORB PLUS BAB" is a different column), and iron
+# is FeOT -- total iron as FeO -- which is what the FeOt key means. CaO/Al2O3 = 0.7748, Mg# 0.564,
+# sum 99.568. See development_history.md section 32.9.
 MORB_OXIDES = {
     'SiO2': 50.47, 'TiO2': 1.68, 'Al2O3': 14.70, 'FeOt': 10.43, 'MnO': 0.18,
     'MgO': 7.58, 'CaO': 11.39, 'Na2O': 2.79, 'K2O': 0.16, 'P2O5': 0.18,

@@ -100,6 +100,64 @@ ION_CHARGE[al_idx] = 3.0
 ION_CHARGE[cl_idx] = -1.0
 ION_CHARGE[so4_idx] = -2.0
 
+
+# ---------------------------------------------------------------------------
+# The ocean seed. ONE definition, imported by both the calibration and the sweeps.
+#
+# WHY THIS EXISTS (2026-09-09, development_history.md section 35). `time_evolve` zero-fills Y0 and
+# no sweep passed b0, so every sweep run started from a literally empty ocean while
+# calibrate_earth.py seeded modern seawater. Two species make that fatal rather than merely slow:
+#
+#   SO4 has NO source term at all -- Planet.dY_dt pins F_net[so4_idx] = 0 -- so a zero seed means
+#   a sulfate-free ocean for ever, 56 mEq/kg of charge different from the one calibrated against.
+#
+#   Cl relaxes on tau = 5571 Myr against a 2 Gyr integration. From zero that reaches 30% of steady
+#   state; measured 235 mM against 546. Because alkalinity is charge-derived, the missing anion
+#   charge becomes carbonate alkalinity, which is why DIC ran 180x Earth's.
+#
+# Seeding is also the physically correct choice, not a convenience: seawater Cl is an inherited
+# inventory from early degassing, with modern volcanic Cl being recycled subducted seawater Cl
+# rather than primordial (Kendrick et al. 2021 PNAS; Sharp & Draper 2013 EPSL). A blank ocean is
+# the unphysical case.
+#
+# ALKALINITY IS DERIVED, NEVER ASSIGNED. The invariant Alk = ION_CHARGE.b must hold at t = 0: the
+# flux terms are charge-perfect (0.04 mEq drift per Gyr), so a seed that violates it is never
+# repaired -- a 592.9 mEq offset once persisted unchanged for 1.3 Gyr and produced every "Ca is
+# 98% low" result in the old calibration.
+# ---------------------------------------------------------------------------
+SEAWATER_TARGETS = {          # mol/kgw, modern seawater; the calibration's fit targets
+    'Cl': 546e-3, 'Na': 469e-3, 'Ca': 10.3e-3, 'Mg': 52.8e-3, 'C': 2.1e-3, 'Si': 0.1e-3,
+}
+
+# SO4 background. Charge-derived rather than seawater's ~28 mM, because the model does not track
+# K+ (~10.2 mEq/kg of cation), so the sulfate that closes the balance at the target alkalinity is
+# lower. SO4 is pinned, so this is effectively a PARAMETER, not an initial condition.
+SO4_BACKGROUND = (2 * SEAWATER_TARGETS['Ca'] + 2 * SEAWATER_TARGETS['Mg']
+                  + SEAWATER_TARGETS['Na'] - SEAWATER_TARGETS['Cl'] - 2.3e-3) / 2
+
+
+def seawater_seed(so4=SO4_BACKGROUND):
+    """Charge-balanced modern-seawater initial ocean, as a b vector (mol/kgw).
+
+    Fixed CONCENTRATION, so the salt inventory scales with ocean mass. That is the right
+    convention at the calibrated land fraction -- the Cl steady state is depth-independent
+    (the ocean mass cancels between source and sink), so seeding at 546 mM leaves Cl
+    stationary rather than drifting for 5 Gyr.
+
+    NOTE it is NOT obviously right across the depth sweeps, which span 300 m to 50 km -- a 167x
+    range in ocean mass. Fixed-inventory seeding (a deeper ocean is fresher) is the competing
+    convention and differs by that factor. Decide before running the ocean-world grid.
+
+    Also note the Cl steady state goes as 1/(1 - land_fraction) through K_CL_SUBDUCTION's area
+    ratio, so a land-free world equilibrates to 0.7 x this Cl rather than to it.
+    """
+    b = np.zeros(elements.shape[0])
+    for el, val in SEAWATER_TARGETS.items():
+        b[int(np.where(elements == ('Alkalinity' if el == 'Alk' else el))[0][0])] = val
+    b[so4_idx] = so4
+    b[alk_idx] = float(np.dot(ION_CHARGE, b))   # derived, never assigned
+    return b
+
 # PHREEQC reports Alkalinity under its own key, not as a -totals element.
 element_string = ' '.join(elements[elements != 'Alkalinity'])
 

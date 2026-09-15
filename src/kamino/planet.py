@@ -12,9 +12,10 @@ from kamino.constants import (
     EARTH_HYDROTHERMAL_FLUX_PER_AREA, EARTH_MANTLE_MG_SI, EARTH_DELTA_IW,
     A_SEAFLOOR_EARTH, EARTH_CL_OUTGASSING_RATIO
 )
-from kamino.chemistry import elements, get_ocean_state, c_idx, si_idx, alk_idx, ca_idx, mg_idx, na_idx, cl_idx, so4_idx, ChemistryError
+from kamino.chemistry import elements, get_ocean_state, c_idx, alk_idx, ca_idx, mg_idx, na_idx, cl_idx, so4_idx, ChemistryError
 from kamino.weathering import get_weathering_flux, get_continental_weathering_flux, ALPHA_REF
-from kamino.precipitation import get_precipitation
+from kamino.precipitation import (get_precipitation, get_precipitation_by_mineral,
+                                  sum_precipitation, sediment_volume_rate)
 from kamino.mineral_info import (
     carbonate_minerals, clay_minerals, silica_minerals,
     reverse_weathering_minerals, evaporite_minerals,
@@ -29,9 +30,9 @@ from kamino.utils import august_roche_magnus_formula
 output_path = os.path.join(os.path.dirname(__file__), '../../output/')
 os.makedirs(output_path, exist_ok=True)
 
-KD_MG_HT = 1.394755e-02
-K_CL_SUBDUCTION = 1.373251e-04
-K_NA_CONT_REMOVAL = 4.234317e-03
+KD_MG_HT = 1.969604e-02
+K_CL_SUBDUCTION = 1.961786e-04
+K_NA_CONT_REMOVAL = 6.099720e-03
 
 _S_TERR_EARTH = 5 / (1e6 * YR)   # m/s at land_fraction = 0.3
 
@@ -332,23 +333,29 @@ class Planet:
             self._pH_surface = pH_surface
 
             # Fast precipitation: carbonates, clays, silica, evaporites (tau_prec ~100 kyr)
-            F_prec_fast, pH_seafloor, SI = get_precipitation(P_pore, T_seafloor, b_ocean, precipitating_minerals=self.fast_ocean_precipitating_minerals, precipitation_timescale=self.tau_prec, pe=self.pe)
+            prec_fast, pH_seafloor, SI, moles_prec = get_precipitation_by_mineral(P_pore, T_seafloor, b_ocean, precipitating_minerals=self.fast_ocean_precipitating_minerals, precipitation_timescale=self.tau_prec, pe=self.pe)
+            F_prec_fast = sum_precipitation(prec_fast)
             F_prec = F_prec_fast
             F_prec_rw = np.zeros(elements.shape)
 
             # Slow precipitation: reverse weathering clays (tau_rw ~10-100 Myr)
             if self.rw_ocean_precipitating_minerals:
-                F_prec_rw, _, SI_rw = get_precipitation(P_pore, T_seafloor, b_ocean, precipitating_minerals=self.rw_ocean_precipitating_minerals, precipitation_timescale=self.tau_rw, pe=self.pe)
+                prec_rw, _, SI_rw, moles_rw = get_precipitation_by_mineral(P_pore, T_seafloor, b_ocean, precipitating_minerals=self.rw_ocean_precipitating_minerals, precipitation_timescale=self.tau_rw, pe=self.pe)
+                F_prec_rw = sum_precipitation(prec_rw)
                 F_prec = F_prec + F_prec_rw
                 SI.update(SI_rw)
+                moles_prec.update(moles_rw)  # disjoint mineral lists, so no entry is overwritten
 
             # SI Diagnostics
             self._SI = SI
-            
-            # Sedimentation rate
-            F_carb_abiotic = max(0.0, -F_prec[c_idx])
-            F_sil_abiotic  = max(0.0, -F_prec[si_idx])
-            S_sed = (F_carb_abiotic * 0.100 / 2710.0 + F_sil_abiotic * 0.060 / 2650.0) * ocean_water_per_area + self._s_terr
+
+            # Sedimentation rate. Every phase precipitating out of the ocean contributes its own
+            # volume; this was previously carbon-as-calcite plus silicon-as-quartz only, which
+            # dropped the clays, evaporites and reverse-weathering phases from the burial rate
+            # entirely. The shelf carbonates (F_shelf_prec, below) are deliberately NOT in here:
+            # they bury on the continental shelf, not on the ridge flanks whose basalt this
+            # sedimentation rate is covering.
+            S_sed = sediment_volume_rate(moles_prec) * ocean_water_per_area + self._s_terr
 
             # Hydrothermal flux
             J_total = EARTH_HYDROTHERMAL_FLUX_PER_AREA * (self.crust_production_rate / EARTH_CRUST_PRODUCTION_RATE_PER_AREA)

@@ -40,9 +40,9 @@ for f in sorted(glob.glob(os.environ['PROBE_GLOB'])):
     T_sf = max(1.02 * d['T'] - 16.7, 274.0)
     P_pore = (d['background_pressure'] + P_CO2 + P_H2O) + 1000 * G * d['ocean_depth']
 
-    fast, _, si_f = get_precipitation_by_mineral(
+    fast, _, si_f, _ = get_precipitation_by_mineral(
         P_pore, T_sf, b, precipitating_minerals=FAST, precipitation_timescale=d['tau_prec'])
-    rw, _, si_r = get_precipitation_by_mineral(
+    rw, _, si_r, _ = get_precipitation_by_mineral(
         P_pore, T_sf, b, precipitating_minerals=RW, precipitation_timescale=d['tau_rw'])
 
     print(f"\n{os.path.basename(f)}  mg/si={d['mantle_mg_si']}  "

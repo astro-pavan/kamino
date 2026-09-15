@@ -16,7 +16,7 @@ from kamino.constants import (
 # Seafloor reactive-surface-area scaling. Fitted jointly with KD_MG_HT and K_NA_CONT_REMOVAL by
 # experiments/calibrate_earth.py's least-squares calibration against modern Na/Ca/Mg seawater
 # (2026-09-01, refit after the crust_composition.py rewrite invalidated the prior fit).
-ALPHA_REF = 1.100155
+ALPHA_REF = 4.900000
 
 def seafloor_reactive_area(T: float, pH: float, rate: float, alpha: float, clog: bool=True, cover: bool=True, sedimentation_rate: float | None = None) -> float:
 
