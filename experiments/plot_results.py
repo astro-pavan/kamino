@@ -2098,17 +2098,28 @@ def plot_continental_baseline(df, output_path, show_hz=None):
     earth_vals = {'T': EARTH_T, 'P_CO2': EARTH_PCO2, 'pH': EARTH_PH, 'salinity': EARTH_SAL}
 
     # --- ion panel setup ---
-    # (index, label, Earth mmol/kg or None) — Al(3), Fe(4), SO₄(9) excluded
+    # (index, label, Earth mmol/kg). Al(3) and Fe(4) are excluded: both are trace and the model
+    # holds them at ~0, so a log axis has nothing to show. SO4(9) is excluded because it is PINNED
+    # (planet.py F_net[so4_idx] = 0) -- whatever the seed carries is what it reports for ever, so
+    # plotting it would claim credit for an input. The `pinned` flag and its italic-label handling
+    # are kept wired so it can be put back in one line if the sulfur cycle is ever closed.
+    #
+    # Earth values are calibrate_earth.py's own fit targets, so the figure is scored against the
+    # same numbers the calibration was. They are the standard S = 35 seawater values per kg of
+    # solution; Na 469 / Cl 546 rather than the 480 / 550 previously hardcoded here.
     ION_SPEC = [
-        (0, 'Alk',  2.3),
-        (1, 'C',  2.0),
-        (2, 'Si',   0.1),
-        (5, 'Ca',  10.3),
-        (6, 'Mg',  52.8),
-        (7, 'Na', 480.0),
-        (8, 'Cl', 550.0),
+        (0, 'Alk',   2.3,   False),
+        (1, 'C',     2.1,   False),
+        (2, 'Si',    0.1,   False),
+        (5, 'Ca',   10.3,   False),
+        (6, 'Mg',   52.8,   False),
+        (7, 'Na',  469.0,   False),
+        (8, 'Cl',  546.0,   False),
     ]
-    ION_COLORS = [plt.cm.tab10(k / 10) for k in range(len(ION_SPEC))] # type: ignore
+    # Colour separates the two SERIES (Earth vs model), not the ions -- the ion is already given
+    # by x position, so per-ion colour was encoding nothing. Marker shape repeats the distinction
+    # so identity never rests on colour alone.
+    C_EARTH, C_MODEL = '#4C72B0', '#C44E52'
 
     # Load final b_ocean for each run from the JSON files
     ion_rows = []
@@ -2155,36 +2166,68 @@ def plot_continental_baseline(df, output_path, show_hz=None):
             )
         _save_fig(fig, figure_path(output_path, f'continental_baseline{sfx}.png'))
 
-    # --- figure 2: ion ratio bar chart (model vs Earth seawater at S ≈ 1) ---
-    figsize2 = figure_size('single', height=2.25)
+    # --- figure 2: absolute ion concentrations, model vs Earth seawater at S ~ 1 ---
+    # A dumbbell rather than the previous percent-difference scatter: the quantity of interest is
+    # the concentration itself, and the ions span five decades (Si 0.1 to Cl 546 mM), so a log
+    # axis showing both values directly is more honest than a ratio -- a "+40%" and a "+4000%"
+    # tell you nothing about whether either number is physically reasonable.
+    figsize2 = figure_size('single', height=2.6)
     fig2, ax_ions = plt.subplots(1, 1, figsize=figsize2)
 
     if ion_rows:
         s_arr  = np.array([r[0] for r in ion_rows])
-        b_mmol = np.array([r[1] for r in ion_rows]) * 1e3  # mol/kg → mmol/kg
+        b_mmol = np.array([r[1] for r in ion_rows]) * 1e3  # mol/kg -> mmol/kg
         closest = int(np.argmin(np.abs(s_arr - EARTH_S)))
         b_model = b_mmol[closest]
 
-        labels    = [spec[1] for spec in ION_SPEC]
-        ratios    = [100 * (b_model[spec[0]] - spec[2]) / spec[2] for spec in ION_SPEC]
-        x         = np.arange(len(labels))
+        labels = [spec[1] for spec in ION_SPEC]
+        earth  = np.array([spec[2] for spec in ION_SPEC])
+        model  = np.array([max(b_model[spec[0]], 1e-4) for spec in ION_SPEC])
+        pinned = np.array([spec[3] for spec in ION_SPEC])
+        x      = np.arange(len(labels))
 
-        ax_ions.scatter(x, ratios, color=ION_COLORS, edgecolors='k', linewidths=0.6, s=80, zorder=3, alpha=0.6)
+        # Connector first, so the markers sit on top of it.
+        ax_ions.vlines(x, np.minimum(earth, model), np.maximum(earth, model),
+                       color='0.6', linewidth=1.0, zorder=2)
+        ax_ions.scatter(x, earth, marker='o', s=46, facecolors='none', edgecolors=C_EARTH,
+                        linewidths=1.4, zorder=3, label='Earth seawater')
+        ax_ions.scatter(x, model, marker='D', s=34, color=C_MODEL, edgecolors='w',
+                        linewidths=0.5, zorder=4, label='Model (calibrated)')
+
+        # Label only where the gap is worth reading: a number on every point is noise.
+        for xi, e_v, m_v, is_pin in zip(x, earth, model, pinned):
+            if is_pin:
+                continue
+            ratio = m_v / e_v
+            if ratio > 1.25 or ratio < 0.8:
+                ax_ions.annotate(f'{ratio:.2f}x', xy=(xi, max(e_v, m_v)),
+                                 xytext=(0, 5), textcoords='offset points',
+                                 ha='center', va='bottom', fontsize=6, color=C_MODEL)
+
         ax_ions.set_xticks(x)
         ax_ions.set_xticklabels(labels)
-        ax_ions.axvline(3.5, color='gray', linestyle='--', linewidth=0.8, alpha=0.6, zorder=1)
-        trans = ax_ions.get_xaxis_transform()
-        ax_ions.text(1.5, 1.02, 'Biotically controlled', transform=trans,
-                     ha='center', va='bottom', fontsize=8)
-        ax_ions.text(5.0, 1.02, 'Abiotically controlled', transform=trans,
-                     ha='center', va='bottom', fontsize=8)
+        # Mark the pinned species: SO4 has no source term, so its agreement is an input.
+        for xi, is_pin in zip(x, pinned):
+            if is_pin:
+                ax_ions.get_xticklabels()[xi].set_style('italic')
+                ax_ions.get_xticklabels()[xi].set_color('0.45')
 
-    ax_ions.spines['bottom'].set_position(('data', 0))
+        ax_ions.axvline(2.5, color='gray', linestyle='--', linewidth=0.8, alpha=0.6, zorder=1)
+        trans = ax_ions.get_xaxis_transform()
+        ax_ions.text(1.0, 1.02, 'Biotically controlled', transform=trans,
+                     ha='center', va='bottom', fontsize=8)
+        ax_ions.text(4.5, 1.02, 'Abiotically controlled', transform=trans,
+                     ha='center', va='bottom', fontsize=8)
+        ax_ions.set_xlim(-0.6, len(labels) - 0.4)
+
+    ax_ions.set_yscale('log')
+    ax_ions.set_ylabel('Concentration (mmol kg$^{-1}$)')
+    ax_ions.set_ylim(0.05, 2.0e3)   # data spans Si 0.1 to Cl 546; leave room for the ratio labels
     ax_ions.spines['top'].set_visible(False)
     ax_ions.spines['right'].set_visible(False)
-    ax_ions.set_ylabel('Model Difference (%)')
-    # ax_ions.set_yscale('symlog', linthresh=0.1)
-    ax_ions.grid(True, linestyle='--', alpha=0.4, axis='y')
+    ax_ions.grid(True, linestyle='--', alpha=0.35, axis='y', which='major')
+    ax_ions.legend(frameon=False, fontsize=7, loc='lower right', handletextpad=0.4,
+                   borderaxespad=0.6)
     _save_fig(fig2, figure_path(output_path, 'continental_baseline_ions.png'))
 
 
@@ -2955,7 +2998,7 @@ if __name__ == '__main__':
         plot_basic(df, args.path, all_results=False, split_panels=True, mg_si=_mg)
     plot_basic_mgsi_grid(df, args.path, split_panels=True)
     # plot_basic(df, args.path, split_panels=True, all_results=False, sequence=True)
-    plot_depth(df, args.path, split_panels=True)
+    plot_depth(df, args.path, split_panels=False)
     plot_chemistry(df, args.path, split_panels=True)
     for _d in redox_depths:
         plot_pe(df, args.path, split_panels=True, ocean_depth=_d)
