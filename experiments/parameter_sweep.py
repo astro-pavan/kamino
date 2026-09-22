@@ -415,6 +415,7 @@ ocean_depth_default = [3000]
 # CROSS_DEPTHS so deep results from either design are directly comparable.
 ocean_depth_deep_default = [20000]
 reverse_weathering_default = [True]
+reverse_weathering_off = [False]  # the sweep_basic_no_rw arm; see that function
 alpha_default = [ALPHA_CALIB]
 k_mg_default = [KD_MG_CALIB]
 k_na_default = [K_NA_CALIB]
@@ -499,6 +500,22 @@ def sweep_basic(output_path=OUTPUT_PATH, pe=PE_STATES):
     """Instellation x outgassing x crust production, at the Earth-reference crust."""
     return run_sweep(instellation, outgassing, crust_production_rate, ocean_depth_default,
                      reverse_weathering_default, mantle_mg_si_default, delta_iw_default,
+                     alpha_default, k_mg_default, k_na_default, pe=pe, output_path=output_path)
+
+
+def sweep_basic_no_rw(output_path=OUTPUT_PATH, pe=PE_STATES):
+    """sweep_basic with reverse weathering OFF -- the paired control for the RW arm.
+
+    Every axis is identical to sweep_basic, so the two grids match one-to-one and the difference
+    between them isolates the reverse-weathering sink (Sepiolite(d), Saponite-Na, Greenalite
+    precipitating out of the ocean on tau_rw).
+
+    Run names do NOT collide with sweep_basic's: _run_name appends `_rw` only when reverse
+    weathering is on, so these runs are the untagged variant and land alongside the existing
+    output rather than overwriting it.
+    """
+    return run_sweep(instellation, outgassing, crust_production_rate, ocean_depth_default,
+                     reverse_weathering_off, mantle_mg_si_default, delta_iw_default,
                      alpha_default, k_mg_default, k_na_default, pe=pe, output_path=output_path)
 
 
@@ -688,6 +705,7 @@ def sweep_cross_deep(output_path=OUTPUT_PATH, pe=PE_STATES):
 
 SWEEPS = {
     'basic':             ('instellation x outgassing x crust production, 3 km', sweep_basic),
+    'basic_no_rw':       ('basic with reverse weathering off -- paired control', sweep_basic_no_rw),
     'basic_deep':        ('instellation x outgassing x crust production, 20 km', sweep_basic_deep),
     'basic_low_mgsi':    ('basic at Mg/Si = 0.8, 3 km', sweep_basic_low_mgsi),
     'basic_high_mgsi':   ('basic at Mg/Si = 1.8, 3 km', sweep_basic_high_mgsi),
@@ -700,13 +718,11 @@ SWEEPS = {
     'cross':             ('cross design: Mg/Si and dIW cuts, 3 km', sweep_cross),
     'cross_deep':        ('cross design: Mg/Si and dIW cuts, 20 km', sweep_cross_deep),
     'alpha':             ('alpha sensitivity arm', sweep_alpha),
-    'alpha_composition': ('alpha x composition -- does the signal survive alpha?',
-                          sweep_alpha_composition),
+    'alpha_composition': ('alpha x composition -- does the signal survive alpha?', sweep_alpha_composition),
     'alpha_outgassing':  ('dense alpha x outgassing plane, 3 km', sweep_alpha_outgassing),
     'pe':                ('redox sensitivity arm, 3 km', sweep_pe),
     'pe_deep':           ('redox sensitivity arm, 20 km', sweep_pe_deep),
-    'pe_composition':    ('pe x composition -- does the signal survive redox?',
-                          sweep_pe_composition),
+    'pe_composition':    ('pe x composition -- does the signal survive redox?', sweep_pe_composition),
     'chemistry':         ('kd_mg_ht / k_na on-off', sweep_chemistry),
 }
 
@@ -749,6 +765,7 @@ def _sweep_size(name):
     # resolve that axis themselves and are NOT doubled.
     sizers = {
         'basic':            len(instellation)*len(outgassing)*len(crust_production_rate)*n_redox,
+        'basic_no_rw':      len(instellation)*len(outgassing)*len(crust_production_rate)*n_redox,
         'basic_deep':       len(instellation)*len(outgassing)*len(crust_production_rate)*n_redox,
         'basic_low_mgsi':   len(instellation)*len(outgassing)*len(crust_production_rate)*n_redox,
         'basic_high_mgsi':  len(instellation)*len(outgassing)*len(crust_production_rate)*n_redox,
