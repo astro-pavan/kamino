@@ -95,6 +95,8 @@ with LSODA.
 | **Sep 7–8** | **Continental weathering and the crossover** (§33): `continental_baseline.py` rewritten as an Earth-like instellation sweep; a post-runaway hot-branch state found being counted as habitable; the **seafloor-area fix** (§33.3) which invalidates the Earth calibration; land-fraction series, coarse grid and alpha sweep; a TTG second-melt diagnostic showing high Mg/Si cannot make felsic continents; **alpha measured as the largest control** (f\* ∝ α^0.80–0.86). |
 | **Sep 9** | **Charge balance and the Cl root cause** (§35): the carbon excess traced to the conservative-ion charge residual, τ_Cl = 5.6 Gyr against a 2 Gyr integration, `K_CL_ANALYTIC` found wrong since §33.3, SO₄ pinned at zero in every sweep; **sedimentation rate extended to all precipitating phases**; **MORB verified against Gale et al.** |
 
+| **Sep 17** | **The sink audit** (§36): reverse weathering shown to be a bimodal switch and a CO₂ *source*, negligible at Earth but the only backstop once `kd_mg_ht` is removed; Greenalite shown inert (pore Goethite starves the ocean of Fe); no Mg carbonate can fill the gap; **crustal Albite shown to contribute exactly zero Na** (supersaturated above ~1 mM Na + `dissolve_only`), quantifying §6.2's switch; nahcolite ruled out as a Na sink. `basic_no_rw` added to `parameter_sweep.py`, unrun. |
+
 *Rows Aug 24 – Sep 1 were missing entirely; Sep 3 and Sep 7–8 were inverted. Both fixed 2026-09-09.*
 
 ---
@@ -5191,3 +5193,490 @@ on all ten oxides. Details and the extraction trap are recorded there.
 - ⚠️ `alpha`'s seafloor alkalinity flux was never checked against Coogan at the 09-01 value (§34.3).
 - ⚠️ Old sweep output has been moved aside; the new sweep starts from an empty directory, so the
   §32.11 "every stored result predates this table" caveat no longer applies.
+
+---
+
+## 36. The sink audit: reverse weathering, the Mg sink, and the Na sink (2026-09-17)
+
+Three questions, asked in sequence, each answered by measurement rather than by reading the budget
+shares: **is reverse weathering doing anything?**, **what happens if the HT Mg–Ca exchange is
+switched off?**, and **could nahcolite replace albitization as the Na sink?** The answers share one
+shape — *every secondary sink in this model is a backstop whose setpoint sits outside the ocean
+states the model actually produces* — and the Na half of it exposes a structural duplication that
+had not been noticed before (§36.9).
+
+**Nothing was changed in `src/kamino`.** The only repository change is a new `basic_no_rw` sweep in
+`parameter_sweep.py` (§36.11), which has not been run.
+
+### 36.0 Method, and one trap avoided
+
+Two independent lines of evidence throughout:
+
+1. **Replay.** `Planet` rebuilt from each run's saved config, `dY_dt` evaluated once on the stored
+   final state, and `_flux_terms` / `_state` read back. 900 runs sampled from `sweep_output`,
+   stratified over (tag, out, crust, mgsi, diw, depth); 895 succeeded. Population-weighted
+   estimates (reweighting each stratum back to the full 9 721 runs) agree with the unweighted ones
+   to within 0.02 everywhere, so the sample is representative.
+2. **Controlled A/B.** Both arms re-run from scratch through `parameter_sweep.run_simulation` at
+   the current constants, rather than differencing against output on disk. 113 runs total: 40 RW
+   on/off pairs, 39 HT arms, 34 Na arms.
+
+§16's warning was respected: nothing is concluded from `dY_dt` on a fixed `Y` alone. Every causal
+claim below comes from a paired `time_evolve`.
+
+⚠️ **`diagnostics.planet_from_config` is stale and `diagnose_run` raises as written.** It passes
+`crust_composition` and `f_bio`, neither of which is a `Planet` parameter, and it drops `pe`,
+`tau_prec`, `tau_rw`, `kd_mg_ht`, `k_na_cont_removal`, `k_cl_subduction` and `water_rock_ratio`
+from the config. `diagnose` also omits `pe=planet.pe` on its per-mineral call, which matters for
+the oxidising arm. A private replacement was used for this audit; the module was left alone.
+
+### 36.1 Reverse weathering is a bimodal switch, not a background process
+
+In ~60% of the sweep the RW flux is numerically zero. Where it fires it is frequently the largest
+single sink in the ocean. Population-weighted over 9 721 runs:
+
+| RW share of total sink | Alkalinity | Mg | Si |
+|---|---|---|---|
+| > 1% | 35% of runs | 39% | 34% |
+| > 10% | 19% | 24% | 22% |
+| > 50% | **7%** | **14%** | **12%** |
+
+Against the alkalinity *source* (`seafloor LT` + continental), `|F_rw|` exceeds 5% in 23.5% of runs,
+20% in 14.5%, and 50% in 7.1%.
+
+**Sepiolite(d) carries ~98% of it** (median share of the RW alkalinity flux 0.976). The other two
+entries in `reverse_weathering_minerals` do essentially nothing:
+
+- **Saponite-Na** is Al-limited to ~10⁻⁵ Tmol/yr, exactly as §6.1 predicted.
+- **Greenalite never saturates anywhere in the sweep** — median SI −16.19, **maximum −1.00**,
+  `frac SI>0 = 0.000`. See §36.5.
+
+So RW is an **Mg and Si** sink. It is not a Na sink: Na removal is 95.5% albitization, 4.5% shelf
+carbonate, and 0.01% RW.
+
+The active corner is **low crust production (0.01–0.1), low-to-moderate outgassing, and
+T_seafloor above ~320 K**. At crust ≥ 3 it is off everywhere; below 300 K it is off. Sepiolite SI
+by seafloor-temperature band:
+
+```
+T_sf       270–280  280–300  300–320  320–340  340–360
+median SI    −3.32    −3.23    −2.47    +2.01    +2.95
+frac SI>0     0.37     0.32     0.38     0.58     0.74
+```
+
+Where RW is active, the Mg residence time against it alone has median 697 Myr and **p10 = 5 Myr —
+exactly `tau_rw`**. That is §26.3's result restated from the other end: Sepiolite is so far
+supersaturated that `tau_rw` *is* the flux, and the whole excess inventory is removed on that
+timescale.
+
+### 36.2 The mechanism is retrograde solubility, and it makes RW a CO₂ source
+
+The runtime database settles it:
+
+```
+Sepiolite(d)  Mg4Si6O15(OH)2:6H2O + 8 H+ = 4 Mg+2 + 6 SiO2 + 11 H2O
+              -delta_H -157.339 kJ/mol
+```
+
+Dissolution is strongly exothermic, so the mineral is **less** soluble when hot. Hotter ocean →
+more Sepiolite → less alkalinity → more CO₂ → hotter still. Precipitation consumes 8 eq of
+alkalinity per formula unit, i.e. **Alk : Mg = 2 : 1**, which is exactly the ratio §21.3 measured
+(−34.10 Alk against −17.05 Mg).
+
+This is the same retrograde behaviour §21.2 established for `b_eq`, now attributed to a specific
+phase and its measured enthalpy rather than inferred from a temperature scan. **RW is a positive
+climate feedback and a CO₂ source. It is never a carbon sink.**
+
+### 36.3 The controlled A/B: 40 pairs, `reverse_weathering` True vs False
+
+| | |
+|---|---|
+| median \|ΔT\| | **0.000 K** |
+| pairs with \|ΔT\| > 1 K | **4 / 40** |
+| max ΔT | **+23.9 K** |
+| pairs with pCO₂ shifted > 2× | 3 / 40 |
+
+The sign is always the same: RW on is hotter. The extreme case is S = 0.85, out = 0.01,
+crust = 0.01 (297.8 K / 0.083 bar → 321.7 K / 0.46 bar), and its budget shows the mechanism:
+
+```
+                        RW on      RW off
+seafloor LT alk       +1.141      +0.172     <- 6.6x, driven by the extra heat
+reverse weathering    -0.978       (none)    <- 87% of the total sink
+```
+
+RW removes alkalinity until the planet is hot enough for seafloor weathering to outrun it; the
+budget re-closes at a far hotter attractor. This is §26.2's `tau_rw` 5 → 33 Myr result (−25 K,
+pCO₂ ÷17) reproduced by removing the sink entirely rather than by slowing it.
+
+**At Earth it is calibrated-plausible and climatically irrelevant.** land = 0.3, S = 1, out = 1,
+crust = 1, both arms converged: RW removes **0.083 Tmol Mg/yr** against Dunlea et al. (2017)'s
+0.02 Tmol/yr observational authigenic Mg sink — the right order, ~4× the lower bound — and it is
+0.9% of the alkalinity sink. Switching it off costs **0.09 K** (pCO₂ 686 → 673 ppm).
+
+The two continental pairs at out = 0.01 both hit the wall cap with pCO₂ at 10⁻¹⁰ bar in a snowball
+state; their apparent 13× and 0.25× pCO₂ ratios are numerical noise on a vanishing number and
+should not be read as signal.
+
+### 36.4 ⚠️ Sepiolite's setpoint is ~100 mM Mg — too high to be a working sink
+
+This is the finding that generalises. RW only engages once ocean Mg exceeds roughly 100 mM, against
+Earth's 53 mM. Between Earth-like Mg and that threshold **the model has exactly one Mg sink and no
+redundancy**. RW looks negligible at the Earth anchor (0.09 K) not because it is weak but because
+it has not switched on yet — and §36.6 shows it is the only thing preventing a 312 K runaway once
+the HT exchange is removed.
+
+**It is a backstop, not a contributor.** That distinction matters for how the paper describes it.
+
+### 36.5 Why Greenalite is inert: the ocean never receives any iron
+
+Not a race between Fe phases — both precipitation calls in `dY_dt` (lines 336 and 343) take the
+**same** `b_ocean`, so nothing consumes Fe before Greenalite sees it. Three measurements:
+
+| phase | median SI | max SI | frac SI > 0 |
+|---|---|---|---|
+| Greenalite | −16.19 | **−1.00** | **0.000** |
+| Goethite | −3.21 | +3.33 | 0.234 |
+| Siderite | −4.92 | +1.45 | 0.113 |
+
+`SI(Goethite) − SI(Greenalite) > 0` in **100.0%** of states (median +11.2); the Siderite comparison
+holds in 98.8%. Greenalite is the least favourable Fe phase everywhere.
+
+The cause is **Fe starvation, upstream of the ocean**. Median ocean Fe is 3.4 × 10⁻¹⁰ mol/kgw and
+69% of runs sit below 10⁻⁷. The seafloor source delivers Fe ~10⁷× more slowly than Mg:
+
+```
+seafloor LT  Fe : median 1.8e-07 Tmol/yr
+seafloor LT  Mg : median 6.9e-01
+seafloor LT  Si : median 2.7e+00
+```
+
+**Pore-space Goethite is what removes it.** In one run checked directly, pore Goethite sits at
+**SI +4.66** while ocean Goethite in the same run is at **−4.76**, and the net Fe delivered to the
+ocean is −2 × 10⁻⁹ Tmol/yr. Primary dissolution liberates Fe; `pore_precipitating_minerals`
+(= `clay_minerals` = Kaolinite + Goethite, per §21.3's fix) captures it before the fluid reaches the
+ocean.
+
+Stoichiometry finishes the job. Greenalite is Fe**₃**Si₂O₅(OH)₄, so SI moves 3 decades per decade of
+Fe. A counterfactual scan at fixed T, pH and pe needs **10⁴–10⁵× more Fe** to reach saturation.
+Redox cannot rescue it either — scanning pe at fixed composition, Greenalite is flat at −9.0 for
+pe ≤ −1 and collapses above it (−13.5 at pe 4, −25.5 at pe 8) while Goethite rises monotonically.
+
+In the 314 runs where Fe *is* removed from the ocean, it is Goethite (205) or Siderite (100),
+**never both and never Greenalite** — the two split cleanly by redox, as §28.3's `pe` note implies.
+
+✅ **Conclusion: the Fe arm of `reverse_weathering_minerals` is dead code in practice.** Greenalite
+is a primary BIF precipitate requiring anoxic, ferruginous, silica-rich seawater (Rasmussen et al.
+2019; Johnson et al. 2018), which this model's oceans never are — because pore Goethite oxidises
+the Fe out upstream. Note also that Tosca et al. (2021) find a *small* amount of Fe(III) triggers
+greenalite nucleation in simulated Archean seawater; the model routes all Fe(III) to Goethite and
+structurally cannot represent that pathway.
+
+### 36.6 Switching off the HT Mg–Ca exchange: RW takes over, but Ca is the casualty
+
+13 configurations × 3 arms (`kd_mg_ht` at the calibrated value; `kd_mg_ht = 0`; `kd_mg_ht = 0` with
+RW also off), 39 runs. The cleanest ocean-world case, S = 0.85, out = 0.1, crust = 1:
+
+| arm | T | pCO₂ | Mg | Ca | F_HT[Mg] | F_RW[Mg] | SI(Sep) |
+|---|---|---|---|---|---|---|---|
+| HT on | 288.3 K | 0.034 bar | 17.5 mM | 178 mM | −0.688 | **0** | **−6.40** |
+| HT off, RW on | 322.7 K | 0.498 bar | **307 mM** | **0.19 mM** | 0 | **−1.88** | **+9.59** |
+
+RW goes from completely dead to carrying the entire Mg sink — but only after Mg rises 18×, and the
+planet warms **34 K** with **15× pCO₂**. The same at S = 1.0 / out = 0.1 / crust = 1 (Mg 17.5 → 209
+mM, +36 K, 94× pCO₂), S = 1.0 / out = 0.01 / crust = 1 (Mg 0.087 → 192 mM, a factor of **2200**,
++36 K) and S = 0.85 / out = 0.01 / crust = 1 (Mg 0.085 → 217 mM, +36 K).
+
+**The larger damage is to Ca, not Mg.** On a land-free planet the HT exchange is ~99.9% of the Ca
+source (the LT flux delivers 0.0002 Tmol/yr against HT's 0.15). Removing it collapses Ca by two to
+three orders of magnitude — 178 → 0.19, 177 → 1.33, 191 → 2.21, 78.9 → 0.33 mM. With no Ca there is
+no calcite, the carbon sink dies, and *that* is what drives the warming. **`kd_mg_ht` is carrying
+the carbon cycle on ocean worlds, not just the Mg budget.**
+
+**Mg does not run away with both sinks off.** S = 1.0 / out = 0.1 / crust = 1 settles at Mg = 278 mM
+with **F_LT[Mg] = −0.0033 Tmol/yr** — the seafloor source has gone *negative*, because the pore fluid
+saturates against the primary Mg silicates and dissolution stops. There is a thermodynamic backstop
+at roughly 250–500 mM. This **refines §12's "Mg simply accumulates"**: the flux statement is right,
+but the endpoint is bounded by source shutdown rather than unbounded.
+
+The both-off arm also degrades numerically, reproducing §12's pathology as a controlled experiment:
+
+```
+HT_on        converged 1   timeout 8   out_of_domain 4
+HToff_RWon   converged 1   timeout 6   out_of_domain 6
+HToff_RWoff  converged 0   timeout 3   out_of_domain 6   wall_timeout 3   fallback_limit 1
+```
+
+Only the both-off arm produces zero converged runs and the only `fallback_limit`.
+
+**The continental case separates the three arms cleanly** (land = 0.3, S = 1, out = 1, crust = 1):
+
+| arm | T | pCO₂ | Mg | Ca | Alk | termination |
+|---|---|---|---|---|---|---|
+| HT on | 294.33 K | 686 ppm | 74.4 mM | 10.1 mM | 3.56 mM | converged |
+| HT off, RW on | 295.14 K | 814 ppm | 199 mM | **0.0 mM** | **262 mM** | converged |
+| HT off, RW off | **312.12 K** | **14 779 ppm** | — | — | — | **wall_timeout** |
+
+With continents the climate barely notices losing the HT exchange (+0.8 K) because continental
+weathering supplies the alkalinity — while the ocean becomes chemically absurd (Ca → 0,
+Alk 74× modern). ⚠️ **Temperature alone does not diagnose this model.** Lose RW as well and the
+planet goes to 312 K at 21× pCO₂ and never converges.
+
+**Regime caveat:** at out = 1, crust = 0.01 all three arms are identical (Mg 93.3 / 94.1 / 94.0),
+because `F_HT` was already only −0.037 and RW already ~zero. None of this is universal.
+
+### 36.7 No magnesium carbonate can fill the gap
+
+Pre-precipitation SI for every Mg phase in the runtime database, across 298 ocean states. (SI is
+only reported for phases in `available_mineral_string`, which excludes these — the survey had to
+extend it explicitly, which is worth knowing before anyone repeats the measurement.)
+
+| phase | median SI | frac SI > 0 (all) | **frac SI > 0 where RW is off** |
+|---|---|---|---|
+| Dolomite | +0.19 | 0.537 | 0.360 |
+| Huntite | −3.41 | 0.332 | 0.180 |
+| Magnesite | −0.81 | 0.265 | 0.143 |
+| Nesquehonite | −3.10 | 0.037 | **0.012** |
+| Brucite | −5.90 | 0.081 | **0.000** |
+| Artinite | −6.14 | 0.040 | **0.000** |
+
+The split lands exactly on the kinetic trap §12 identified:
+
+- The phases that **would** take Mg — Dolomite, Huntite, Magnesite — are the ones that do not
+  precipitate abiotically at low temperature. Land (1998) failed to nucleate dolomite from
+  supersaturated solution at 25 °C over a **32-year** experiment; the inhibition is attributed to
+  Mg²⁺ dehydration kinetics, and magnesite's scarcity in modern surface environments rivals
+  dolomite's for the same reason.
+- The phases that **are** kinetically defensible — nesquehonite, artinite, brucite — are
+  supersaturated in **0.0–1.2%** of the runs where RW is off. Zero in exactly the corner that needs
+  a sink.
+
+This confirms §12 at the current code state and sharpens it: §12 measured nesquehonite −0.40 and
+artinite −0.91 at one state; across 298 states they sit at −3.10 and −6.14 median.
+
+There is also a **thermodynamic** reason independent of kinetics. Where RW is off the median state
+is **pH 5.89, pCO₂ 0.80 bar, T_seafloor 277 K** — acidic and cold. Carbonate solubility rises with
+pCO₂, so the regime that needs a Mg sink is structurally the regime where carbonates are least able
+to form. Adding one cannot help there.
+
+⚠️ One recent wrinkle if this is revisited: Kim et al. (2023, *Science*) show dolomite *can* grow
+near ambient conditions under dissolution–recrystallisation cycling. That weakens the blanket
+kinetic prohibition but requires a fluctuating saturation state this steady-state model does not
+represent.
+
+### 36.8 The Na source is zero, not small — crustal Albite is inert
+
+Albite is **14.92 wt%** of the Earth-reference crust (Mg/Si 1.25, ΔIW −2), a major phase. The
+measured seafloor LT flux nevertheless gives a **Na/Mg ratio of 5.9 × 10⁻⁴** against a crust molar
+Na/Mg of ~0.15 — a ~250× suppression.
+
+The weathering law's driving force is `b_eq − b_input` (`weathering.py:93`). Scanning Albite's
+saturation index in the pore fluid against ocean Na:
+
+| ocean Na | SI(Albite) |
+|---|---|
+| 0 | −5.89 |
+| 0.01 mM | −1.89 |
+| **1 mM** | **+0.11** ← crosses saturation |
+| 480 mM (seawater) | **+2.74** |
+| 6400 mM | +3.88 |
+
+Above ~1 mM Na, Albite is supersaturated. Primary minerals carry PHREEQC's `dissolve_only`
+modifier (`chemistry._equilibrium_block`), so a supersaturated primary phase can neither dissolve
+nor precipitate — it is **completely inert**. At seawater Na the driving force is slightly
+*negative*.
+
+**It is Albite's own solubility, not competition for Al:**
+
+| assemblage | ocean Na = 0 | ocean Na = 480 mM |
+|---|---|---|
+| Albite alone (100 wt%) | +0.0017 mM Na | **−0.0006 mM** |
+| full crust | +0.0002 mM | +0.05 mM † |
+| full crust, no Anorthite | +0.0010 mM | +0.05 mM † |
+
+† water/rock mass bookkeeping, not dissolution — see below.
+
+Even 100 wt% Albite into Na-free water yields **0.0017 mM** equilibrium Na, five orders of magnitude
+below seawater; stripping Anorthite changes it by a factor of 5. Albite is simply very insoluble at
+the pore fluid's pH ~8.0–8.6, which is the feldspar solubility minimum. For comparison the same
+equilibration gives `b_eq[Mg] = 78 mM` from Forsterite + Diopside — the mafic phases deliver
+~350 000× more Mg than Albite delivers Na.
+
+⚠️ **A diagnostic trap worth recording:** `b_eq[Na] / b_in[Na] = 1.0001` at *every* ocean Na from
+10⁻³ to 6400 mM. That constant 0.01% is the water/rock mass balance, not dissolution. Read as a
+chemical signal it looks like a tiny but real Na source; it is not one.
+
+**Consequence: land-free planets have no Na source at all.** With albitization on, it drains the
+480 mM seawater seed to **0.0076–0.008 mM** — and, because `F_na_rw` removes Alk 1:1 with Na
+(`planet.py:376`), it takes ~480 mM of alkalinity with it. Switching it off leaves Na pinned at the
+seed (468–470 mM) for 2 Gyr, because there is nothing to move it.
+
+That also means switching it off **warms** ocean worlds, by removing an alkalinity sink:
+
+| S = 1.0, out = 1, crust = 1 | T | pCO₂ | Na | Alk |
+|---|---|---|---|---|
+| albitization on | 341.6 K | 0.365 bar | **0.0076 mM** | 5.85 mM |
+| albitization off | **352.1 K** | **2.96 bar** | 470 mM | **245 mM** |
+
+⚠️ Ocean-world Na of 0.008 mM is precisely the low-Na state **§6.2** identifies as killing HT Ca
+release. The over-drained Na and the HT Ca collapse are the same problem seen from two sides.
+
+### 36.9 This quantifies §6.2's "Albite is the switch" — and §6.3 already tried the obvious fix
+
+§6.2 established that **Albite is the switch** controlling the HT path: *"Low ocean Na drives Albite
+dissolution, which floods Na and simultaneously collapses Ca release."* §36.8's saturation scan is
+the same curve measured from the other side, and it puts a number on the switch point:
+
+```
+SI(Albite) crosses zero at ocean Na ~= 1 mM
+   below it  -> undersaturated -> Albite dissolves and floods Na   (the 6.2 failure mode)
+   above it  -> supersaturated -> dissolve_only makes it inert     (the 36.8 zero source)
+```
+
+Both observations are one saturation boundary. §6.2 saw it at 473 K in the HT path at Na = 27 mM;
+§36.8 sees it at ~290 K in the LT path at Na = 480 mM. The HT path is currently off (`f_HT = 0.0` in
+every sweep), so only the second regime is live.
+
+**The structural oddity is that albitization is represented twice, in opposite directions, and the
+two are not coupled:**
+
+- The crust's Albite sits as an inert `dissolve_only` primary phase, supersaturated at SI +2.74.
+- The Na sink is a **separate fitted parameter**, `-k_na . b_Na . J_total` (`planet.py:375`), with
+  no thermodynamic link to that supersaturation.
+
+PHREEQC knows Albite should be precipitating; the model never asks it to. Hence `k_na = 0` gives no
+sink *at all* rather than degrading to a thermodynamic fallback, and the fitted linear form
+over-drains ocean worlds to 0.008 mM instead of shutting off near the saturation boundary.
+
+⚠️ **The obvious fix has already been tried and failed — see §6.3.** "Non-`dissolve_only` + Albite
+precipitate-only" was the chemically best PHREEQC result of that arc (dCa/-dMg 0.8-1.1, Ca robust at
+low Na), and **the full sweep still hothoused everything**, with *"Na still drained to 0
+(Albite-precip-only removed the only Na source on a landless world)"*. §36.8 explains why that
+happened: making Albite precipitate-only removes the one regime (Na < ~1 mM) in which it could have
+been a source, so Na has a sink and no source and goes to zero — which is exactly what the *current*
+parameterisation also does, by a different route.
+
+So this is **not** a recommendation to retry it. The measurement says something narrower and more
+useful: **on a land-free world the model has no Na source in either configuration**, and the fitted
+`k_na` is therefore not balancing a flux — it is draining a seed. That is worth stating explicitly
+in the methods, because it means ocean-world Na is set by the initial condition and the sink
+constant, not by any weathering process.
+
+The Earth continental case is the only configuration with a genuine Na source (3.65 Tmol/yr
+continental), and it is where the missing thermodynamic fallback bites:
+
+| arm | T | pCO2 | Na | Alk | termination |
+|---|---|---|---|---|---|
+| albitization on | 294.33 K | 686 ppm | 427 mM | 3.56 mM | **converged** |
+| albitization off | 293.3 K | 548 ppm | **6417 mM** | **5887 mM** | timeout |
+
+Na runs away 15x and alkalinity 1650x. §6.1's requirement — *"Na must still reach steady state or
+the ocean runs away"* — is exactly what fails here, and because `F_na_rw` debits alkalinity 1:1
+with Na (`planet.py:376`), the alkalinity follows it up. Note again that the **climate barely
+moves** (-1 K) while the ocean becomes a 6 M brine.
+
+### 36.10 Nahcolite cannot be the Na sink
+
+Nahcolite (NaHCO₃) is already in `carbonate_minerals`, therefore already in
+`fast_ocean_precipitating_minerals` — it is one of the Na-carbonates §6.1 added to
+`make_database.py` precisely because *"the only Al-free Na sinks are Na-carbonates"*. **No code
+change was needed to test it. It has simply never fired.**
+
+Across 895 replayed sweep states its SI has median −4.58 and **maximum −0.00**, with
+`frac SI > 0 = 0.0000`; across all 34 albitization runs `F_prec[Na] = 0` in every cell. The closest
+approach anywhere is **SI −0.28**, in an ocean holding 6.4 M Na and 5.9 M alkalinity.
+
+It does, however, pin at SI ≈ 0 in the most extreme sweep states (Na 1300–3200 mM, Alk 600–1900 mM),
+so it is acting as a ceiling — at a setpoint 3–6× seawater Na. The same pattern as Sepiolite in
+§36.4, one notch further out of reach.
+
+This is physically correct rather than a gap. Nahcolite is the stable Na-carbonate above
+~1125 ppm CO₂ — the basis of the Green River nahcolite palaeobarometer (Lowenstein & Demicco 2006;
+Jagniecki et al. 2015 give 680–1260 ppm) — and it is a **closed-basin lacustrine evaporite**
+concentrated far beyond seawater, not a marine phase. Modern seawater at 470 mM Na does not
+precipitate nahcolite and a model of open seawater should not either.
+
+Worth recording for the carbon budget: nahcolite removes Na, alkalinity **and carbon** 1 : 1 : 1,
+whereas albitization removes only Na and alkalinity. At Earth's 3.65 Teq/yr Na sink, routing that
+through nahcolite would add a ~3.65 Tmol/yr carbon sink — comparable to the entire shelf carbonate
+sink (4.06). It would matter *if it could fire*. It cannot, at marine Na.
+
+If a second Na sink is wanted, the marine candidates are authigenic Na-clay (Saponite-Na, already
+present and Al-limited to ~10⁻⁵ Tmol/yr) or halite in restricted basins (already present as
+`evaporite_minerals`, gated on `land_fraction > 0`). Neither is a carbonate.
+
+### 36.11 `basic_no_rw`, and what was left alone
+
+`parameter_sweep.py` gained one sweep and nothing else:
+
+- `reverse_weathering_off = [False]` beside `reverse_weathering_default`
+- `sweep_basic_no_rw()` — identical to `sweep_basic` on every axis, RW off
+- registry entry and `_sweep_size` sizer
+
+**1862 runs, ≈84 CPU-h.** Verified before shipping: both grids are 1862 combos differing *only* in
+the RW flag, and there are **zero filename collisions** with the existing `basic` output, because
+`_run_name` appends `_rw` only when reverse weathering is on — these land as the untagged variant
+(`..._depth_3000_mgsi1.25_diw-2` against `..._depth_3000_rw_mgsi1.25_diw-2`). Every new run pairs
+one-to-one with one already on disk. **Not run.**
+
+⚠️ If it is run for comparison, consider re-running `basic` alongside rather than differencing
+against the existing `sweep_output`: those runs were produced across several sessions and predate
+the §33.3 seafloor-area fix, so the constants baked into them may not match. `_warn_constant_drift()`
+reports this at launch.
+
+### 36.12 Status
+
+- ✅ Reverse weathering characterised: bimodal, Sepiolite-carried, a CO₂ source, negligible at the
+  Earth anchor but the only backstop once `kd_mg_ht` is removed.
+- ✅ Greenalite shown inert, with the cause traced upstream to pore Goethite.
+- ✅ The Mg-carbonate question closed: no phase in the database can fill the gap.
+- ✅ The Na source shown to be zero by thermodynamics, not small by kinetics.
+- ✅ Nahcolite ruled out as a Na sink, with a literature basis for why that is correct.
+- 🔴 **`diagnostics.planet_from_config` is broken** (§36.0) — `diagnose_run` raises as written.
+- ⚠️ **Sepiolite's ~100 mM setpoint and Nahcolite's ~1500 mM setpoint** mean both "sinks" are
+  inactive across the entire Earth-like part of parameter space. If the paper describes either as
+  part of the steady-state budget, that needs qualifying.
+- ⚠️ **Land-free worlds have no Na source in any tested configuration** (§36.8-36.9). `k_na` is
+  draining the seawater seed, not balancing a flux. The obvious thermodynamic fix was already tried
+  and failed in §6.3; this should be stated as a model limitation rather than re-attempted.
+- ⚠️ `Greenalite` can be removed from `reverse_weathering_minerals` with no effect on any result,
+  or kept as documentation of a pathway the model cannot currently reach.
+
+### 36.13 Cross-cutting lessons
+
+- **A sink that is inactive at the calibration point is not a negligible sink.** RW costs 0.09 K at
+  Earth and prevents a 312 K runaway two experiments later. Calibration-point sensitivity is the
+  wrong test for whether a term belongs in the model.
+- **Temperature is a poor diagnostic for this model.** Two separate experiments produced oceans with
+  Ca = 0 and Alk 74–1650× modern while T moved by less than 1 K. Check the ion budget, not the
+  climate.
+- **Ask what the model's own thermodynamics already says before adding a phase.** Nahcolite was
+  already in the precipitating list and had never fired; the answer cost one SI query, not a
+  new sink.
+- **A supersaturated `dissolve_only` phase is invisible.** Albite is 15 wt% of the crust and
+  contributes exactly nothing, and nothing in the output says so. §21.6's "ask which reservoir a
+  sink acts on" has a companion: *ask which side of saturation a phase is on*.
+- **Check the history before proposing a fix.** "Let Albite precipitate" looked like the obvious
+  correction to §36.9 until §6.3 turned out to have tried it and recorded why it failed. The new
+  measurement's value was in *explaining* that failure, not in reversing it.
+- **Flux shares and causal importance are different quantities.** HT exchange is 89% of the Mg sink
+  by flux, but its removal damages the Ca and carbon budgets far more than the Mg budget.
+
+### 36.14 References added this session
+
+- **Dunlea et al. (2017)**, *Nat. Commun.* **8**, 844 — already in §17; used here as the
+  observational check on the Earth RW Mg flux (0.02 against the model's 0.083 Tmol/yr).
+- **Rasmussen et al. (2019)**, *Precambrian Res.* — widespread greenalite deposition forming BIFs
+  before the GOE; greenalite as a primary precipitate from anoxic ferruginous seawater.
+- **Johnson et al. (2018)**, *Geophys. Res. Lett.* **45** — low-Fe(III) greenalite as a primary
+  Neoarchean ocean mineral.
+- **Tosca et al. (2021)**, *Geology* **49**, 905 — ferric iron triggers greenalite formation in
+  simulated Archean seawater; the pathway this model cannot represent.
+- **Land (1998)** — the 32-year failure to precipitate dolomite at 25 °C; the canonical statement of
+  the dolomite problem.
+- **Kim et al. (2023)**, *Science* — dissolution enables dolomite growth near ambient conditions;
+  the partial counter-argument.
+- **Lowenstein & Demicco (2006)**, *Science* **313**, 1928 — nahcolite + halite coprecipitation
+  requires pCO₂ > 1125 ppm; Eocene CO₂.
+- **Jagniecki et al. (2015)**, *Geology* **43**, 1075 — Eocene atmospheric CO₂ from the nahcolite
+  proxy, 680–1260 ppm.
