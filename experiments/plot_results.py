@@ -1,81 +1,43 @@
+"""Figures for kamino parameter sweeps: python experiments/plot_results.py --path <sweep dir>."""
 import os
 import sys
 import glob
 import json
 import argparse
-import functools
 import numpy as np
 import pandas as pd
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+import matplotlib.ticker as mticker
 from matplotlib.lines import Line2D
 import cmasher as cmr
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../src'))
-from kamino.weathering import get_weathering_flux
-from kamino.constants import (
-    EARTH_HYDROTHERMAL_FLUX_PER_AREA as J_ref_normalised,
-    EARTH_CRUST_PRODUCTION_RATE_PER_AREA as rate_ref,
-    A_SEAFLOOR_EARTH as A_seafloor,
-)
-from kamino.constants import (G, EARTH_CRUST_PRODUCTION_RATE_PER_AREA, YR, SOLAR_CONSTANT,
-                              STEFAN_BOLTZMANN, EARTH_MANTLE_MG_SI, EARTH_DELTA_IW)
-from kamino.chemistry import alk_idx, elements
-from kamino.mineral_info import (carbonate_minerals, clay_minerals, silica_minerals,
-                                 reverse_weathering_minerals, evaporite_minerals)
-from kamino.crust_composition import mineral_composition
+from kamino.constants import SOLAR_CONSTANT, STEFAN_BOLTZMANN, EARTH_MANTLE_MG_SI, EARTH_DELTA_IW
+from kamino.chemistry import elements
 from kamino.planet import KD_MG_HT, K_NA_CONT_REMOVAL, PE_DEFAULT
 from kamino.weathering import ALPHA_REF
-from kamino.planet import _S_TERR_EARTH
 
 import continental_baseline as cb
 
-# Figure style. Presentation mode uses larger type and wider figures; paper mode targets the
-# MNRAS column width. Set KAMINO_PRESENTATION=1 to switch without editing the file.
+# --- Style and figure geometry ---
+# KAMINO_PRESENTATION=1 switches to the presentation style, scaling every figure 2x at the paper aspect.
 presentation = os.environ.get('KAMINO_PRESENTATION', '0').lower() in ('1', 'true', 'yes')
-
-_STYLE_DIR = os.path.dirname(os.path.abspath(__file__))
-STYLE_FILE = os.path.join(
-    _STYLE_DIR,
-    'planetary-chem-presentation.mplstyle' if presentation else 'planetary-chem-paper.mplstyle')
+STYLE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          f'planetary-chem-{"presentation" if presentation else "paper"}.mplstyle')
 if not os.path.exists(STYLE_FILE):
     raise SystemExit(f"missing style file {STYLE_FILE}")
-# Resolved against THIS file, not the working directory. The previous relative path
-# ('experiments/planetary-chem-*.mplstyle') only resolved when the script happened to be run
-# from the repository root, and raised OSError from anywhere else.
 plt.style.use(STYLE_FILE)
 
-
-# ---------------------------------------------------------------------------
-# Figure geometry
-# ---------------------------------------------------------------------------
-# Publication figures are sized to the PAGE, not to whatever happened to look right on screen.
-# MNRAS is A4 two-column: \columnwidth = 240 pt and \textwidth = 504 pt, at 72.27 pt/inch.
-# Ask for one of those two widths by name and give the height you want in inches; nothing else
-# should set a figure size directly.
-#
-#     fig, axes = plt.subplots(4, 1, figsize=figure_size('single', 6.0))
-#
-# Presentation mode scales BOTH dimensions so the aspect ratio (and therefore the layout) is the
-# one the paper will use; the larger type in the presentation style then sits correctly on it.
-COLUMN_WIDTH_IN = 240 / 72.27      # 3.32 in -- one MNRAS column
-TEXT_WIDTH_IN = 504 / 72.27        # 6.97 in -- both columns
-PAGE_WIDTHS = {'single': COLUMN_WIDTH_IN, 'double': TEXT_WIDTH_IN}
-
-# Default height per stacked panel row, in inches, when a figure does not name its own height.
+PAGE_WIDTHS = {'single': 240 / 72.27, 'double': 504 / 72.27}   # MNRAS column and text width (in)
 ROW_HEIGHT_IN = 1.5
-
 _PRES_SCALE = 2.0 if presentation else 1.0
 
 
 def figure_size(width='single', height=None, n_rows=1, row_height=ROW_HEIGHT_IN):
-    """(width, height) in inches for a page-ready figure.
-
-    `width` is 'single' or 'double' -- one MNRAS column or the full text width. `height` is in
-    inches; omit it to get `n_rows * row_height`, which is what a stack of panels wants.
-    """
+    """(width, height) in inches for a page figure; height defaults to n_rows * row_height."""
     if width not in PAGE_WIDTHS:
         raise ValueError(f"width must be one of {sorted(PAGE_WIDTHS)}, not {width!r}")
     h = height if height is not None else n_rows * row_height
@@ -83,27 +45,11 @@ def figure_size(width='single', height=None, n_rows=1, row_height=ROW_HEIGHT_IN)
 
 
 def diagnostic_size(n_rows, n_cols, col_width=6.0, row_height=3.0, pad=1.5):
-    """Figure size for a DIAGNOSTIC grid, which is not page-constrained.
-
-    The wide multi-panel diagnostics (the full outgassing x crust grid, the per-crust-rate
-    mineral SI panels) exist to be read on screen at whatever size they need. Forcing them into
-    a column width would make them illegible, so they keep a fixed size per panel.
-    """
+    """Fixed per-panel size for on-screen diagnostic grids that are not page-constrained."""
     return (col_width * n_cols + pad, row_height * n_rows)
 
 
-# ---------------------------------------------------------------------------
-# Colour maps
-# ---------------------------------------------------------------------------
-# ONE colour map per swept input parameter, defined here and nowhere else, so that a parameter
-# is recognisable by colour across every figure that facets on it -- outgassing is always
-# tropical, ocean depth always bubblegum, and so on. Change a name here to recolour every figure
-# that uses that parameter in one go. Anything cmasher or matplotlib exposes works.
-#
-# Several are sub-mapped: the full range of most sequential maps starts at black and ends at
-# near-white, and with only 5-7 grid values per axis the end members were landing in both, where
-# they are indistinguishable from the axis text and from the panel background respectively.
-
+# --- Colour maps: one per swept parameter, so a parameter looks the same in every figure ---
 INSTELLATION_CMAP     = cmr.cosmic
 OUTGASSING_CMAP       = cmr.get_sub_cmap('cmr.ember', 0.15, 0.90)
 CRUST_CMAP            = cmr.get_sub_cmap('cmr.amber', 0.15, 0.90)
@@ -128,9 +74,6 @@ PARAM_CMAPS = {
     'k_na':             CHEM_KNOB_CMAP,
 }
 
-# Maps for OUTPUT quantities, which are not parameters and so are deliberately kept out of
-# PARAM_CMAPS: a diverging map for signed quantities about a meaningful centre (log Da about
-# 1, a difference against the Earth crust) and a sequential pair for absolute values.
 DIVERGING_CMAP        = cmr.prinsenvlag   # log10(Da), centred on Da = 1
 RELATIVE_CMAP         = cmr.fusion_r      # differences against the reference crust
 WEATHERING_RATIO_CMAP = cmr.fusion        # log seafloor/continental: blue where seafloor dominates
@@ -139,6 +82,7 @@ TEMPERATURE_CMAP      = cmr.get_sub_cmap('cmr.ember', 0.12, 1.0)   # surface tem
 
 DEFAULT_OUTPUT_PATH = os.environ.get('KAMINO_SWEEP_OUTPUT', '/home/pt426/Code/kamino/sweep_output')
 
+# --- Terminations and thresholds ---
 TERM_LABELS = {
     'converged':      'Converged',
     'timeout':        'Timeout (2 Gyr)',
@@ -149,8 +93,7 @@ TERM_LABELS = {
     'solver_failure': 'ODE solver failure',
 }
 
-# Where the run left the validity box. Only meaningful for 'out_of_domain'; this is
-# recovered from the final state in Planet.time_evolve, not from a dedicated event.
+# Where an out_of_domain run left the validity box.
 WALL_LABELS = {
     'cold':     'Frozen (T → 181 K)',
     'hot':      'Runaway (T → 389 K)',
@@ -158,87 +101,64 @@ WALL_LABELS = {
     'co2_low':  'CO₂ depleted (0.1 Pa)',
 }
 
-# Terminations that mean "the model ran out of validity", not "the planet did something".
-# Not a habitability verdict: a run cut off at a wall has no known fate.
-# Terminations that mean the model ran out of validity, and those that do not. Older sweeps used
-# a larger vocabulary; plot_legacy.upgrade() maps it onto these before any figure sees it.
+# Failed or incomplete integrations (wall_timeout, fallback_limit, ...) are in neither set.
 OUT_OF_DOMAIN = {'out_of_domain'}
-# NOTE 'wall_timeout', 'fallback_limit', 'chemistry_void' and 'solver_failure' are deliberately
-# in NEITHER set: each is an incomplete or failed integration, so it is neither known-habitable
-# nor known-out-of-domain. Every one of them gets its own FAILED_MARKERS entry (see below) so a
-# run's specific unreliability is visible rather than lumped into a single generic marker.
 HABITABLE = {'converged', 'timeout'}
-
-# Terminations whose Da is trustworthy enough to anchor a kinetic<->thermodynamic transition
-# marker (see _plot_group_on_axes / _plot_line_da_style). Wider than HABITABLE: a wall_timeout
-# run's ABORT state is a real state dY_dt already evaluated once, and Planet._final_diagnostics
-# now re-evaluates it a second time (deadline suspended) to record real diagnostics there -- the
-# run simply didn't reach 2 Gyr or an event, which says nothing about whether ITS Da is trustworthy.
-# The others do not get this benefit of the doubt: an out_of_domain state can be a fabricated
-# ceiling/floor sentinel (T pinned to an exact 389.00 K clamp is not a converged temperature),
-# and fallback_limit/chemistry_void/solver_failure all mean the chemistry solver or integrator
-# was actively struggling at that exact point, not merely stopped early on an otherwise-fine one.
-#
-# NOTE this only helps sweeps re-run after Planet._final_diagnostics started covering the abort
-# state (see planet.py) -- older output still has da=NaN for wall_timeout points regardless of
-# this set, since np.isfinite(da[i]) gates them out first either way.
+# A wall_timeout state was genuinely evaluated, so its Da can anchor a transition marker.
 DA_TRUSTWORTHY = HABITABLE | {'wall_timeout'}
+
+HAB_MARKERS    = {'converged': 'o', 'timeout': 's'}
+FAILED_MARKERS = {                      # hollow, one per unreliable termination
+    'out_of_domain':  's',
+    'wall_timeout':   '^',
+    'fallback_limit': 'D',
+    'chemistry_void': 'v',
+    'solver_failure': 'x',
+}
 
 T_SNOWBALL = 260.0
 T_RUNAWAY  = 360.0
-
-# The validity box the climate solver is scanned over (planet.py, T_LO/T_HI). A run pinned to
-# either value did not converge onto that temperature -- it is a sentinel -- so any diagnostic
-# evaluated there is a property of the clamp, not of the planet.
+# The climate solver's validity box; a T pinned to either value is a sentinel, not a solution.
 T_COLD_WALL = 181.0
 T_HOT_WALL  = 389.0
 
-# ---------------------------------------------------------------------------
-# Habitable-zone edges of the Earth-like continental baseline
-# ---------------------------------------------------------------------------
-# Instellation limits of the temperate band on the reference Earth-like planet, measured by
-# experiments/continental_baseline.py: land fraction 0.3 with every other axis at Earth --
-# 1x outgassing, 1x crust production, 3 km ocean, Earth crust (Mg/Si 1.25, dIW -2), reverse
-# weathering on, reducing ocean. Drawn as vertical lines on TEMPERATURE panels, so any figure of
-# T against instellation can be read against the same reference planet. Temperature only: the
-# edges say where the temperate band is entered and left, which is not a statement about pCO2,
-# pH, salinity or mineral saturation, so marking those panels would imply a threshold in a
-# quantity the edges say nothing about.
-#
-# OUTER is a crossing: T interpolated onto T_SNOWBALL between the S = 0.45 and S = 0.50 runs.
-# It is CO2-SUPPLY limited, not radiation limited. The WHAK continental sink stays near 2x the
-# modern Earth rate all the way out (beta = 0.3 makes the pCO2 term cancel the temperature
-# term), so pCO2 never reaches the several bars a maximum greenhouse needs -- the analytic
-# climate model's own maximum-greenhouse edge is nearer S = 0.41, and Kopparapu et al. (2013)
-# put it at 0.35.
-#
-# INNER is bracketed between the S = 1.10 and S = 1.15 runs. At 1.15 absorbed instellation
-# exceeds the OLR (Simpson-Nakajima) limit, so no cool-branch solution exists and the planet is
-# in a runaway greenhouse; the climate model puts that threshold at S = 1.141 once CO2 is
-# exhausted. Do not read the inner edge to better than the 0.05 grid spacing.
-#
-# These are properties of ONE reference planet. A figure that varies ocean depth, crust
-# composition or outgassing is being compared against Earth-like continents, not against its
-# own habitable zone.
+DA_LEGEND = [
+    Line2D([0], [0], color='k', linestyle='-',  linewidth=1.4, label='Da < 1 (kinetic)'),
+    Line2D([0], [0], color='k', linestyle='--', linewidth=1.4, label='Da ≥ 1 (thermodynamic)'),
+    Line2D([0], [0], color='k', linestyle='none', marker='o', markerfacecolor='none',
+           markersize=5.5, markeredgewidth=1.2, label='Da = 1 transition'),
+    Line2D([0], [0], color='k', linestyle=':',  linewidth=1.4, label='$T_\\mathrm{seafloor}$ at floor (274 K)'),
+]
+
+PANEL_COLS = ['T', 'P_CO2', 'pH', 'salinity']
+
+# --- Reference planet ---
+REF_MG_SI = float(EARTH_MANTLE_MG_SI)
+REF_DIW   = float(EARTH_DELTA_IW)
+REF_PE    = float(PE_DEFAULT)   # reducing ocean; every figure except plot_pe pins pe here (--pe overrides)
+PE_LEGACY_DEFAULT = 4.0         # pe of runs written before pe was a parameter (PHREEQC's oxidising default)
+
+# Composition-sweep Mg/Si values left off the Mg/Si colour-bar figures; 1.75 crowds the 1.8 end-member.
+MG_SI_HIDDEN = (1.75,)
+
+# Modern Earth; salinity sums the tracked seawater ions (g/kg), comparable with the model's column.
+EARTH = {'S': 1.0, 'T': 288.0, 'P_CO2': 280e-6, 'pH': 8.1,
+         'salinity': (2.0e-3 * 61.0 + 0.1e-3 * 60.1 + 10.3e-3 * 40.1 +
+                      52.8e-3 * 24.3 + 480e-3 * 23.0 + 550e-3 * 35.45)}
+
+# --- Continental habitable zone ---
+# Edges of the Earth-like continental baseline (land 0.3, all else Earth), from continental_baseline.py.
+# Outer: T crosses T_SNOWBALL between S = 0.45 and 0.50. Inner: runaway bracketed between S = 1.10 and 1.15.
 CONTINENTAL_HZ_OUTER = 0.480
 CONTINENTAL_HZ_INNER = 1.125
-
-# Whether the HZ lines are drawn. THIS is the switch: set it to True to put the edges on every
-# instellation figure in one go. Off by default so existing figures are unchanged. Every
-# plotting function also takes show_hz=True/False to override it for one figure.
-SHOW_HZ_EDGES = True
+SHOW_HZ_EDGES = True   # global switch; figures also take show_hz to override it
 
 
 def _draw_hz_edges(ax, show_hz=None):
-    """Mark the continental baseline's habitable-zone edges on a TEMPERATURE axis.
-
-    `show_hz` of None defers to the module default, so a caller that does not care need not
-    thread the flag; True or False decides for this axis alone.
-    """
+    """Draw and label the continental HZ edges; show_hz=None defers to SHOW_HZ_EDGES."""
     if not (SHOW_HZ_EDGES if show_hz is None else show_hz):
         return
     trans = ax.get_xaxis_transform()
-    # Each label sits outside the habitable band, beside its line.
     for s, label, offset, ha in ((CONTINENTAL_HZ_OUTER, 'HZ outer edge', -3, 'right'),
                                  (CONTINENTAL_HZ_INNER, 'HZ inner edge', 3, 'left')):
         ax.axvline(s, color='0.35', linestyle=(0, (6, 3)), linewidth=1.0, alpha=0.85, zorder=1)
@@ -249,73 +169,22 @@ def _draw_hz_edges(ax, show_hz=None):
                               alpha=0.75))
 
 
-# Molar masses (g/mol) for the b_ocean elements, used to turn the final state into a
-# salinity. C is carried as HCO₃⁻ (61) and S as SO₄²⁻ (96.06); Alkalinity is a charge
-# balance rather than a mass, so it is skipped. Indices are derived from
-# kamino.chemistry.elements so the mapping follows the model's element list:
-# y = [P_CO2, P_H2O, *elements, r_avg], i.e. elements[i] lives at y[2 + i].
+def equilibrium_temperature(instellation, albedo=0.3, greenhouse=0.5):
+    """Grey-atmosphere equilibrium temperature (K) for an instellation in units of S0."""
+    return (((1 - albedo) * instellation * SOLAR_CONSTANT)
+            / (4 * STEFAN_BOLTZMANN * greenhouse)) ** 0.25
+
+
+# --- Loading and diagnostics ---
+# Molar masses (g/mol) for salinity; C as HCO3-, S as SO4 2-. y = [P_CO2, P_H2O, *elements, r_avg].
 _ELEMENT_MASSES = {'C': 61.0, 'Si': 60.1, 'Al': 27.0, 'Fe': 55.8, 'Ca': 40.1,
                    'Mg': 24.3, 'Na': 23.0, 'Cl': 35.45, 'S': 96.06}
 _SAL_INDICES = [2 + i for i, e in enumerate(elements) if e in _ELEMENT_MASSES]
 _SAL_MASSES  = [_ELEMENT_MASSES[e] for e in elements if e in _ELEMENT_MASSES]
 
-# Reference crust: the model derives the mineralogy from the two composition axes -- mantle
-# molar Mg/Si and the core-formation oxygen fugacity dIW -- instead of a named composition like
-# 'basalt_49', or the (T_p, mg_si_ratio) pair that preceded them.
-REF_MG_SI = float(EARTH_MANTLE_MG_SI)
-REF_DIW   = float(EARTH_DELTA_IW)
-
-# Composition-sweep Mg/Si values left off the Mg/Si colour-bar figures; 1.75 crowds the 1.8 end-member.
-MG_SI_HIDDEN = (1.75,)
-
-# Reference ocean redox: the model's own default (abiotic, reducing -- see planet.PE_DEFAULT and
-# development_history.md section 28). Every sweep since 2026-08-27 runs both redox arms
-# (parameter_sweep.PE_STATES), so this is what every figure EXCEPT plot_pe pins pe to,
-# exactly as REF_MG_SI/REF_DIW pin the composition axes for every figure except the crust ones.
-# Overridable from the CLI (--pe), the same way the CHEM_KNOBS are.
-REF_PE = float(PE_DEFAULT)
-
-# What a run predating the `pe` parameter (before 2026-08-27) actually ran at: PHREEQC's own
-# implicit default, which section 28.3 found is firmly oxidising. NOT the same as REF_PE --
-# defaulting missing pe to REF_PE would silently relabel every pre-pe run as reducing.
-PE_LEGACY_DEFAULT = 4.0
-
-COMP_COLORS = {
-    'komatiite_42': '#7b2d8b',
-    'komatiite_44': '#c44bc4',
-    'basalt_47':    '#e08040',
-    'basalt_49':    '#d4b000',
-    'basalt_51':    '#6abf69',
-}
-HAB_MARKERS    = {'converged': 'o', 'timeout': 's'}
-# One distinct (hollow) marker per unreliable termination, so a run's specific failure mode is
-# visible on the plot instead of every non-habitable point collapsing onto a single 'x'.
-FAILED_MARKERS = {
-    'out_of_domain':  's',
-    'wall_timeout':   '^',
-    'fallback_limit': 'D',
-    'chemistry_void': 'v',
-    'solver_failure': 'x',
-}
-
-DA_LEGEND = [
-    Line2D([0], [0], color='k', linestyle='-',  linewidth=1.4, label='Da < 1 (kinetic)'),
-    Line2D([0], [0], color='k', linestyle='--', linewidth=1.4, label='Da ≥ 1 (thermodynamic)'),
-    Line2D([0], [0], color='k', linestyle=':',  linewidth=1.4, label='$T_\\mathrm{sf}$ at floor (274 K)'),
-]
-
-PANEL_COLS = ['T', 'P_CO2', 'pH', 'salinity']
-
-
-
-def equilbrium_temperature(instellation, albedo=0.3, greenhouse=0.5):
-    return (((1-albedo) * instellation * SOLAR_CONSTANT)/(4 * STEFAN_BOLTZMANN * greenhouse)) ** 0.25
-
-# ---------------------------------------------------------------------------
-# Data loading
-# ---------------------------------------------------------------------------
 
 def _salinity_from_y(y_list):
+    """Salinity (g/kg) of a run's final ocean state."""
     try:
         return sum(
             float(y_list[i][-1]) * mass
@@ -327,207 +196,20 @@ def _salinity_from_y(y_list):
 
 
 _DIAG_NAN = {'da': np.nan, 'calcite_si': np.nan, 'ocean_si': np.nan, 'alk_flux': np.nan, 'pH': np.nan}
-
-
-@functools.lru_cache(maxsize=None)
-def _crust_composition(mantle_mg_si, delta_iw):
-    """CIPW-norm crust mineralogy for a mantle Mg/Si and core-formation dIW (cached)."""
-    return mineral_composition(mantle_mg_si, delta_iw)
-
-
-def _crust_composition_of(d):
-    """Crust mineralogy for a run: the stored composition if present, else the two axes.
-
-    Runs predating the MAGEMin table stored `mantle_potential_temperature` / `mg_si_ratio`, which
-    the current pipeline cannot reproduce -- T_p is no longer an input and `mg_si_ratio` was a
-    multiplier on 1.23, not a Mg/Si. Those runs are only plottable via their stored
-    `crust_composition`; without one there is nothing honest to draw, so say so rather than
-    silently substituting Earth.
-    """
-    stored = d.get('crust_composition')
-    if stored:
-        return stored
-    if 'mantle_potential_temperature' in d and 'mantle_mg_si' not in d:
-        raise KeyError(
-            'legacy run (mantle_potential_temperature) with no stored crust_composition: its '
-            'mineralogy cannot be reconstructed by the current pipeline')
-    return _crust_composition(float(d.get('mantle_mg_si', REF_MG_SI)),
-                              float(d.get('delta_iw', REF_DIW)))
-
-
-def _pore_conditions(d):
-    """Reconstruct the seafloor/pore-space state of a run's final step from its JSON.
-
-    Returns (b_ocean, P_pore, T_pore, T_seafloor, P_CO2, crust_rate, J_total) matching
-    what Planet.dY_dt saw on the last evaluation.
-    """
-    y_list = d['data']['y']
-    n_elements = len(y_list) - 3  # y = [P_CO2, P_H2O, *elements, r_avg]
-    b_ocean = np.maximum(np.array([float(y_list[i][-1]) for i in range(2, 2 + n_elements)]), 0.0)
-
-    mass    = float(d.get('mass',   5.972e24))
-    radius  = float(d.get('radius', 6.371e6))
-    gravity = G * mass / radius**2
-
-    P_CO2     = float(d['P_CO2']) * 1e5             # bar → Pa
-    T_surface = float(d['T'])
-    P_H2O     = float(y_list[1][-1]) if y_list[1] else 0.0
-    P_surface = float(d['background_pressure']) + P_CO2 + P_H2O
-
-    T_seafloor = max(1.02 * T_surface - 16.7, 274.0)
-    T_pore     = T_seafloor + 9
-    P_pore     = P_surface + 1000 * gravity * float(d['ocean_depth'])
-
-    # Hydrothermal flux scales with crust production (planet.py no longer splits out f_HT).
-    crust_rate = EARTH_CRUST_PRODUCTION_RATE_PER_AREA * float(d['crust_production_rate'])
-    J_total    = J_ref_normalised * (crust_rate / rate_ref)
-
-    return b_ocean, P_pore, T_pore, T_seafloor, P_CO2, crust_rate, J_total
-
-
-def _sedimentation_rate(d, b_ocean, P_pore, T_seafloor):
-    """Sediment accumulation rate (m/s) from abiotic carbonate + silica burial, as in dY_dt."""
-    from kamino.precipitation import get_precipitation
-    from kamino.chemistry import c_idx as _c_idx, si_idx as _si_idx
-
-    rw = bool(d.get('reverse_weathering', False))
-    pe = float(d['pe']) if d.get('pe') is not None else None  # None -> library default (oxidising, see PE_LEGACY_DEFAULT)
-    fast_minerals = carbonate_minerals + clay_minerals + silica_minerals + evaporite_minerals
-    try:
-        F_prec, _, _ = get_precipitation(P_pore, T_seafloor, b_ocean, fast_minerals,
-                                         precipitation_timescale=float(d.get('tau_prec', 1e5 * YR)),
-                                         pe=pe)
-        if rw:
-            F_rw, _, _ = get_precipitation(P_pore, T_seafloor, b_ocean, list(reverse_weathering_minerals),
-                                           precipitation_timescale=float(d.get('tau_rw', 5e6 * YR)),
-                                           pe=pe)
-            F_prec = F_prec + F_rw
-    except Exception:
-        return None  # fall back to the reference sedimentation rate inside the weathering law
-
-    F_carb = max(0.0, -float(F_prec[_c_idx]))
-    F_sil  = max(0.0, -float(F_prec[_si_idx]))
-    ocean_water_per_area = float(d['ocean_depth']) * 1000.0
-    s_terr = _S_TERR_EARTH * (float(d.get('land_fraction', 0.0)) / 0.3)
-    return (F_carb * 0.100 / 2710.0 + F_sil * 0.060 / 2650.0) * ocean_water_per_area + s_terr
-
-
-def _diag_from_json(d):
-    """Compute weathering diagnostics from the final state stored in a JSON file.
-
-    Returns a dict with:
-      da         — Damköhler number for alkalinity
-      calcite_si — calcite SI of the pore fluid *before* secondary precipitation
-                   (the driving force for pore-space calcite; always valid)
-      ocean_si   — calcite SI of the ocean water at seafloor T/P
-                   (meaningful only when ocean Ca > 0; NaN when Ca ≈ 0)
-      alk_flux   — net seafloor alkalinity flux (Tmol eq/yr)
-    """
-    try:
-        y_list = d.get('data', {}).get('y', [])
-        n_elements = len(y_list) - 3  # y_list = [P_CO2, P_H2O, *elements, r_avg]
-        if not y_list or n_elements < 7:
-            return _DIAG_NAN
-
-        b_ocean, P_pore, T_pore, T_seafloor, P_CO2, crust_rate, J_total = _pore_conditions(d)
-        pe = float(d['pe']) if d.get('pe') is not None else None  # None -> library default (oxidising, see PE_LEGACY_DEFAULT)
-
-        # Pore space precipitates clays only (planet.pore_precipitating_minerals);
-        # carbonates and reverse-weathering clays form in the ocean sediments.
-        pore_minerals = list(clay_minerals)
-
-        flux, diag = get_weathering_flux(
-            P_pore, T_pore, P_CO2, b_ocean,
-            alpha=float(d.get('alpha', 1.43)),
-            rate=crust_rate, J=J_total,
-            crust_composition=_crust_composition_of(d),
-            sedimentation_rate=_sedimentation_rate(d, b_ocean, P_pore, T_seafloor),
-            precipitating_minerals=pore_minerals,
-            pe=pe,
-        )
-
-        from kamino.precipitation import get_precipitation
-        from kamino.chemistry import ChemistryError, ca_idx as _ca_idx
-
-        # pH is recomputed here rather than read from the JSON: self._pH is planet.py's
-        # side-effect value, and unlike 'T' it is not re-evaluated on the accepted final state
-        # before the file is written, so it can still be a Jacobian probe's value.
-        # This reuses T_seafloor/P_pore from _pore_conditions, which are now correct because
-        # they are built from the recomputed T_surface -- so this pH is the equilibrium pH of
-        # the ACTUAL final ocean composition, matching exactly what dY_dt computes on a real
-        # (non-probe) trajectory step: get_precipitation with the fast-precipitating assemblage
-        # at seafloor conditions. Costs one more PHREEQC solve, on top of the several this
-        # function already does, so it is only applied where diagnostics are already paid for
-        # (_add_diag_columns callers), not in the cheap load_data() pass.
-        try:
-            fast_minerals = carbonate_minerals + clay_minerals + silica_minerals + evaporite_minerals
-            _, pH_recomputed, _ = get_precipitation(
-                P_pore, T_seafloor, b_ocean, fast_minerals,
-                precipitation_timescale=float(d.get('tau_prec', 1e5 * YR)), pe=pe)
-            pH_recomputed = float(pH_recomputed)
-        except (ChemistryError, Exception):
-            pH_recomputed = np.nan
-
-        # Pore SI: the pore space now precipitates clays only, so Calcite no longer
-        # appears in secondary_SI. Evaluate it directly on the post-weathering pore
-        # fluid (b_pore) — the driving force for pore-space calcite.
-        try:
-            b_pore = np.asarray(diag['b_pore'], dtype=float)
-            _, _, si_p = get_precipitation(P_pore, T_pore, np.maximum(b_pore, 0.0), ['Calcite'],
-                                           precipitation_timescale=1e6 * YR, pe=pe)
-            calcite_si = float(si_p.get('Calcite', np.nan))
-        except (ChemistryError, Exception):
-            calcite_si = np.nan
-
-        # Ocean SI: only reliable when Ca_ocean > 0; set to NaN otherwise to avoid
-        # the spurious -∞ that results when ocean Ca has been depleted to the ODE floor.
-        if b_ocean[_ca_idx] > 1e-6:
-            try:
-                _, _, si_o = get_precipitation(P_pore, T_seafloor, b_ocean, ['Calcite'],
-                                               precipitation_timescale=1e6 * YR, pe=pe)
-                ocean_si = float(si_o.get('Calcite', np.nan))
-            except (ChemistryError, Exception):
-                ocean_si = np.nan
-        else:
-            ocean_si = np.nan
-
-        alk_flux = float(flux[alk_idx]) * A_seafloor * YR / 1e12  # Tmol eq/yr
-
-        return {'da': float(diag['Da']), 'calcite_si': calcite_si,
-                'ocean_si': ocean_si, 'alk_flux': alk_flux, 'pH': pH_recomputed}
-    except Exception:
-        return _DIAG_NAN.copy()
+_DIAG_KEYS = (('da', 'da'), ('calcite_si', 'calcite_si'), ('ocean_si', 'ocean_si'),
+              ('alk_flux', 'alk_flux'), ('pH', 'pH_seafloor'))   # (column, key in the run's block)
 
 
 def _diag_from_run(d):
-    """Diagnostics for one run, preferring the values `Planet.time_evolve` recorded.
-
-    The model computes `da`, `calcite_si`, `ocean_si`, `alk_flux` and the seafloor pH on every
-    step anyway, and since 2026-08-27 writes them for the accepted final state into a
-    "diagnostics" block. Reading them costs nothing; reconstructing them here costs ~0.9 s of
-    PHREEQC per run, which is ~30 minutes for a 2000-run sweep. Runs written before that change
-    have no block, so `_diag_from_json` remains as the fallback and is exercised by them.
-    """
+    """Diagnostics Planet.time_evolve recorded for the final state, or NaNs for runs without them."""
     block = d.get('diagnostics')
-    if isinstance(block, dict) and 'da' in block:
-        out = {}
-        for key, src in (('da', 'da'), ('calcite_si', 'calcite_si'), ('ocean_si', 'ocean_si'),
-                         ('alk_flux', 'alk_flux'), ('pH', 'pH_seafloor')):
-            v = block.get(src)
-            out[key] = np.nan if v is None else float(v)
-        return out
-    return _diag_from_json(d)
+    if not (isinstance(block, dict) and 'da' in block):
+        return _DIAG_NAN.copy()
+    return {key: np.nan if block.get(src) is None else float(block[src]) for key, src in _DIAG_KEYS}
 
 
 _DIAG_CACHE = {}
-
-# Directory the run JSONs were loaded from. `_add_diag_columns` re-reads each run to compute its
-# diagnostics, and until now it used the FIGURE output directory for that -- fine in __main__,
-# where they are the same directory, but silently wrong (every diagnostic NaN, and the cache
-# unwritable) for any caller that renders elsewhere. load_data records the real location here.
-RUN_PATH = None
-
-# Bump when _diag_from_json changes WHAT it computes, so stale on-disk records are discarded.
+RUN_PATH = None   # directory load_data read, so diagnostics come from there even when figures go elsewhere
 _DIAG_VERSION = 1
 _DIAG_CACHE_FILE = '.plot_diag_cache.json'
 _diag_cache_loaded = set()
@@ -535,11 +217,7 @@ _diag_cache_dirty = set()
 
 
 def _diag_cache_key(fpath):
-    """Identity of a run's diagnostics: its path plus the file's size and mtime.
-
-    Re-running a sweep rewrites the JSON, which changes both, so a stale record can never be
-    served for a run that has been recomputed.
-    """
+    """Size and mtime of a run file, so a rewritten run invalidates its cached record."""
     st = os.stat(fpath)
     return f'{st.st_size}:{int(st.st_mtime)}'
 
@@ -566,19 +244,16 @@ def _load_diag_cache(output_path):
                 _DIAG_CACHE[fpath] = entry['rec']
                 n += 1
         except OSError:
-            continue        # run file has gone away
+            continue
     if n:
         print(f"  reusing cached diagnostics for {n} run(s) from {_DIAG_CACHE_FILE}")
 
 
 def _save_diag_cache(output_path):
-    """Write the sidecar cache if anything new was computed for `output_path`."""
+    """Write the sidecar cache, merged with what is on disk, if anything new was computed."""
     if output_path not in _diag_cache_dirty:
         return
     _diag_cache_dirty.discard(output_path)
-    # MERGE with whatever is already on disk. `_DIAG_CACHE` holds only the runs this process
-    # happened to touch, so writing it verbatim would shrink a complete cache down to the subset
-    # of one partial render -- silently discarding hours of work.
     runs = {}
     path = os.path.join(output_path, _DIAG_CACHE_FILE)
     try:
@@ -604,43 +279,26 @@ def _save_diag_cache(output_path):
 
 
 def _add_diag_columns(df, output_path=None):
-    """Add da, calcite_si, alk_flux and (corrected) pH columns by re-reading each JSON file.
+    """Add da, calcite_si, ocean_si, alk_flux and seafloor pH columns, cached per run file.
 
-    Each record costs ~0.9 s of PHREEQC (a full weathering equilibration plus three saturation
-    solves), so 2000 runs is ~30 minutes. Results are therefore cached twice: in `_DIAG_CACHE`
-    for the several figures that request overlapping subsets within one process, and in a
-    sidecar JSON beside the runs so a later invocation -- re-rendering after a styling change,
-    which is the common case -- pays nothing. The sidecar is keyed on each run file's size and
-    mtime, so re-running a sweep invalidates its own entries automatically.
-
-    Overwrites the 'pH' column (the JSON's stored side-effect value, which unlike 'T' is not
-    re-evaluated on the final state) wherever _diag_from_json succeeded -- callers of this
-    function already pay the PHREEQC cost the recompute needs, so the correction is free here.
-    Rows where the recompute itself failed keep the original stored 'pH' rather than becoming
-    NaN, since a stale-but-present value is more useful than none for a plot.
+    Rows without a recorded pH keep the pH stored in the run.
     """
     run_path = RUN_PATH or output_path
     _load_diag_cache(run_path)
     records = []
-    todo = sum(1 for n in df['name']
-               if os.path.join(run_path, f'{n}.json') not in _DIAG_CACHE)
+    todo = sum(1 for n in df['name'] if os.path.join(run_path, f'{n}.json') not in _DIAG_CACHE)
     if todo:
-        print(f"  computing diagnostics for {todo} run(s) (~{todo * 0.9 / 60:.1f} min)...",
-              flush=True)
+        print(f"  reading diagnostics for {todo} run(s)...", flush=True)
     for name in df['name']:
         fpath = os.path.join(run_path, f'{name}.json')
-        if fpath in _DIAG_CACHE:
-            records.append(_DIAG_CACHE[fpath])
-            continue
-        try:
-            with open(fpath) as fh:
-                d = json.load(fh)
-            rec = _diag_from_run(d)
-        except Exception:
-            rec = _DIAG_NAN.copy()
-        _DIAG_CACHE[fpath] = rec
-        _diag_cache_dirty.add(run_path)
-        records.append(rec)
+        if fpath not in _DIAG_CACHE:
+            try:
+                with open(fpath) as fh:
+                    _DIAG_CACHE[fpath] = _diag_from_run(json.load(fh))
+            except Exception:
+                _DIAG_CACHE[fpath] = _DIAG_NAN.copy()
+            _diag_cache_dirty.add(run_path)
+        records.append(_DIAG_CACHE[fpath])
     _save_diag_cache(run_path)
     diag_df = pd.DataFrame(records, index=df.index)
     df = df.assign(**diag_df.drop(columns=['pH']))
@@ -649,23 +307,19 @@ def _add_diag_columns(df, output_path=None):
 
 
 def load_data(output_path):
+    """One row per finished run in `output_path`, with its sweep axes and final state."""
     global RUN_PATH
     RUN_PATH = output_path
-    files = sorted(glob.glob(os.path.join(output_path, 'planet_*.json')))
     rows = []
-    for f in files:
+    for f in sorted(glob.glob(os.path.join(output_path, 'planet_*.json'))):
         with open(f) as fh:
             d = json.load(fh)
         if 'termination' not in d:
             print(f"  Skipping (no termination): {os.path.basename(f)}")
             continue
-
-        name = d.get('name', '')
         y_list = d.get('data', {}).get('y', [])
-        salinity = _salinity_from_y(y_list) if y_list else np.nan
-
         rows.append({
-            'name':               name,
+            'name':               d.get('name', ''),
             'instellation':       float(d['instellation']),
             'outgassing':         float(d['outgassing']),
             'crust_production':   float(d['crust_production_rate']),
@@ -675,79 +329,55 @@ def load_data(output_path):
             'delta_iw':           float(d.get('delta_iw', REF_DIW)),
             'pe':                 float(d['pe']) if d.get('pe') is not None else PE_LEGACY_DEFAULT,
             'f_HT':               float(d.get('f_HT', 0.0)),
-            # Chemistry constants are swept axes (parameter_sweep.py). Runs differing only in
-            # these must not be pooled into one line -- see _ref_chem.
             'alpha':              float(d.get('alpha', ALPHA_REF)),
             'kd_mg':              float(d.get('kd_mg_ht', KD_MG_HT)),
             'k_na':               float(d.get('k_na_cont_removal', K_NA_CONT_REMOVAL)),
             'land_fraction':      float(d.get('land_fraction', 0.0)),
             'termination':        d['termination'],
-            'domain_wall':        d.get('domain_wall'),   # None for pre-domain-event runs
+            'domain_wall':        d.get('domain_wall'),
             'end_time_yr':        d.get('end_time_yr', np.nan),
-            # Stored 'T' is trusted: Planet.time_evolve re-evaluates it on the accepted final
-            # state before writing, so it corresponds to the P_CO2 in the same file. Output
-            # written before that fix needs plot_legacy.upgrade(), which recomputes it.
             'T':                  float(d.get('T', np.nan)),
             'P_CO2':              d.get('P_CO2', np.nan),
-            'pH':                 d.get('pH', np.nan),  # corrected in _diag_from_json when available
-            'salinity':           salinity,
+            'pH':                 d.get('pH', np.nan),   # replaced by the recorded seafloor pH in _add_diag_columns
+            'salinity':           _salinity_from_y(y_list) if y_list else np.nan,
         })
     df = pd.DataFrame(rows)
     print(f"Loaded {len(df)} simulations.")
     return df
 
 
-def _ref_crust(df):
-    """Mask for the reference crust: Earth's mantle Mg/Si and core-formation dIW."""
-    return np.isclose(df['mg_si'], REF_MG_SI) & np.isclose(df['delta_iw'], REF_DIW)
-
-
-def _ref_redox(df):
-    """Mask pinning ocean pe to the reference (reducing, abiotic) redox state.
-
-    Every sweep since 2026-08-27 runs both redox arms (parameter_sweep.PE_STATES), doubling
-    every combination of the other axes. Without this, every line-based figure would silently
-    draw one point per instellation for the oxidising arm and one for the reducing arm and join
-    them as if they were a single trajectory. pe gets its own figure (plot_pe), which
-    is the one caller that must NOT apply this mask.
-    """
-    return np.isclose(df['pe'], REF_PE)
-
-
-# Chemistry constants that parameter_sweep.py can vary, with axis labels for the sweep plots.
+# --- Run selection ---
 CHEM_KNOBS = {
     'alpha': r'Reactive area scaling $\alpha$',
     'kd_mg': r'Mg$\rightarrow$Ca exchange $k_{Mg}$',
     'k_na':  r'Na sink $k_{Na}$',
 }
-
 CHEM_SHIPPED = {'alpha': ALPHA_REF, 'kd_mg': KD_MG_HT, 'k_na': K_NA_CONT_REMOVAL}
-
 CHEM_OVERRIDE = {}     # set from the CLI to choose which chemistry the main plots show
-_chem_pinned = set()   # (column, value) already reported, so repeated _base calls print once
+_chem_pinned = set()   # (column, value) already reported
+
+
+def _ref_crust(df):
+    """Mask for Earth's mantle Mg/Si and core-formation dIW."""
+    return np.isclose(df['mg_si'], REF_MG_SI) & np.isclose(df['delta_iw'], REF_DIW)
+
+
+def _ref_redox(df):
+    """Mask pinning pe to REF_PE; sweeps run both redox arms, so line figures must pick one."""
+    return np.isclose(df['pe'], REF_PE)
 
 
 def _chem_reference(df, col):
-    """Which value of a swept chemistry constant the main plots should show.
-
-    Most runs wins; ties break away from a disabled term (k_mg=0 / k_na=0 are ablations and
-    should never become the headline chemistry) and then toward the shipped default.
-    """
+    """Most-run value of a chemistry constant, avoiding disabled (0) terms, then nearest the shipped one."""
     if col in CHEM_OVERRIDE:
         return CHEM_OVERRIDE[col]
     counts = df[col].value_counts()
-    best = counts.max()
-    tied = [v for v, n in counts.items() if n == best]
+    tied = [v for v, n in counts.items() if n == counts.max()]
     return min(tied, key=lambda v: (v == 0, abs(v - CHEM_SHIPPED[col])))
 
 
 def _ref_chem(df):
-    """Mask pinning each chemistry constant to a single value.
-
-    Everything except plot_chemistry shows ONE chemistry. Without this, runs that
-    differ only in alpha/kd_mg/k_na fall into the same (instellation, outgassing, crust) group
-    and get drawn as a single line through several different models.
-    """
+    """Mask pinning each swept chemistry constant to its reference value."""
     mask = pd.Series(True, index=df.index)
     for col in CHEM_KNOBS:
         if col not in df.columns or df[col].nunique() <= 1:
@@ -762,45 +392,41 @@ def _ref_chem(df):
     return mask
 
 
-def _base(df, mg_si=None):
-    """Sweep 1: reference crust and chemistry, rw=True, depth=3000, outgassing>0, ocean world.
+def _sweep_mask(df, depth=3000, land=0.0, crust=True, chem=True, redox=True, f_ht=False, rw=True,
+                **pins):
+    """Standard selection: reverse weathering on, one depth and land fraction, reference crust/chem/redox.
 
-    `mg_si` selects a non-Earth mantle Mg/Si instead of the reference one, for the basic sweep
-    repeated at the composition end-members (parameter_sweep.sweep_basic_low_mgsi /
-    sweep_basic_high_mgsi). dIW stays at its reference either way, so the selection is still a
-    single crust rather than a mixture.
+    Pass None or False to skip a filter (rw=False selects the no-reverse-weathering control, rw=None
+    both arms); `pins` are further column values matched with np.isclose.
     """
-    crust = (_ref_crust(df) if mg_si is None else
-             np.isclose(df['mg_si'], mg_si) & np.isclose(df['delta_iw'], REF_DIW))
-    return df[
-        df['reverse_weathering'] &
-        crust &
-        _ref_chem(df) &
-        _ref_redox(df) &
-        (df['ocean_depth'] == 3000) &
-        (df['land_fraction'] == 0.0) &
-        (df['outgassing'] > 0)
-    ]
+    mask = (pd.Series(True, index=df.index) if rw is None
+            else df['reverse_weathering'].astype(bool) == rw)
+    if depth is not None:
+        mask &= df['ocean_depth'] == depth
+    if land is not None:
+        mask &= np.isclose(df['land_fraction'], land)
+    if crust:
+        mask &= _ref_crust(df)
+    if chem:
+        mask &= _ref_chem(df)
+    if redox:
+        mask &= _ref_redox(df)
+    if f_ht:
+        mask &= df['f_HT'] == 0.0
+    for col, value in pins.items():
+        mask &= np.isclose(df[col], value)
+    return mask
+
+
+def _base(df, mg_si=None):
+    """Land-free basic-sweep runs at 3 km with reference chemistry and redox, at Earth's or a given Mg/Si."""
+    pins = {} if mg_si is None else {'mg_si': mg_si, 'delta_iw': REF_DIW}
+    return df[_sweep_mask(df, crust=mg_si is None, **pins) & (df['outgassing'] > 0)]
 
 
 def basic_plane_mg_si(df, min_combos=4):
-    """Mantle Mg/Si values whose basic sweep -- the outgassing x crust-production plane -- was run.
-
-    The composition and cross sweeps also write rows at non-Earth Mg/Si, but only at the ONE
-    (outgassing, crust) pair those designs hold fixed; treating those as a basic sweep would draw
-    a one-point "plane". Requiring several combinations restricts this to the Mg/Si values
-    sweep_basic / sweep_basic_low_mgsi / sweep_basic_high_mgsi actually cover, so the figures
-    below appear when those sweeps have been run and not otherwise.
-    """
-    pool = df[
-        df['reverse_weathering'] &
-        _ref_chem(df) &
-        _ref_redox(df) &
-        np.isclose(df['delta_iw'], REF_DIW) &
-        (df['ocean_depth'] == 3000) &
-        (df['land_fraction'] == 0.0) &
-        (df['outgassing'] > 0)
-    ]
+    """Mantle Mg/Si values with a full basic sweep, i.e. several (outgassing, crust) combinations."""
+    pool = df[_sweep_mask(df, crust=False, delta_iw=REF_DIW) & (df['outgassing'] > 0)]
     if pool.empty:
         return []
     n_combos = pool.groupby('mg_si').apply(
@@ -808,25 +434,53 @@ def basic_plane_mg_si(df, min_combos=4):
     return sorted(float(v) for v, n in n_combos.items() if n >= min_combos)
 
 
-# ---------------------------------------------------------------------------
-# Shared plot helpers
-# ---------------------------------------------------------------------------
+# --- Shared plot helpers ---
+FIGURE_SUBDIR = 'figures'
+
+
+def figure_path(output_path, name):
+    """Path for a figure in the `figures/` subdirectory of the sweep directory."""
+    directory = os.path.join(output_path, FIGURE_SUBDIR)
+    os.makedirs(directory, exist_ok=True)
+    return os.path.join(directory, name)
+
+
+def _save_fig(fig, path, tight=False):
+    """Save PNG and PDF at the created size; tight=True crops, for diagnostics only."""
+    kw = {'bbox_inches': 'tight'} if tight else {}
+    stem = os.path.splitext(path)[0]
+    for ext in ('png', 'pdf'):
+        fig.savefig(f'{stem}.{ext}', **kw)
+    plt.close(fig)
+    print(f"Saved {stem}.png / .pdf")
+
 
 def _panel_groups(split):
-    """Return [(cols, filename_suffix), ...] — one entry normally, two when split."""
+    """[(columns, filename suffix), ...]: all four panels, or T/pCO2 and pH/salinity separately."""
     if split:
         return [(['T', 'P_CO2'], '_tp'), (['pH', 'salinity'], '_chem')]
     return [(PANEL_COLS, '')]
 
 
-def _style_axes(axes, cols, x_lims=(0.25, 1.45), show_hz=None, show_eq_temp=False):
-    """Style a set of axes given the column names they represent.
+def _temperature_bands(ax, **kw):
+    """Shade the snowball and runaway bands on a temperature axis."""
+    ax.axhspan(T_SNOWBALL - 25, T_SNOWBALL, color='blue', alpha=0.12, **kw)
+    ax.axhspan(T_RUNAWAY - 20, T_RUNAWAY, color='red', alpha=0.12, **kw)
 
-    `show_hz` draws the continental baseline's habitable-zone edges on the TEMPERATURE panel
-    only. The edges are a statement about temperature -- where the band is entered and left --
-    so putting them on a pCO2 or salinity panel would assert a threshold in a quantity they say
-    nothing about. `show_eq_temp` adds the equilibrium-temperature curve to that panel.
-    """
+
+def _label_along(ax, x, y, text, frac=0.88, offset=5):
+    """Label a curve in place, rotated to its on-screen slope; needs the axis limits already set."""
+    i = int(frac * (len(x) - 1))
+    (x0, y0), (x1, y1) = ax.transData.transform([(x[max(i - 1, 0)], y[max(i - 1, 0)]), (x[i], y[i])])
+    ax.annotate(text, xy=(x[i], y[i]), xytext=(0, offset), textcoords='offset points',
+                rotation=np.degrees(np.arctan2(y1 - y0, x1 - x0)), rotation_mode='anchor',
+                ha='center', va='bottom', fontsize=6, color='0.3', zorder=5,
+                bbox=dict(boxstyle='square,pad=0.1', facecolor='white', edgecolor='none',
+                          alpha=0.75))
+
+
+def _style_axes(axes, cols, x_lims=(0.25, 1.45), show_hz=None, show_eq_temp=False):
+    """Label and scale panels against instellation; HZ edges and the equilibrium curve go on T only."""
     for ax in axes:
         ax.grid(True, linestyle='--', alpha=0.4)
         ax.set_xlim(*x_lims)
@@ -834,13 +488,15 @@ def _style_axes(axes, cols, x_lims=(0.25, 1.45), show_hz=None, show_eq_temp=Fals
         if col == 'T':
             _draw_hz_edges(ax, show_hz)
             ax.set_ylabel('Temperature (K)')
-            ax.axhspan(T_SNOWBALL - 25, T_SNOWBALL, color='blue', alpha=0.12)
-            ax.axhspan(T_RUNAWAY - 20,  T_RUNAWAY,  color='red',  alpha=0.12)
+            _temperature_bands(ax)
             ax.set_ylim(235, 360)
             if show_eq_temp:
                 s_eq = np.linspace(x_lims[0], x_lims[1], 300)
-                ax.plot(s_eq, equilbrium_temperature(s_eq), color='k', linestyle='-.',
-                        linewidth=0.8, zorder=1, alpha=0.7)
+                t_eq = equilibrium_temperature(s_eq)
+                ax.plot(s_eq, t_eq, color='k', linestyle='-.', linewidth=0.8, zorder=1, alpha=0.7)
+                # Mid-curve: the planet's own line runs below it there, and the right end would
+                # clash with the HZ inner-edge label.
+                _label_along(ax, s_eq, t_eq, 'Equilibrium temperature', frac=0.45)
         elif col == 'P_CO2':
             ax.set_ylabel('$P_{\\mathrm{CO_2}}$ (bar)')
             ax.set_yscale('log')
@@ -862,7 +518,23 @@ def _style_axes(axes, cols, x_lims=(0.25, 1.45), show_hz=None, show_eq_temp=Fals
     axes[-1].set_xlabel('Instellation (S/S₀)')
 
 
+def _style_combined_col(axes_c, ci, n_cols, title='', cols=None, show_hz=None):
+    """Style one column of a multi-column grid; only the first column keeps y labels."""
+    cols = PANEL_COLS if cols is None else cols
+    col_axes = axes_c[:, ci]
+    _style_axes(col_axes, cols, show_hz=show_hz)
+    if title:
+        axes_c[0, ci].set_title(title)
+    if ci > 0:
+        for ax in col_axes:
+            ax.set_ylabel('')
+            plt.setp(ax.get_yticklabels(), visible=False)
+    if ci != n_cols // 2:
+        col_axes[-1].set_xlabel('')
+
+
 def _add_colorbar(fig, ax, cmap, norm, label, ticks=None, ticklabels=None, aspect=30):
+    """Colour bar for a cmap/norm pair, with optional explicit ticks."""
     sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
     sm.set_array([])
     cbar = fig.colorbar(sm, ax=ax, location='right', pad=0.02, aspect=aspect)
@@ -874,11 +546,18 @@ def _add_colorbar(fig, ax, cmap, norm, label, ticks=None, ticklabels=None, aspec
     return cbar
 
 
-def _make_legend_handles(show_markers=True, prefix_handles=None, show_hz=None, cols=None):
-    """Build legend handle list: prefix (default DA_LEGEND) + optional marker entries.
+def _outgassing_norm(values):
+    return mcolors.LogNorm(vmin=min(values), vmax=max(values))
 
-    The HZ edges are labelled on the axes themselves (`_draw_hz_edges`), so they get no entry.
-    """
+
+def _outgassing_colorbar(fig, ax, values, norm, aspect):
+    """The 'Earth Outgassing' colour bar with a tick per value."""
+    _add_colorbar(fig, ax, OUTGASSING_CMAP, norm, 'Earth Outgassing', ticks=values,
+                  ticklabels=[f'{v}×' for v in values], aspect=aspect)
+
+
+def _make_legend_handles(show_markers=True, prefix_handles=None):
+    """Legend handles: DA_LEGEND (or `prefix_handles`) plus the termination markers."""
     handles = list(prefix_handles if prefix_handles is not None else DA_LEGEND)
     if show_markers:
         handles += [plt.scatter([], [], marker=m, s=28, color='k', label=TERM_LABELS[t])
@@ -889,24 +568,12 @@ def _make_legend_handles(show_markers=True, prefix_handles=None, show_hz=None, c
     return handles
 
 
-def _legend_ncol(handles, fallback):
-    """Deprecated: prefer `_add_figure_legend`, which measures instead of guessing."""
-    return len(handles) if presentation else fallback
-
-
 def _add_figure_legend(fig, axes, handles, loc='outside lower center', **kw):
-    """Figure legend wrapped so it is never wider than the panels it describes.
-
-    `_legend_ncol` put every entry on one row in presentation mode, which for the marker-bearing
-    legends ran past the axes and widened the whole saved figure -- defeating the point of sizing
-    it to a column. This measures the rendered legend and drops a column at a time until it fits
-    inside the panel block, so a page-width figure stays page width.
-    """
+    """Figure legend with as many columns as fit within the width of the panels."""
     axs = [a for a in np.ravel(np.asarray(axes, dtype=object)) if a is not None]
-    fig.canvas.draw()                       # a renderer is needed to measure anything
+    fig.canvas.draw()
     boxes = [a.get_window_extent() for a in axs]
     panel_w = max(b.x1 for b in boxes) - min(b.x0 for b in boxes)
-
     leg = None
     for ncol in range(len(handles), 0, -1):
         if leg is not None:
@@ -918,97 +585,51 @@ def _add_figure_legend(fig, axes, handles, loc='outside lower center', **kw):
     return leg
 
 
-FIGURE_SUBDIR = 'figures'
+def _at_seafloor_floor(T):
+    """True where the seafloor temperature implied by surface T sits at its 274 K floor."""
+    return 1.02 * np.asarray(T, dtype=float) - 16.7 <= 274.001
 
 
-def figure_path(output_path, name):
-    """Path for a figure: the `figures/` subdirectory of the sweep directory, made on demand.
+def _da_trustworthy(group):
+    """Rows whose Da may set the line style: a real evaluated state, not a temperature-wall sentinel.
 
-    Keeps the sweep directory to run JSON and the diagnostics cache -- a full plot run drops ~70
-    files, which previously buried the runs they were made from.
+    A run stopped at the CO2 ceiling counts, since its temperature is a solution rather than a clamp.
     """
-    directory = os.path.join(output_path, FIGURE_SUBDIR)
-    os.makedirs(directory, exist_ok=True)
-    return os.path.join(directory, name)
+    wall = group['domain_wall'] if 'domain_wall' in group else pd.Series(None, index=group.index)
+    return (group['termination'].isin(DA_TRUSTWORTHY)
+            | (group['termination'].isin(OUT_OF_DOMAIN) & (wall == 'co2_high'))).to_numpy()
 
 
-def _save_fig(fig, path, tight=False):
-    r"""Write a figure at EXACTLY the size it was created with.
+def _bracketed_crossing(group, cutoff, da_trust):
+    """Last drawn row when Da crosses 1 in the step onto a temperature-wall run, else None.
 
-    `bbox_inches='tight'` is deliberately off. The style sets constrained_layout, which already
-    fits every artist inside the canvas, and 'tight' then re-crops to the content box -- which
-    for these figures came out LARGER than the requested width (3.43 in against the 3.32 in
-    column). A figure wider than the column gets scaled down by \includegraphics, shrinking the
-    type below the size the style chose. Pass tight=True for diagnostics, where exact width does
-    not matter.
+    The wall run's Da comes from a clamped state, so the crossing can only be bracketed, not placed.
     """
-    kw = {'bbox_inches': 'tight'} if tight else {}
-    stem = os.path.splitext(path)[0]
-    for ext in ('png', 'pdf'):
-        fig.savefig(f'{stem}.{ext}', **kw)
-    plt.close(fig)
-    print(f"Saved {stem}.png / .pdf")
-
-
-def _style_combined_col(axes_c, ci, n_cols, title='', cols=None, show_hz=None):
-    """Style one column of a multi-column grid: axis labels, tick visibility, x-label."""
-    if cols is None:
-        cols = PANEL_COLS
-    col_axes = axes_c[:, ci]
-    _style_axes(col_axes, cols, show_hz=show_hz)
-    if title:
-        axes_c[0, ci].set_title(title)
-    if ci > 0:
-        for ax in col_axes:
-            ax.set_ylabel('')
-        for row in range(axes_c.shape[0]):
-            plt.setp(axes_c[row, ci].get_yticklabels(), visible=False)
-    if ci != n_cols // 2:
-        col_axes[-1].set_xlabel('')
+    if not 0 < cutoff < len(group):
+        return None
+    nxt = group.iloc[cutoff]
+    if nxt['termination'] not in OUT_OF_DOMAIN or nxt.get('domain_wall') not in ('hot', 'cold'):
+        return None
+    da = group['da'].to_numpy(dtype=float)[:cutoff]
+    ok = np.flatnonzero(np.isfinite(da) & da_trust[:cutoff])
+    if ok.size == 0 or da[ok[-1]] >= 1:
+        return None
+    return group.iloc[ok[-1]] if np.isfinite(nxt['da']) and nxt['da'] >= 1 else None
 
 
 def _plot_line_da_style(ax, x, y, da, color, at_floor=None, trustworthy=None,
                         linewidth=1.4, alpha=0.8, zorder=3):
-    """Draw a line: dotted where seafloor T is floored, dashed where Da≥1, solid where Da<1.
+    """Line dotted where seafloor T is floored, dashed where Da >= 1, solid where Da < 1.
 
-    Places an open circle at each kinetic↔thermodynamic transition (solid↔dashed only;
-    transitions into/out of the dotted floor regime are not marked).
-
-    A point's Da is only trusted (usable to CONFIRM a transition) when `trustworthy[i]` --
-    normally the run's termination being genuinely HABITABLE (converged/timeout). Two other
-    cases produce a Da that must not anchor a marker even when it is a finite number:
-
-    - `NaN`: a run that hit the wall-clock cap (`wall_timeout`, sometimes `fallback_limit`) is
-      cut off before `time_evolve`'s final-state re-evaluation runs, so no diagnostics were ever
-      recorded.
-    - A finite but FABRICATED Da: an `out_of_domain` run's stored state can be a sentinel the
-      model clamped to when it gave up (T pinned to an exact ceiling -- e.g. 389.00 K, identical
-      to 15 significant figures across otherwise-unrelated runs -- is not a converged physical
-      temperature), and Da computed from that sentinel is enormous but meaningless. At crust
-      production >= a few x Earth combined with even modest outgassing, many lines leave the
-      valid domain (or stall in wall_timeout) before ever reaching a confirmed Da >= 1, so the
-      only "dashed" point available is this sentinel -- using it fabricated a transition that was
-      never actually observed within the model's valid domain.
-
-    Untrustworthy points are still drawn (resolved to whichever TRUSTWORTHY neighbour is
-    nearest, so the line stays continuous -- a run with no trustworthy Da anywhere stays solid),
-    but several consecutive untrustworthy points (a real occurrence near the runaway transition,
-    where the integration is stiffest and most likely to hit the wall or leave the domain) all
-    copy the same nearest trustworthy style, which can carry a "kinetic" classification several
-    grid points past where Da actually left that regime -- so a transition circle is placed at
-    the LAST point on the old-regime side that is itself trustworthy, not at the raw style-flip
-    index.
+    Points whose Da is untrustworthy copy the nearest trustworthy style; kinetic/thermodynamic
+    transitions get an open circle at the last trustworthy point before the change.
     """
     if len(x) < 2:
         return
-
-    if at_floor is None:
-        at_floor = np.zeros(len(x), dtype=bool)
-    if trustworthy is None:
-        trustworthy = np.ones(len(x), dtype=bool)
+    at_floor = np.zeros(len(x), dtype=bool) if at_floor is None else at_floor
+    trustworthy = np.ones(len(x), dtype=bool) if trustworthy is None else trustworthy
 
     def _raw_ls(i):
-        """None means "Da not trustworthy at this point" -- resolved below, not drawn directly."""
         if at_floor[i]:
             return ':'
         if not (trustworthy[i] and np.isfinite(da[i])):
@@ -1018,56 +639,82 @@ def _plot_line_da_style(ax, x, y, da, color, at_floor=None, trustworthy=None,
     raw = [_raw_ls(i) for i in range(len(x))]
     resolved = list(raw)
     for i, s in enumerate(raw):
-        if s is not None:
-            continue
-        prv = next((resolved[j] for j in range(i - 1, -1, -1) if raw[j] is not None), None)
-        nxt = next((raw[j] for j in range(i + 1, len(raw)) if raw[j] is not None), None)
-        resolved[i] = prv or nxt or '-'
+        if s is None:
+            prv = next((resolved[j] for j in range(i - 1, -1, -1) if raw[j] is not None), None)
+            nxt = next((raw[j] for j in range(i + 1, len(raw)) if raw[j] is not None), None)
+            resolved[i] = prv or nxt or '-'
 
-    seg_x = [x[0]]
-    seg_y = [y[0]]
-    current_ls = resolved[0]
+    seg_x, seg_y, current_ls = [x[0]], [y[0]], resolved[0]
     trans_x, trans_y = [], []
-
     for i in range(1, len(x)):
         ls = resolved[i]
         if ls == current_ls:
             seg_x.append(x[i])
             seg_y.append(y[i])
-        else:
-            ax.plot(seg_x, seg_y, color=color, linewidth=linewidth,
-                    alpha=alpha, linestyle=current_ls, zorder=zorder)
-            # Mark only solid↔dashed transitions (skip dotted floor segments), at the last
-            # point on the old-regime side with a directly measured Da -- walking back past
-            # any unknown (wall_timeout) points rather than mis-marking one of them.
-            if {current_ls, ls} == {'-', '--'}:
-                j = i - 1
-                while j > 0 and raw[j] is None:
-                    j -= 1
-                trans_x.append(x[j])
-                trans_y.append(y[j])
-            seg_x = [seg_x[-1], x[i]]
-            seg_y = [seg_y[-1], y[i]]
-            current_ls = ls
-
+            continue
+        ax.plot(seg_x, seg_y, color=color, linewidth=linewidth, alpha=alpha,
+                linestyle=current_ls, zorder=zorder)
+        if {current_ls, ls} == {'-', '--'}:
+            j = i - 1
+            while j > 0 and raw[j] is None:
+                j -= 1
+            trans_x.append(x[j])
+            trans_y.append(y[j])
+        seg_x, seg_y, current_ls = [seg_x[-1], x[i]], [seg_y[-1], y[i]], ls
     if len(seg_x) >= 2:
-        ax.plot(seg_x, seg_y, color=color, linewidth=linewidth,
-                alpha=alpha, linestyle=current_ls, zorder=zorder)
-
+        ax.plot(seg_x, seg_y, color=color, linewidth=linewidth, alpha=alpha,
+                linestyle=current_ls, zorder=zorder)
     if trans_x:
         ax.scatter(trans_x, trans_y, facecolors='none', edgecolors=color,
                    s=30, linewidths=1.2, zorder=5)
 
 
+def _plot_group_on_axes(axes, group, color, linestyle='-', show_markers=True, cols=None):
+    """Draw one instellation-sorted run group on each panel, Da-styled, with optional termination markers."""
+    cols = PANEL_COLS if cols is None else cols
+    hab = group[group['termination'].isin(HABITABLE)]
+    if hab.empty:
+        return
+    non_hab = group[~group['termination'].isin(HABITABLE)]
+    # End the line at the last converged/timeout/wall-clock run: a trailing tail is often a clamp sentinel.
+    line_end = group['termination'].isin(DA_TRUSTWORTHY).values
+    cutoff = (np.nonzero(line_end)[0].max() + 1) if line_end.any() else len(group)
+    line_group = group.iloc[:cutoff]
+    da_styled = 'da' in group.columns and linestyle == '-'
+    if da_styled:
+        da_trust = _da_trustworthy(group)
+        bracket = _bracketed_crossing(group, cutoff, da_trust)
+
+    for ax, col in zip(axes, cols):
+        if len(line_group) > 1:
+            if da_styled:
+                _plot_line_da_style(ax, line_group['instellation'].values, line_group[col].values,
+                                    line_group['da'].values, color,
+                                    at_floor=_at_seafloor_floor(line_group['T'].values),
+                                    trustworthy=da_trust[:cutoff])
+                if bracket is not None and np.isfinite(bracket[col]):
+                    # Same open circle as a measured crossing: the distinction does not need marking.
+                    ax.scatter(bracket['instellation'], bracket[col], s=30, facecolors='none',
+                               edgecolors=color, linewidths=1.2, zorder=5)
+            else:
+                ax.plot(line_group['instellation'], line_group[col], color=color, linewidth=1.4,
+                        alpha=0.8, linestyle=linestyle, zorder=3)
+        if not show_markers:
+            continue
+        for term, hab_marker in HAB_MARKERS.items():
+            sub = hab[hab['termination'] == term]
+            if not sub.empty:
+                ax.scatter(sub['instellation'], sub[col], color=color,
+                           marker=hab_marker, s=28, zorder=4)
+        for _, row in non_hab.iterrows():
+            if np.isfinite(row[col]):
+                ax.scatter(row['instellation'], row[col],
+                           marker=FAILED_MARKERS.get(row['termination'], 'x'), s=55,
+                           facecolors='none', color=color, zorder=4, linewidths=1.4)
+
+
 def _best_operating_point(pool, col, what):
-    """The (outgassing, crust production) pair spanning the most distinct values of `col`.
-
-    Every one-variable sweep fixes those two at whatever defaults it was run with, and those
-    defaults drifted over the project's life (outgassing 1.0 -> 0.1). Finding the pair rather
-    than hardcoding it is why these figures survive that drift; each caller had its own copy.
-
-    Returns (subset, outgassing, crust) or None when nothing varies.
-    """
+    """(subset, outgassing, crust) for the pair spanning the most values of `col`, or None."""
     counts = pool.groupby(['outgassing', 'crust_production'])[col].nunique()
     if counts.empty or counts.max() < 2:
         print(f"No {what} variation at a fixed (outgassing, crust) -- skipping.")
@@ -1080,7 +727,7 @@ def _best_operating_point(pool, col, what):
 
 
 def _x_limits(subset, default=(0.25, 1.45), frac=0.05):
-    """Instellation axis limits with a small margin, falling back when the range is degenerate."""
+    """Instellation limits with a small margin."""
     lo, hi = subset['instellation'].min(), subset['instellation'].max()
     if pd.isna(lo):
         return default
@@ -1089,12 +736,7 @@ def _x_limits(subset, default=(0.25, 1.45), frac=0.05):
 
 
 def _value_norm(values, pad=0.05):
-    """Colour norm for a set of facet values.
-
-    Log where they span decades AND none is zero -- the k_mg / k_na ablations set the constant to
-    exactly 0, which a log norm cannot place. `pad` widens a linear range so the end members are
-    not at the extreme ends of the colour map; pass 0 to match a range exactly.
-    """
+    """Log norm when positive values span a decade or more, otherwise linear widened by `pad`."""
     lo, hi = min(values), max(values)
     if lo > 0 and hi / lo >= 10:
         return mcolors.LogNorm(vmin=lo, vmax=hi)
@@ -1104,7 +746,7 @@ def _value_norm(values, pad=0.05):
 
 
 def _colorbar_ticks(values, max_ticks=10):
-    """Explicit ticks only when there are few enough to label individually."""
+    """Explicit ticks and labels only when there are few enough to label individually."""
     if len(values) > max_ticks:
         return None, None
     return list(values), [f'{v:g}' for v in values]
@@ -1114,20 +756,9 @@ def _faceted_lines(subset, col, values, colours, cmap, norm, cbar_label, stem, o
                    split_panels=False, show_markers=False, x_lims=None,
                    ticks=None, ticklabels=None, aspect_per_row=None,
                    width='single', height=None, show_hz=None, groups=None):
-    """The standard one-variable faceted line figure, one file per panel group.
+    """Stacked panels against instellation, one line per value of `col`, one file per panel group.
 
-    `groups` overrides the panel groups, e.g. [(['pH'], '_ph')] for an abridged single panel.
-
-    Every figure that plots T / P_CO2 / pH / salinity against instellation with one line per value
-    of a single variable -- ocean depth, a chemistry constant, mantle Mg/Si, dIW -- shares this
-    body. They differed only in which rows they select and how the lines are labelled, so the
-    selection stays with the caller and the assembly lives here.
-
-    `colours` is parallel to `values` rather than derived from `norm`, so a caller can colour by
-    something other than the facet value itself (plot_legacy does, by melt SiO2).
-
-    `aspect_per_row` is multiplied by the panel count rather than passed through, because the
-    number of panels differs between the split and combined panel groups.
+    `groups` overrides the panel groups, e.g. [(['pH'], '_ph')] for a single-panel version.
     """
     for cols, sfx in (groups if groups is not None else _panel_groups(split_panels)):
         n_rows = len(cols)
@@ -1138,76 +769,19 @@ def _faceted_lines(subset, col, values, colours, cmap, norm, cbar_label, stem, o
             group = subset[subset[col] == value].sort_values('instellation')
             if not group.empty:
                 _plot_group_on_axes(axes, group, colour, show_markers=show_markers, cols=cols)
-        _style_axes(axes, cols, show_hz=show_hz,
-                    **({} if x_lims is None else {'x_lims': x_lims}))
-        _add_colorbar(fig, list(axes), cmap, norm, cbar_label, ticks=ticks,
-                      ticklabels=ticklabels,
+        _style_axes(axes, cols, show_hz=show_hz, **({} if x_lims is None else {'x_lims': x_lims}))
+        _add_colorbar(fig, list(axes), cmap, norm, cbar_label, ticks=ticks, ticklabels=ticklabels,
                       **({} if aspect_per_row is None else {'aspect': n_rows * aspect_per_row}))
-        _add_figure_legend(fig, axes,
-                           _make_legend_handles(show_markers=show_markers, show_hz=show_hz,
-                                                cols=cols))
+        _add_figure_legend(fig, axes, _make_legend_handles(show_markers=show_markers))
         _save_fig(fig, figure_path(output_path, f'{stem}{sfx}.png'))
 
 
-def _plot_group_on_axes(axes, group, color, linestyle='-', show_markers=True, cols=None):
-    if cols is None:
-        cols = PANEL_COLS
-    hab = group[group['termination'].isin(HABITABLE)]
-    if hab.empty:
-        return
-    non_hab = group[~group['termination'].isin(HABITABLE)]
-    has_da = 'da' in group.columns
+# --- Basic and one-axis sweeps ---
+def plot_basic(df, output_path, all_results=True, multiple_plots=False, split_panels=True,
+               sequence=False, width='double', height=None, mg_si=None, show_hz=None):
+    """Basic sweep against instellation: one column per crust rate, one line per outgassing rate.
 
-    # Truncate the drawn LINE (never the markers below, which still cover the full group) at
-    # the last point trustworthy enough to draw a confident trend through. `group` is always
-    # instellation-sorted by its caller, so a trailing run of untrustworthy points is almost
-    # always the tail end of the sweep leaving the model domain -- an out_of_domain state there
-    # can be a fabricated ceiling/floor sentinel (T pinned to an exact 389.00 K clamp), so
-    # drawing the line through it manufactured a cliff that read as a real, sharp trend rather
-    # than "the model gave up here." A trustworthy point in the interior (bridging a
-    # wall_timeout gap) is untouched -- only the trailing tail is cut.
-    trustworthy_all = group['termination'].isin(DA_TRUSTWORTHY).values
-    cutoff = (np.nonzero(trustworthy_all)[0].max() + 1) if trustworthy_all.any() else len(group)
-    line_group = group.iloc[:cutoff]
-    trustworthy = trustworthy_all[:cutoff]
-
-    for ax, col in zip(axes, cols):
-        if len(line_group) > 1:
-            if has_da and linestyle == '-':
-                T_sf = 1.02 * line_group['T'].values - 16.7
-                at_floor = T_sf <= 274.001
-                _plot_line_da_style(ax, line_group['instellation'].values, line_group[col].values,
-                                    line_group['da'].values, color, at_floor=at_floor,
-                                    trustworthy=trustworthy)
-            else:
-                ax.plot(line_group['instellation'], line_group[col], color=color, linewidth=1.4,
-                        alpha=0.8, linestyle=linestyle, zorder=3)
-        if not show_markers:
-            continue
-        for term, hab_marker in HAB_MARKERS.items():
-            sub = hab[hab['termination'] == term]
-            if not sub.empty:
-                ax.scatter(sub['instellation'], sub[col], color=color,
-                           marker=hab_marker, s=28, zorder=4)
-        for _, row in non_hab.iterrows():
-            marker = FAILED_MARKERS.get(row['termination'], 'x')
-            val = row[col]
-            if np.isfinite(val):
-                ax.scatter(row['instellation'], val, marker=marker, s=55,
-                           facecolors='none', color=color, zorder=4, linewidths=1.4)
-
-
-# ---------------------------------------------------------------------------
-# Plotting functions
-# ---------------------------------------------------------------------------
-
-def plot_basic(df, output_path, all_results=True, multiple_plots=False,
-                       split_panels=True, sequence=False, width='double', height=None,
-                       mg_si=None, show_hz=None):
-    """The basic sweep: T, P_CO2, pH, salinity vs instellation per crust rate, coloured by outgassing.
-
-    `mg_si` draws the same plane at a non-reference mantle Mg/Si; the value is tagged into every
-    filename so the end-member figures cannot overwrite the reference ones.
+    all_results draws every value on an on-screen grid; mg_si tags the filenames of end-member planes.
     """
     base = _base(df, mg_si=mg_si)
     if base.empty:
@@ -1217,102 +791,62 @@ def plot_basic(df, output_path, all_results=True, multiple_plots=False,
     base = _add_diag_columns(base, output_path)
     mg_tag = '' if mg_si is None else f'_mgsi{mg_si:g}'
     mg_title = '' if mg_si is None else f'   (mantle Mg/Si = {mg_si:g})'
-
     if all_results:
-        crust_rates     = sorted(base['crust_production'].unique())
+        crust_rates = sorted(base['crust_production'].unique())
         outgassing_vals = sorted(base['outgassing'].unique())
     else:
         crust_rates = [0.1, 1, 10]
         outgassing_vals = [0.01, 0.03, 0.1, 0.3, 1, 3, 10]
+    norm = _outgassing_norm(outgassing_vals)
 
-    norm = mcolors.LogNorm(vmin=min(outgassing_vals), vmax=max(outgassing_vals))
-    cmap = OUTGASSING_CMAP
+    def draw(axes, rates, cols, show_markers, show=lambda c, o: True):
+        for ci, c in enumerate(rates):
+            sub = base[base['crust_production'] == c]
+            for o in outgassing_vals:
+                group = sub[sub['outgassing'] == o].sort_values('instellation')
+                if show(c, o) and not group.empty:
+                    _plot_group_on_axes(axes[:, ci], group, OUTGASSING_CMAP(norm(o)),
+                                        show_markers=show_markers, cols=cols)
+
+    def finish(fig, axes, title, name, show_markers, aspect, tight=False):
+        _outgassing_colorbar(fig, list(axes.ravel()), outgassing_vals, norm, aspect)
+        _add_figure_legend(fig, axes, _make_legend_handles(show_markers=show_markers))
+        fig.suptitle(title)
+        _save_fig(fig, figure_path(output_path, name), tight=tight)
+
+    # (filename, which lines to draw); the seq figures build the full figure up line by line.
+    scenarios = [(f'sweep_basic{"_full" if all_results else ""}{mg_tag}', lambda c, o: True)]
+    if sequence:
+        scenarios += [(f'sweep_basic_seq1{mg_tag}', lambda c, o: np.isclose(c, 1) and np.isclose(o, 1)),
+                      (f'sweep_basic_seq2{mg_tag}', lambda c, o: np.isclose(c, 1)),
+                      (f'sweep_basic_seq3{mg_tag}', lambda c, o: np.isclose(o, 1))]
 
     for cols, sfx in _panel_groups(split_panels):
         n_rows = len(cols)
-
         if multiple_plots:
             for c in crust_rates:
-                subset_c = base[base['crust_production'] == c]
-                fig, axes = plt.subplots(n_rows, 1, sharex=True,
+                fig, axes = plt.subplots(n_rows, 1, sharex=True, squeeze=False,
                                          figsize=diagnostic_size(n_rows, 1, col_width=7.0, pad=0.0))
-                for o in outgassing_vals:
-                    group = subset_c[subset_c['outgassing'] == o].sort_values('instellation')
-                    if not group.empty:
-                        _plot_group_on_axes(axes, group, cmap(norm(o)), cols=cols)
-                _style_axes(axes, cols)
-                _add_colorbar(fig, list(axes), cmap, norm, 'Earth Outgassing',
-                              ticks=outgassing_vals, ticklabels=[f'{v}×' for v in outgassing_vals],
-                              aspect=n_rows * 7.5) # type: ignore
-                _h = _make_legend_handles(show_hz=show_hz, cols=cols)
-                fig.legend(handles=_h, loc='outside lower center', ncol=_legend_ncol(_h, 4))
-                fig.suptitle(f'Crust production = {c}× Earth{mg_title}')
-                _save_fig(fig, figure_path(output_path,
-                                            f'sweep_basic_crust{c}{mg_tag}{sfx}.png'))
+                draw(axes, [c], cols, True)
+                _style_axes(axes[:, 0], cols, show_hz=show_hz)
+                finish(fig, axes, f'Crust production = {c}× Earth{mg_title}',
+                       f'sweep_basic_crust{c}{mg_tag}{sfx}.png', True, n_rows * 7.5)
 
-        # Combined plot: crust rates as columns
         n_cols = len(crust_rates)
-        # all_results=True is the full outgassing x crust diagnostic grid -- not page-sized.
-        full_figsize = (diagnostic_size(n_rows, n_cols) if all_results
-                        else figure_size(width, height, n_rows))
-        fig_c, axes_c = plt.subplots(n_rows, n_cols, figsize=full_figsize,
-                                      sharex=True, sharey='row', squeeze=False)
-        for ci, c in enumerate(crust_rates):
-            subset_c = base[base['crust_production'] == c]
-            for o in outgassing_vals:
-                group = subset_c[subset_c['outgassing'] == o].sort_values('instellation')
-                if not group.empty:
-                    _plot_group_on_axes(axes_c[:, ci], group, cmap(norm(o)),
-                                        show_markers=all_results, cols=cols)
-            _style_combined_col(axes_c, ci, n_cols, title=f'{c}×', cols=cols,
-                                show_hz=show_hz)
-
-        _h = _make_legend_handles(show_markers=all_results, show_hz=show_hz, cols=cols)
-        fig_c.legend(handles=_h, loc='outside lower center', ncol=_legend_ncol(_h, 4))
-        _add_colorbar(fig_c, list(axes_c.ravel()), cmap, norm, 'Earth Outgassing',
-                      ticks=outgassing_vals, ticklabels=[f'{v}×' for v in outgassing_vals],
-                      aspect=n_rows * 10)
-        fig_c.suptitle(f'Earth crust production rate{mg_title}')
-        fname = f'sweep_basic{"_full" if all_results else ""}{mg_tag}{sfx}.png'
-        _save_fig(fig_c, figure_path(output_path, fname), tight=all_results)
-
-        if sequence:
-            ref_crust, ref_out = 1.0, 1.0
-            seq_scenarios = [
-                ('single',      f'sweep_basic_seq1{mg_tag}{sfx}'),
-                ('out_sweep',   f'sweep_basic_seq2{mg_tag}{sfx}'),
-                ('crust_sweep', f'sweep_basic_seq3{mg_tag}{sfx}'),
-            ]
-            for scenario, seq_fname in seq_scenarios:
-                fig_s, axes_s = plt.subplots(n_rows, n_cols, figsize=full_figsize,
-                                              sharex=True, sharey='row', squeeze=False)
-                for ci, c in enumerate(crust_rates):
-                    for o in outgassing_vals:
-                        show = (
-                            (scenario == 'single'      and np.isclose(c, ref_crust) and np.isclose(o, ref_out)) or
-                            (scenario == 'out_sweep'   and np.isclose(c, ref_crust)) or
-                            (scenario == 'crust_sweep' and np.isclose(o, ref_out))
-                        )
-                        if not show:
-                            continue
-                        group = (base[(base['crust_production'] == c) & (base['outgassing'] == o)]
-                                 .sort_values('instellation'))
-                        if not group.empty:
-                            _plot_group_on_axes(axes_s[:, ci], group, cmap(norm(o)), cols=cols, show_markers=all_results)
-                    _style_combined_col(axes_s, ci, n_cols, title=f'{c}×', cols=cols,
-                                        show_hz=show_hz)
-                _add_colorbar(fig_s, list(axes_s.ravel()), cmap, norm, 'Earth Outgassing',
-                              ticks=outgassing_vals, ticklabels=[f'{v}×' for v in outgassing_vals],
-                              aspect=n_rows * 10)
-                _h = _make_legend_handles(show_markers=all_results, show_hz=show_hz, cols=cols)
-                fig_s.legend(handles=_h, loc='outside lower center', ncol=_legend_ncol(_h, 4))
-                fig_s.suptitle(f'Earth crust production rate{mg_title}')
-                _save_fig(fig_s, figure_path(output_path, seq_fname + '.png'))
+        figsize = (diagnostic_size(n_rows, n_cols) if all_results
+                   else figure_size(width, height, n_rows))
+        for i, (stem, show) in enumerate(scenarios):
+            fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize, sharex=True, sharey='row',
+                                     squeeze=False)
+            draw(axes, crust_rates, cols, all_results, show)
+            for ci, c in enumerate(crust_rates):
+                _style_combined_col(axes, ci, n_cols, title=f'{c}×', cols=cols, show_hz=show_hz)
+            finish(fig, axes, f'Earth crust production rate{mg_title}', f'{stem}{sfx}.png',
+                   all_results, n_rows * 10, tight=all_results and i == 0)
 
 
-def plot_basic_ph(df, output_path, crust_production=1.0, width='single', height=2.2,
-                  show_hz=None):
-    """Abridged basic sweep: the pH panel alone at one crust production rate, coloured by outgassing."""
+def plot_basic_ph(df, output_path, crust_production=1.0, width='single', height=2.2, show_hz=None):
+    """Abridged basic sweep: the pH panel alone at one crust production rate."""
     base = _base(df)
     base = base[np.isclose(base['crust_production'], crust_production)]
     if base.empty:
@@ -1320,7 +854,7 @@ def plot_basic_ph(df, output_path, crust_production=1.0, width='single', height=
         return
     base = _add_diag_columns(base, output_path)
     outgassing_vals = [0.01, 0.03, 0.1, 0.3, 1, 3, 10]
-    norm = mcolors.LogNorm(vmin=min(outgassing_vals), vmax=max(outgassing_vals))
+    norm = _outgassing_norm(outgassing_vals)
 
     fig, ax = plt.subplots(1, 1, figsize=figure_size(width, height))
     for o in outgassing_vals:
@@ -1330,35 +864,20 @@ def plot_basic_ph(df, output_path, crust_production=1.0, width='single', height=
                                 cols=['pH'])
     _style_axes([ax], ['pH'], show_hz=show_hz)
     ax.set_title(f'Crust production = {crust_production:g}× Earth')
-    _add_colorbar(fig, ax, OUTGASSING_CMAP, norm, 'Earth Outgassing', ticks=outgassing_vals,
-                  ticklabels=[f'{v}×' for v in outgassing_vals], aspect=15)
-    _add_figure_legend(fig, [ax], _make_legend_handles(show_markers=False, show_hz=show_hz,
-                                                       cols=['pH']))
+    _outgassing_colorbar(fig, ax, outgassing_vals, norm, 15)
+    _add_figure_legend(fig, [ax], _make_legend_handles(show_markers=False))
     _save_fig(fig, figure_path(output_path, f'sweep_basic_crust{crust_production:g}_ph.png'))
 
 
 def plot_basic_mgsi_grid(df, output_path, split_panels=True, show_markers=False,
-                        crust_production=None, mg_si_values=None, width='double', height=None,
-                        show_hz=None):
-    """The basic_low_mgsi / basic_high_mgsi sweeps: Mg/Si as columns, outgassing as colour.
-
-    plot_basic draws the outgassing x crust-production plane at ONE crust composition, so
-    running it per Mg/Si gives one figure each and the compositions can only be compared by
-    flipping between files. This holds crust production fixed and puts Mg/Si along the columns
-    instead, which is what the low/high Mg/Si basic sweeps were run to show: whether the
-    outgassing family -- the strength of the weathering feedback -- depends on crust chemistry.
-
-    Distinct from plot_cross, which colours BY Mg/Si at a single (outgassing, crust)
-    pair: that shows the composition effect for one tectonic state, this shows whether the
-    composition effect survives across the outgassing axis.
-    """
+                         crust_production=None, mg_si_values=None, width='double', height=None,
+                         show_hz=None):
+    """Basic sweep at one crust rate with mantle Mg/Si as columns and outgassing as colour."""
     mg_vals = basic_plane_mg_si(df) if mg_si_values is None else sorted(mg_si_values)
     if len(mg_vals) < 2:
         print("Fewer than 2 Mg/Si values with a basic sweep -- skipping the Mg/Si grid.")
         return
-
-    # Earth crust production if it was run, else whichever rate covers the most Mg/Si columns.
-    if crust_production is None:
+    if crust_production is None:   # Earth's rate if every column has it, else the best-covered rate
         pool = pd.concat([_base(df, mg_si=m) for m in mg_vals])
         by_rate = pool.groupby('crust_production')['mg_si'].nunique()
         crust_production = (1.0 if by_rate.get(1.0, 0) == len(mg_vals)
@@ -1374,283 +893,170 @@ def plot_basic_mgsi_grid(df, output_path, split_panels=True, show_markers=False,
     if len(mg_vals) < 2:
         print(f"Fewer than 2 Mg/Si values at crust production {crust_production:g}x -- skipping.")
         return
-
     outgassing_vals = sorted(set().union(*(set(v['outgassing']) for v in subsets.values())))
     print(f"Mg/Si basic grid: {[f'{m:g}' for m in mg_vals]} at crust production "
           f"{crust_production:g}x, {len(outgassing_vals)} outgassing values")
-
-    norm = mcolors.LogNorm(vmin=min(outgassing_vals), vmax=max(outgassing_vals))
-    cmap = OUTGASSING_CMAP
-    n_cols = len(mg_vals)
+    norm = _outgassing_norm(outgassing_vals)
 
     for cols, sfx in _panel_groups(split_panels):
         n_rows = len(cols)
-        fig, axes = plt.subplots(n_rows, n_cols, figsize=figure_size(width, height, n_rows),
+        fig, axes = plt.subplots(n_rows, len(mg_vals), figsize=figure_size(width, height, n_rows),
                                  sharex=True, sharey='row', squeeze=False)
         for ci, m in enumerate(mg_vals):
-            sub = subsets[m]
             for o in outgassing_vals:
-                group = sub[sub['outgassing'] == o].sort_values('instellation')
+                group = subsets[m][subsets[m]['outgassing'] == o].sort_values('instellation')
                 if not group.empty:
-                    _plot_group_on_axes(axes[:, ci], group, cmap(norm(o)),
+                    _plot_group_on_axes(axes[:, ci], group, OUTGASSING_CMAP(norm(o)),
                                         show_markers=show_markers, cols=cols)
             title = f'{m:g}' + (' (Earth)' if np.isclose(m, REF_MG_SI) else '')
-            _style_combined_col(axes, ci, n_cols, title=title, cols=cols, show_hz=show_hz)
-
-        _add_colorbar(fig, list(axes.ravel()), cmap, norm, 'Earth Outgassing',
-                      ticks=outgassing_vals, ticklabels=[f'{v}×' for v in outgassing_vals],
-                      aspect=n_rows * 10)
-        _add_figure_legend(fig, axes, _make_legend_handles(show_markers=show_markers,
-                                                      show_hz=show_hz, cols=cols))
+            _style_combined_col(axes, ci, len(mg_vals), title=title, cols=cols, show_hz=show_hz)
+        _outgassing_colorbar(fig, list(axes.ravel()), outgassing_vals, norm, n_rows * 10)
+        _add_figure_legend(fig, axes, _make_legend_handles(show_markers=show_markers))
         fig.suptitle(f'Mantle Mg/Si   (crust production = {crust_production:g}× Earth)')
         _save_fig(fig, figure_path(output_path, f'sweep_basic_mgsi_grid{sfx}.png'))
 
 
-def plot_depth(df, output_path, show_markers=False, split_panels=True,
-                            width='single', height=None, show_hz=None):
-    """The depth sweep: T, P_CO2, pH, salinity vs instellation, coloured by ocean depth."""
-    # The depth sweep fixes (outgassing, crust) at their sweep defaults and varies ocean_depth.
-    # That default changed over time (outgassing 1.0 -> 0.1), so instead of hardcoding a value
-    # (which silently produced an empty/one-depth plot), pick whichever (outgassing, crust) pair
-    # actually spans the most distinct depths.
-    pool = df[
-        df['reverse_weathering'] &
-        _ref_crust(df) &
-        _ref_chem(df) &
-        _ref_redox(df) &
-        (df['land_fraction'] == 0.0)
-    ]
+def _one_axis_sweep(pool, col, what, cmap, label, stem, output_path, select=None, norm_pad=0.05,
+                    tick_fmt=None, **kw):
+    """One line per value of `col` at the best (outgassing, crust) operating point, via _faceted_lines."""
+    picked = _best_operating_point(pool, col, what)
+    if picked is None:
+        return
+    subset = _add_diag_columns(picked[0] if select is None else select(picked[0]), output_path)
+    values = sorted(subset[col].unique())
+    norm = _value_norm(values, pad=norm_pad)
+    ticks, ticklabels = _colorbar_ticks(values)
+    if tick_fmt is not None and ticks is not None:
+        ticklabels = [tick_fmt(v) for v in ticks]
+    _faceted_lines(subset, col, values, [cmap(norm(v)) for v in values], cmap, norm, label, stem,
+                   output_path, x_lims=_x_limits(subset), ticks=ticks, ticklabels=ticklabels,
+                   aspect_per_row=7.5, **kw)
+
+
+def plot_depth(df, output_path, show_markers=False, split_panels=True, width='single',
+               height=None, show_hz=None):
+    """Depth sweep: one line per ocean depth."""
+    pool = df[_sweep_mask(df, depth=None)]
     if pool.empty:
         print("No data for ocean depth sweep — skipping.")
         return
-    picked = _best_operating_point(pool, 'ocean_depth', 'Ocean-depth')
-    if picked is None:
-        return
-    raw_subset = picked[0]
 
-    # All 10 swept depths makes this figure busy without adding much. Drop 50 km outright --
-    # it's the least trustworthy point in the sweep (development_history.md 29.3: 50 km is
-    # non-monotonic against 30 km at S=1.0, and its runs concentrate the wall_timeout tail) --
-    # then thin the rest to ~5 evenly log-spaced depths so the remaining lines stay legible.
-    all_depths = sorted(d for d in raw_subset['ocean_depth'].unique() if d < 50000)
-    if len(all_depths) > 5:
-        idx = np.linspace(0, len(all_depths) - 1, 5).round().astype(int)
-        show_depths = sorted({all_depths[i] for i in idx})
-    else:
-        show_depths = all_depths
-    print(f"  Ocean-depth plot: showing {[f'{d:g}' for d in show_depths]} m "
-          f"(dropped {[f'{d:g}' for d in all_depths if d not in show_depths]} m, "
-          f"and 50000 m outright).")
-    subset = _add_diag_columns(raw_subset[raw_subset['ocean_depth'].isin(show_depths)],
-                               output_path)
+    def thin(sub):
+        # Drop 50 km (least reliable) and keep about five evenly spaced depths.
+        depths = sorted(d for d in sub['ocean_depth'].unique() if d < 100000)
+        if len(depths) > 5:
+            depths = sorted({depths[i] for i in np.linspace(0, len(depths) - 1, 5).round().astype(int)})
+        print(f"  Ocean-depth plot: showing {[f'{d:g}' for d in depths]} m.")
+        return sub[sub['ocean_depth'].isin(depths)]
 
-    depths = sorted(subset['ocean_depth'].unique())
-    # pad=0: depth is a physical range that should map to the colour map exactly.
-    norm = _value_norm(depths, pad=0.0)
-    cmap = DEPTH_CMAP
-    # Ticks stay in metres (the norm's native units); only the printed labels convert to km --
-    # 300-50000 m as ten tick labels was the widest, most cluttered colorbar of any figure here.
-    ticks, _ = _colorbar_ticks(depths)
-    ticklabels = [f'{v / 1000:g}' for v in ticks] if ticks is not None else None
-    _faceted_lines(subset, 'ocean_depth', depths, [cmap(norm(d)) for d in depths],
-                   cmap, norm, 'Ocean Depth (km)', 'sweep_depth', output_path,
-                   split_panels=split_panels, show_markers=show_markers,
-                   x_lims=_x_limits(subset), ticks=ticks, ticklabels=ticklabels,
-                   aspect_per_row=7.5, width=width, height=height, show_hz=show_hz)
+    _one_axis_sweep(pool, 'ocean_depth', 'Ocean-depth', DEPTH_CMAP, 'Ocean Depth (km)', 'sweep_depth',
+                    output_path, select=thin, norm_pad=0.0, tick_fmt=lambda v: f'{v / 1000:g}',
+                    split_panels=split_panels, show_markers=show_markers, width=width,
+                    height=height, show_hz=show_hz)
 
 
-def plot_chemistry(df, output_path, show_markers=False, split_panels=True,
-                             width='single', height=None, show_hz=None):
-    """The alpha and chemistry sweeps: T, P_CO2, pH, salinity vs instellation per constant value.
-
-    One figure per constant that actually varies (alpha, kd_mg, k_na); the other two are held
-    at their most common value so each figure isolates a single knob.
-    """
-    pool_all = df[
-        df['reverse_weathering'] &
-        _ref_crust(df) &
-        _ref_redox(df) &
-        (df['ocean_depth'] == 3000) &
-        (df['land_fraction'] == 0.0)
-    ]
-    if pool_all.empty:
-        print("No data for chemistry-constant sweep — skipping.")
-        return
-
-    varying = [c for c in CHEM_KNOBS if pool_all[c].nunique() > 1]
+def plot_chemistry(df, output_path, show_markers=False, split_panels=True, width='single',
+                   height=None, show_hz=None):
+    """One figure per varying chemistry constant (alpha, kd_mg, k_na), the others held at reference."""
+    pool_all = df[_sweep_mask(df, chem=False)]
+    varying = [c for c in CHEM_KNOBS if not pool_all.empty and pool_all[c].nunique() > 1]
     if not varying:
         print("No chemistry-constant variation in the data — skipping.")
         return
-
     for col in varying:
-        # Hold the other knobs fixed so this figure varies one thing only.
         held = pd.Series(True, index=pool_all.index)
         for other in varying:
             if other != col:
                 held &= (pool_all[other] == _chem_reference(pool_all, other))
-        pool = pool_all[held]
-
-        picked = _best_operating_point(pool, col, col)
-        if picked is None:
-            continue
-        subset = _add_diag_columns(picked[0], output_path)
-
-        values = sorted(subset[col].unique())
-        norm = _value_norm(values)
-        cmap = CHEM_KNOB_CMAP
-        ticks, ticklabels = _colorbar_ticks(values)
-        # alpha is its own named sweep (parameter_sweep.sweep_alpha); kd_mg and k_na are the
-        # two arms of sweep_chemistry, so they are filed under that name.
         stem = 'sweep_alpha' if col == 'alpha' else f'sweep_chemistry_{col}'
-        _faceted_lines(subset, col, values, [cmap(norm(v)) for v in values],
-                       cmap, norm, CHEM_KNOBS[col], stem, output_path,
-                       split_panels=split_panels, show_markers=show_markers,
-                       x_lims=_x_limits(subset), ticks=ticks, ticklabels=ticklabels,
-                       aspect_per_row=7.5, width=width, height=height, show_hz=show_hz)
+        _one_axis_sweep(pool_all[held], col, col, CHEM_KNOB_CMAP, CHEM_KNOBS[col], stem, output_path,
+                        split_panels=split_panels, show_markers=show_markers, width=width,
+                        height=height, show_hz=show_hz)
 
 
-def plot_pe(df, output_path, show_markers=False, split_panels=True,
-                      ocean_depth=3000, width='single', height=None, show_hz=None):
-    """The pe sweep: T, P_CO2, pH, salinity vs instellation for each ocean redox state (pe).
-
-    `pe` (an abiotic, reducing ocean vs an oxidised one) is not a continuous knob like the
-    CHEM_KNOBS -- it switches the iron sink between Siderite and Goethite -- but it is swept the
-    same way (parameter_sweep.sweep_pe): every other axis held at the Earth reference while pe
-    runs from oxic seawater to below the Goethite saturation boundary. See
-    development_history.md section 28/31 for why the model treats ocean redox as a free
-    parameter at all.
-    """
-    pool = df[
-        df['reverse_weathering'] &
-        _ref_crust(df) &
-        _ref_chem(df) &
-        (df['ocean_depth'] == ocean_depth) &
-        (df['land_fraction'] == 0.0)
-    ]
+def plot_pe(df, output_path, show_markers=False, split_panels=True, ocean_depth=3000,
+            width='single', height=None, show_hz=None):
+    """Redox sweep: one line per ocean pe."""
+    pool = df[_sweep_mask(df, depth=ocean_depth, redox=False)]
     if pool.empty:
         print(f"No data for redox sweep at depth {ocean_depth:g} m — skipping.")
         return
-
-    picked = _best_operating_point(pool, 'pe', 'pe')
-    if picked is None:
-        return
-    subset = _add_diag_columns(picked[0], output_path)
-
-    values = sorted(subset['pe'].unique())
-    norm = _value_norm(values)
-    cmap = PE_CMAP
-    ticks, ticklabels = _colorbar_ticks(values)
     tag = '' if ocean_depth == 3000 else f'_d{ocean_depth:g}'
-    _faceted_lines(subset, 'pe', values, [cmap(norm(v)) for v in values],
-                   cmap, norm, r'Ocean redox $p_e$', f'sweep_pe{tag}', output_path,
-                   split_panels=split_panels, show_markers=show_markers,
-                   x_lims=_x_limits(subset), ticks=ticks, ticklabels=ticklabels,
-                   aspect_per_row=7.5, width=width, height=height, show_hz=show_hz)
+    _one_axis_sweep(pool, 'pe', 'pe', PE_CMAP, r'Ocean redox $p_e$', f'sweep_pe{tag}', output_path,
+                    split_panels=split_panels, show_markers=show_markers, width=width,
+                    height=height, show_hz=show_hz)
 
 
+# --- Crust composition ---
 def _composition_pool(df, ocean_depth=3000):
-    """Runs usable for a composition figure: reference chemistry, land-free, one depth."""
-    return df[
-        df['reverse_weathering'] &
-        _ref_chem(df) &
-        _ref_redox(df) &
-        (df['ocean_depth'] == ocean_depth) &
-        (df['f_HT'] == 0.0) &
-        (df['land_fraction'] == 0.0)
-    ].copy()
+    """Runs usable for a composition figure: reference chemistry and redox, land-free, one depth."""
+    return df[_sweep_mask(df, depth=ocean_depth, crust=False, f_ht=True)].copy()
 
 
 def _composition_slice(pool):
-    """Pick the (outgassing, crust) pair that spans the most crust values, and return it.
-
-    The composition sweep fixes those two at their sweep defaults and varies the crust knob.
-    That default drifted over time (outgassing 1.0 -> 0.1), so it is found rather than hardcoded.
-    """
-    def _spread(g):
-        return max(g['mg_si'].nunique(), g['delta_iw'].nunique())
-    counts = pool.groupby(['outgassing', 'crust_production']).apply(_spread, include_groups=False)
+    """(subset, outgassing, crust) for the pair spanning the most crust compositions, or None."""
+    counts = pool.groupby(['outgassing', 'crust_production']).apply(
+        lambda g: max(g['mg_si'].nunique(), g['delta_iw'].nunique()), include_groups=False)
     if counts.empty or counts.max() <= 1:
         return None
     best_o, best_c = counts.idxmax()
     return pool[(pool['outgassing'] == best_o) & (pool['crust_production'] == best_c)], best_o, best_c
 
 
-def plot_cross(df, output_path, split_panels=True, show_markers=False,
-                           ocean_depth=3000, width='single', height=None, show_hz=None):
-    """The cross sweep: T, P_CO2, pH, salinity vs instellation, one figure per composition axis.
+def _drop_hidden_mg_si(sub):
+    return sub[~np.isclose(sub['mg_si'].to_numpy()[:, None], MG_SI_HIDDEN).any(axis=1)]
 
-    Emits a SEPARATE figure for each axis that varies -- mantle Mg/Si and core-formation dIW --
-    holding the other at its Earth reference. The previous version picked whichever axis varied
-    first and silently dropped the rest, so a sweep varying both produced only the Mg/Si figure
-    and the dIW figure could not be made at all.
 
-    Pre-MAGEMin sweeps that varied a NAMED composition are not handled here; see
-    plot_legacy.plot_named_compositions.
-    """
+def plot_cross(df, output_path, split_panels=True, show_markers=False, ocean_depth=3000,
+               width='single', height=None, show_hz=None):
+    """Cross sweep: one figure per varying composition axis (Mg/Si, dIW), the other held at Earth's."""
     pool = _composition_pool(df, ocean_depth)
-    if pool.empty:
-        print(f"No composition data at depth {ocean_depth:g} m -- skipping.")
-        return
-    sliced = _composition_slice(pool)
+    sliced = None if pool.empty else _composition_slice(pool)
     if sliced is None:
         print(f"No crust composition sweep data at depth {ocean_depth:g} m -- skipping.")
         return
     subset, best_o, best_c = sliced
-    subset = subset[~np.isclose(subset['mg_si'].to_numpy()[:, None], MG_SI_HIDDEN).any(axis=1)]
+    subset = _drop_hidden_mg_si(subset)
 
-    # Which axes actually vary here. Each becomes its own figure; the others are held at
-    # reference so a line is a cut through the grid rather than a mixture of compositions.
     axes_spec = []
     if subset['mg_si'].nunique() > 1:
-        axes_spec.append(('mg_si', 'Mantle Mg/Si', lambda v: f'{v:g}',
-                          sorted(subset['mg_si'].unique())))
+        axes_spec.append(('mg_si', 'Mantle Mg/Si', lambda v: f'{v:g}'))
     if subset['delta_iw'].nunique() > 1:
-        axes_spec.append(('delta_iw', r'Core-formation $\Delta$IW', lambda v: f'{v:+g}',
-                          sorted(subset['delta_iw'].unique())))
+        axes_spec.append(('delta_iw', r'Core-formation $\Delta$IW', lambda v: f'{v:+g}'))
     if not axes_spec:
         print(f"No crust composition sweep data at depth {ocean_depth:g} m -- skipping.")
         return
-
     subset = _add_diag_columns(subset, output_path)
     tag = '' if ocean_depth == 3000 else f'_d{ocean_depth:g}'
 
-    for key, label, fmt, values in axes_spec:
-        # Hold every OTHER composition axis at its reference value.
-        cut = subset
-        held = []
+    for key, label, fmt in axes_spec:
+        cut, held = subset, []
         for other, ref in (('mg_si', REF_MG_SI), ('delta_iw', REF_DIW)):
-            if other != key and other in subset.columns and subset[other].nunique() > 1:
+            if other != key and subset[other].nunique() > 1:
                 cut = cut[np.isclose(cut[other], ref)]
                 held.append(f'{other}={ref:g}')
         if cut.empty or cut[key].nunique() < 2:
             print(f"  {key}: fewer than 2 values once {', '.join(held)} held -- skipping.")
             continue
-        values = [v for v in values if v in set(cut[key])]
+        values = sorted(cut[key].unique())
         print(f"Crust composition [{key}] depth={ocean_depth:g}: {len(values)} values, "
               f"outgassing={best_o:g}, crust={best_c:g}"
               + (f", holding {', '.join(held)}" if held else ""))
-
         cmap = PARAM_CMAPS[key]
         numeric = [float(v) for v in values]
         norm = _value_norm(numeric)
-        cbar_label, ticklabels = label, [fmt(v) for v in values]
-
-        _faceted_lines(cut, key, values, [cmap(norm(n)) for n in numeric],
-                       cmap, norm, cbar_label, f'sweep_cross_{key}{tag}', output_path,
-                       split_panels=split_panels, show_markers=show_markers,
-                       ticks=numeric, ticklabels=ticklabels, width=width, height=height,
-                       show_hz=show_hz)
-        if key == 'mg_si':
-            # Abridged pH-only version.
-            _faceted_lines(cut, key, values, [cmap(norm(n)) for n in numeric],
-                           cmap, norm, cbar_label, f'sweep_cross_{key}{tag}', output_path,
-                           show_markers=show_markers, ticks=numeric, ticklabels=ticklabels,
-                           width=width, height=(height if height is not None else 2.2),
-                           show_hz=show_hz, groups=[(['pH'], '_ph')], aspect_per_row=15)
+        common = dict(show_markers=show_markers, ticks=numeric, ticklabels=[fmt(v) for v in values],
+                      width=width, show_hz=show_hz)
+        lines = (cut, key, values, [cmap(norm(n)) for n in numeric], cmap, norm, label,
+                 f'sweep_cross_{key}{tag}', output_path)
+        _faceted_lines(*lines, split_panels=split_panels, height=height, **common)
+        if key == 'mg_si':   # abridged pH-only version
+            _faceted_lines(*lines, height=2.2 if height is None else height,
+                           groups=[(['pH'], '_ph')], aspect_per_row=15, **common)
 
 
 def _diw_title(dw, shown):
-    """Column title naming the redox end-members and the Earth reference, not just the number."""
+    """Column title naming the redox end-members and the Earth reference."""
     if np.isclose(dw, REF_DIW):
         return f'{dw:+g} (Earth-like)'
     if len(shown) >= 2 and dw == min(shown):
@@ -1661,177 +1067,109 @@ def _diw_title(dw, shown):
 
 
 def _three_columns(values, ref, n=3):
-    """Pick `n` representative column values: the reference, then the extremes around it.
-
-    A six-column grid is ~11000 px wide at presentation sizing -- fine on screen, unusable in a
-    paper. Three columns carry the comparison that matters (reference vs each extreme) at a
-    third of the width.
-    """
+    """`n` representative values: the one nearest `ref`, then the extremes either side."""
     vals = sorted(values)
     if n >= len(vals):
         return vals
     centre = min(vals, key=lambda v: abs(v - ref))
     lo = [v for v in vals if v < centre]
     hi = [v for v in vals if v > centre]
-    picked = [centre]
-    if lo:
-        picked.append(lo[0])
-    if hi:
-        picked.append(hi[-1])
-    # If one side is empty, backfill from the other so `n` columns are still returned.
+    picked = [centre] + lo[:1] + hi[-1:]
     pool = [v for v in vals if v not in picked]
     while len(picked) < n and pool:
         picked.append(pool.pop(len(pool) // 2))
     return sorted(picked)[:n]
 
 
-def plot_composition(df, output_path, split_panels=True, show_markers=False,
-                          ocean_depth=3000, min_lines=2, n_cols=3,
-                          width='double', height=None, show_hz=None):
-    """The composition sweep, in the style of the basic one: dIW as columns, Mg/Si as colour.
+def _composition_grid(subset, col_key, col_vals, col_title, line_key, line_vals, cmap, cbar_label,
+                      tick_fmt, suptitle, stem, output_path, split_panels, show_markers, width,
+                      height, show_hz):
+    """Grid with one column per `col_key` value and one line per `line_key` value."""
+    norm = mcolors.Normalize(vmin=min(line_vals), vmax=max(line_vals))
+    for cols, sfx in _panel_groups(split_panels):
+        n_rows = len(cols)
+        fig, axes = plt.subplots(n_rows, len(col_vals), figsize=figure_size(width, height, n_rows),
+                                 sharex=True, sharey='row', squeeze=False)
+        for ci, cv in enumerate(col_vals):
+            col_df = subset[subset[col_key] == cv]
+            for lv in line_vals:
+                group = col_df[col_df[line_key] == lv].sort_values('instellation')
+                if not group.empty:
+                    _plot_group_on_axes(axes[:, ci], group, cmap(norm(lv)),
+                                        show_markers=show_markers, cols=cols)
+            _style_combined_col(axes, ci, len(col_vals), title=col_title(cv), cols=cols,
+                                show_hz=show_hz)
+        _add_colorbar(fig, list(axes.ravel()), cmap, norm, cbar_label, ticks=line_vals,
+                      ticklabels=[tick_fmt(v) for v in line_vals], aspect=n_rows * 10)
+        _add_figure_legend(fig, axes, _make_legend_handles(show_markers=show_markers))
+        fig.suptitle(suptitle)
+        _save_fig(fig, figure_path(output_path, f'{stem}{sfx}.png'))
 
-    Same layout as `sweep_basic_full` (crust rate as columns, outgassing as colour), with the
-    two crust axes substituted. This uses the WHOLE factorial rather than the one-axis cuts
-    `plot_cross` draws: every panel is a fixed dIW, and every line within it a fixed
-    Mg/Si, so an interaction between the two axes shows up as the family of lines changing shape
-    from column to column rather than merely shifting.
 
-    Columns with fewer than `min_lines` populated Mg/Si values are dropped -- a column carrying a
-    single line says nothing and costs a fifth of the figure width.
-    """
+def plot_composition(df, output_path, split_panels=True, show_markers=False, ocean_depth=3000,
+                     min_lines=2, n_cols=3, width='double', height=None, show_hz=None):
+    """Composition factorial: dIW columns coloured by Mg/Si, and the transpose (Mg/Si columns by dIW)."""
     pool = _composition_pool(df, ocean_depth)
-    if pool.empty:
-        print(f"No composition data at depth {ocean_depth:g} m -- skipping grid.")
-        return
-    sliced = _composition_slice(pool)
+    sliced = None if pool.empty else _composition_slice(pool)
     if sliced is None:
-        print("No crust composition sweep data -- skipping grid.")
+        print(f"No crust composition sweep data at depth {ocean_depth:g} m -- skipping grid.")
         return
     subset, best_o, best_c = sliced
-    subset = subset[~np.isclose(subset['mg_si'].to_numpy()[:, None], MG_SI_HIDDEN).any(axis=1)]
+    subset = _drop_hidden_mg_si(subset)
     if subset['mg_si'].nunique() < 2 or subset['delta_iw'].nunique() < 2:
         print("Composition grid needs both Mg/Si and dIW to vary -- skipping.")
         return
-
     subset = _add_diag_columns(subset, output_path)
+    tag = '' if ocean_depth == 3000 else f'_d{ocean_depth:g}'
     mg_vals = sorted(subset['mg_si'].unique())
-    usable = [d for d in sorted(subset['delta_iw'].unique())
-              if subset[subset['delta_iw'] == d]['mg_si'].nunique() >= min_lines]
+    diw_all = sorted(subset['delta_iw'].unique())
+    common = dict(output_path=output_path, split_panels=split_panels, show_markers=show_markers,
+                  width=width, height=height, show_hz=show_hz)
+
+    usable = [d for d in diw_all if subset[subset['delta_iw'] == d]['mg_si'].nunique() >= min_lines]
     if not usable:
         print("No dIW column has enough Mg/Si values -- skipping grid.")
         return
-    # Three columns: the Earth reference in the middle, the most REDUCED mantle on the left and
-    # the most OXIDISED on the right (dIW increases with oxidation, so ascending order puts them
-    # that way round).
     diw_vals = _three_columns(usable, REF_DIW, n_cols)
-    dropped = sorted(set(subset['delta_iw'].unique()) - set(diw_vals))
+    dropped = sorted(set(diw_all) - set(diw_vals))
     print(f"Composition grid depth={ocean_depth:g}: dIW columns {diw_vals} x "
           f"{len(mg_vals)} Mg/Si lines, outgassing={best_o:g}, crust={best_c:g}"
           + (f" (not shown: dIW {dropped})" if dropped else ""))
+    _composition_grid(subset, 'delta_iw', diw_vals, lambda dw: _diw_title(dw, diw_vals),
+                      'mg_si', mg_vals, MG_SI_CMAP, 'Mantle Mg/Si', lambda v: f'{v:g}',
+                      r'Core-formation $\Delta$IW', f'sweep_composition{tag}', **common)
 
-    # Mg/Si is linear and spans 0.5-2.0, so a linear norm -- unlike outgassing, which is log.
-    norm = mcolors.Normalize(vmin=min(mg_vals), vmax=max(mg_vals))
-    cmap = MG_SI_CMAP
-    tag = '' if ocean_depth == 3000 else f'_d{ocean_depth:g}'
-
-    for cols, sfx in _panel_groups(split_panels):
-        n_rows, ncol = len(cols), len(diw_vals)
-        figsize = figure_size(width, height, n_rows)
-        fig, axes = plt.subplots(n_rows, ncol, figsize=figsize,
-                                 sharex=True, sharey='row', squeeze=False)
-        for ci, dw in enumerate(diw_vals):
-            col_df = subset[subset['delta_iw'] == dw]
-            for mg in mg_vals:
-                group = col_df[col_df['mg_si'] == mg].sort_values('instellation')
-                if not group.empty:
-                    _plot_group_on_axes(axes[:, ci], group, cmap(norm(mg)),
-                                        show_markers=show_markers, cols=cols)
-            _style_combined_col(axes, ci, len(diw_vals), title=_diw_title(dw, diw_vals),
-                                cols=cols)
-        _add_colorbar(fig, list(axes.ravel()), cmap, norm, 'Mantle Mg/Si',
-                      ticks=mg_vals, ticklabels=[f'{v:g}' for v in mg_vals],
-                      aspect=n_rows * 10)
-        _add_figure_legend(fig, axes, _make_legend_handles(show_markers=show_markers,
-                                                      show_hz=show_hz, cols=cols))
-        fig.suptitle(r'Core-formation $\Delta$IW')
-        _save_fig(fig, figure_path(output_path, f'sweep_composition{tag}{sfx}.png'))
-
-    # The transpose: Mg/Si as columns, dIW as colour. Same data, and it is the better
-    # arrangement when the dIW effect is the one being read off.
-    diw_all = sorted(subset['delta_iw'].unique())
-    mg_usable = [m for m in mg_vals
-                 if subset[subset['mg_si'] == m]['delta_iw'].nunique() >= min_lines]
-    if len(mg_usable) < 2:
-        return
-    mg_cols = _three_columns(mg_usable, REF_MG_SI, n_cols)
-    norm_d = mcolors.Normalize(vmin=min(diw_all), vmax=max(diw_all))
-    cmap_d = DIW_CMAP
-    for cols, sfx in _panel_groups(split_panels):
-        n_rows, ncol = len(cols), len(mg_cols)
-        figsize = figure_size(width, height, n_rows)
-        fig, axes = plt.subplots(n_rows, ncol, figsize=figsize,
-                                 sharex=True, sharey='row', squeeze=False)
-        for ci, mg in enumerate(mg_cols):
-            col_df = subset[subset['mg_si'] == mg]
-            for dw in diw_all:
-                group = col_df[col_df['delta_iw'] == dw].sort_values('instellation')
-                if not group.empty:
-                    _plot_group_on_axes(axes[:, ci], group, cmap_d(norm_d(dw)),
-                                        show_markers=show_markers, cols=cols)
-            _style_combined_col(axes, ci, len(mg_cols), title=f'{mg:g}', cols=cols,
-                               show_hz=show_hz)
-        _add_colorbar(fig, list(axes.ravel()), cmap_d, norm_d, r'Core-formation $\Delta$IW',
-                      ticks=diw_all, ticklabels=[f'{v:+g}' for v in diw_all],
-                      aspect=n_rows * 10)
-        _add_figure_legend(fig, axes, _make_legend_handles(show_markers=show_markers,
-                                                      show_hz=show_hz, cols=cols))
-        fig.suptitle('Mantle Mg/Si')
-        _save_fig(fig, figure_path(output_path, f'sweep_composition_T{tag}{sfx}.png'))
+    mg_usable = [m for m in mg_vals if subset[subset['mg_si'] == m]['delta_iw'].nunique() >= min_lines]
+    if len(mg_usable) >= 2:
+        _composition_grid(subset, 'mg_si', _three_columns(mg_usable, REF_MG_SI, n_cols),
+                          lambda mg: f'{mg:g}', 'delta_iw', diw_all, DIW_CMAP,
+                          r'Core-formation $\Delta$IW', lambda v: f'{v:+g}', 'Mantle Mg/Si',
+                          f'sweep_composition_T{tag}', **common)
 
 
 def plot_composition_map(df, output_path, s_vals=(0.7, 0.9, 1.0, 1.1), ocean_depth=3000,
-                         quantity='T', relative=True, min_cells=3,
-                         width='double', height=2.6):
-    """The composition sweep as a map over the Mg/Si x dIW plane, one panel per instellation.
+                         quantity='T', relative=True, min_cells=3, width='double', height=2.6):
+    """Composition sweep as a Mg/Si x dIW map, one panel per instellation.
 
-    The composition sweep is a near-factorial, so the two axes can be shown together rather than
-    as separate one-axis cuts. That answers the question the cuts cannot: whether Mg/Si and dIW
-    INTERACT, or whether their effects simply add.
-
-    `relative` (default) plots the difference from the Earth-reference composition at the SAME
-    instellation, on a diverging scale centred at zero. Absolute values do not work here: the
-    Mg/Si = 0.5 column runs ~60 K hotter than everything else and swallows the whole colour
-    range, leaving the other seven columns as indistinguishable pale cells. The anomaly is also
-    the quantity of interest -- what the composition does, not what the instellation does.
-
-    Rows and columns with fewer than `min_cells` in-domain runs are dropped. The sweep carries a
-    few cross-design extras (Mg/Si = 1.6 and dIW = -5 exist at one point each), which otherwise
-    appear as near-empty stripes through the middle of the grid.
-
-    Cells with no run are blank; runs that left the model domain are marked, not coloured -- they
-    have no steady state, so colouring them by final temperature would invent a result.
+    relative plots the difference from the Earth crust at the same instellation; rows or columns with
+    fewer than min_cells in-domain runs are dropped, and out-of-domain cells are marked, not coloured.
     """
+    if quantity not in ('T', 'P_CO2', 'pH'):
+        raise ValueError(f'unsupported quantity {quantity!r}')
     pool = _composition_pool(df, ocean_depth)
-    if pool.empty:
-        print(f"No composition data at depth {ocean_depth:g} m -- skipping map.")
-        return
-    sliced = _composition_slice(pool)
+    sliced = None if pool.empty else _composition_slice(pool)
     if sliced is None:
-        print("No crust composition sweep data -- skipping map.")
+        print(f"No crust composition sweep data at depth {ocean_depth:g} m -- skipping map.")
         return
     subset, best_o, best_c = sliced
     if subset['mg_si'].nunique() < 2 or subset['delta_iw'].nunique() < 2:
         print("Composition map needs both Mg/Si and dIW to vary -- skipping.")
         return
-    if quantity not in ('T', 'P_CO2', 'pH'):
-        raise ValueError(f'unsupported quantity {quantity!r}')
     if quantity == 'pH':
         subset = _add_diag_columns(subset, output_path)
 
     live = subset[~subset['termination'].isin(OUT_OF_DOMAIN)]
-    # Count DISTINCT cells along the other axis, not runs. Counting runs keeps a cross-design
-    # extra like Mg/Si = 1.6 (present at one dIW but all 19 instellations), which then draws as
-    # a near-empty stripe through the middle of the grid.
+    # Count distinct cells on the other axis, so a one-off cross-design value does not draw a stripe.
     mg_vals = [m for m in sorted(subset['mg_si'].unique())
                if live[live['mg_si'] == m]['delta_iw'].nunique() >= min_cells]
     diw_vals = [d for d in sorted(subset['delta_iw'].unique())
@@ -1846,8 +1184,7 @@ def plot_composition_map(df, output_path, s_vals=(0.7, 0.9, 1.0, 1.1), ocean_dep
     if not s_present:
         avail = sorted(subset['instellation'].unique())
         s_present = avail[::max(1, len(avail) // 4)][:4]
-
-    log_q = (quantity == 'P_CO2')
+    log_q = quantity == 'P_CO2'
 
     def _cell(S, mg, dw):
         r = live[(live['instellation'] == S) & (live['mg_si'] == mg) & (live['delta_iw'] == dw)]
@@ -1858,57 +1195,46 @@ def plot_composition_map(df, output_path, s_vals=(0.7, 0.9, 1.0, 1.1), ocean_dep
 
     grids = {}
     for S in s_present:
-        g = np.full((len(diw_vals), len(mg_vals)), np.nan)
-        for i, dw in enumerate(diw_vals):
-            for j, mg in enumerate(mg_vals):
-                g[i, j] = _cell(S, mg, dw)
+        g = np.array([[_cell(S, mg, dw) for mg in mg_vals] for dw in diw_vals])
         if relative:
             ref = _cell(S, REF_MG_SI, REF_DIW)
             g = g - ref if np.isfinite(ref) else g * np.nan
         grids[S] = g
-
-    allv = np.concatenate([g[np.isfinite(g)].ravel() for g in grids.values()]) \
-        if any(np.isfinite(g).any() for g in grids.values()) else np.array([])
+    allv = np.concatenate([g[np.isfinite(g)].ravel() for g in grids.values()])
     if allv.size == 0:
         print("  no in-domain runs (or no reference cell) -- skipping map.")
         return
 
     unit = {'T': 'K', 'P_CO2': 'dex', 'pH': ''}[quantity]
-    qname = {'T': 'Temperature', 'P_CO2': '$P_{\\mathrm{CO_2}}$', 'pH': 'Ocean pH'}[quantity]
-    # Short label: the long form clips against the figure edge even under bbox_inches='tight'.
-    short = {'T': r'$\Delta T$', 'P_CO2': r'$\Delta\log P_{\mathrm{CO_2}}$',
-             'pH': r'$\Delta$pH'}[quantity]
     if relative:
+        short = {'T': r'$\Delta T$', 'P_CO2': r'$\Delta\log P_{\mathrm{CO_2}}$',
+                 'pH': r'$\Delta$pH'}[quantity]
         lim = float(np.nanpercentile(np.abs(allv), 98)) or 1.0
         norm = mcolors.TwoSlopeNorm(vmin=-lim, vcenter=0.0, vmax=lim)
         cmap = RELATIVE_CMAP
         cbar_label = f'{short} vs Earth crust' + (f' ({unit})' if unit else '')
     else:
+        qname = {'T': 'Temperature', 'P_CO2': '$P_{\\mathrm{CO_2}}$', 'pH': 'Ocean pH'}[quantity]
         norm = mcolors.Normalize(vmin=np.nanpercentile(allv, 2), vmax=np.nanpercentile(allv, 98))
         cmap = QUANTITY_CMAP if log_q else RELATIVE_CMAP
         cbar_label = qname + (f' ({unit})' if unit else '')
-
     print(f"Composition map [{quantity}, {'relative' if relative else 'absolute'}] "
           f"depth={ocean_depth:g}: {len(mg_vals)}x{len(diw_vals)} grid at S={s_present}"
           + (f"; dropped sparse Mg/Si {dropped[0]} dIW {dropped[1]}" if any(dropped) else ""))
 
-    n = len(s_present)
-    fig, axs = plt.subplots(1, n, figsize=figure_size(width, height),
-                            sharey=True, squeeze=False)
+    fig, axs = plt.subplots(1, len(s_present), figsize=figure_size(width, height), sharey=True,
+                            squeeze=False)
     axs = axs[0]
     for ax, S in zip(axs, s_present):
         ax.pcolormesh(np.arange(len(mg_vals) + 1), np.arange(len(diw_vals) + 1), grids[S],
                       cmap=cmap, norm=norm, edgecolors='w', linewidth=0.4)
-        cell = subset[subset['instellation'] == S]
-        for _, r in cell.iterrows():
-            if r['termination'] in OUT_OF_DOMAIN and r['mg_si'] in mg_vals \
-                    and r['delta_iw'] in diw_vals:
+        for _, r in subset[subset['instellation'] == S].iterrows():
+            if r['termination'] in OUT_OF_DOMAIN and r['mg_si'] in mg_vals and r['delta_iw'] in diw_vals:
                 ax.plot(mg_vals.index(r['mg_si']) + 0.5, diw_vals.index(r['delta_iw']) + 0.5,
                         marker='x', color='0.4', markersize=5, mew=1.2)
-        if relative:  # mark the reference cell the anomaly is measured against
-            if REF_MG_SI in mg_vals and REF_DIW in diw_vals:
-                ax.plot(mg_vals.index(REF_MG_SI) + 0.5, diw_vals.index(REF_DIW) + 0.5,
-                        marker='o', mfc='none', mec='k', markersize=9, mew=1.4)
+        if relative and REF_MG_SI in mg_vals and REF_DIW in diw_vals:
+            ax.plot(mg_vals.index(REF_MG_SI) + 0.5, diw_vals.index(REF_DIW) + 0.5,
+                    marker='o', mfc='none', mec='k', markersize=9, mew=1.4)
         ax.set_xticks(np.arange(len(mg_vals)) + 0.5)
         ax.set_xticklabels([f'{v:g}' for v in mg_vals], rotation=90)
         ax.set_yticks(np.arange(len(diw_vals)) + 0.5)
@@ -1924,274 +1250,83 @@ def plot_composition_map(df, output_path, s_vals=(0.7, 0.9, 1.0, 1.1), ocean_dep
                               markersize=8, label='Earth reference crust'))
     fig.legend(handles=handles, loc='outside lower center', ncol=len(handles))
     _save_fig(fig, figure_path(output_path,
-                                f'sweep_composition_map_{quantity}{"" if relative else "_abs"}.png'))
-
-
-def plot_ratio_scatter(df, output_path, s_vals=(0.4, 0.6, 0.8, 1.0, 1.2)):
-    """T and P_CO2 vs outgassing/crust-production ratio, coloured by instellation."""
-    base = _base(df)
-    sub = base[base['instellation'].isin(s_vals)].copy()
-    if sub.empty:
-        print("No runs found — skipping ratio scatter.")
-        return
-
-    sub['ratio'] = sub['outgassing'] / sub['crust_production']
-    hab     = sub[sub['termination'].isin(HABITABLE)]
-    non_hab = sub[~sub['termination'].isin(HABITABLE)]
-
-    norm = mcolors.Normalize(vmin=min(s_vals), vmax=max(s_vals))
-    cmap = INSTELLATION_CMAP
-
-    figsize = figure_size('single', height=3.0)
-    fig, axes = plt.subplots(2, 1, figsize=figsize, sharex=True)
-
-    for term, marker in HAB_MARKERS.items():
-        grp = hab[hab['termination'] == term]
-        if grp.empty:
-            continue
-        kw = dict(c=grp['instellation'], cmap=cmap, norm=norm,
-                  s=22, alpha=0.85, zorder=4, linewidths=0)
-        axes[0].scatter(grp['ratio'], grp['T'],     marker=marker, **kw)
-        axes[1].scatter(grp['ratio'], grp['P_CO2'], marker=marker, **kw)
-
-    for term, marker in FAILED_MARKERS.items():
-        grp = non_hab[non_hab['termination'] == term]
-        if grp.empty:
-            continue
-        for ax, col in zip(axes, ['T', 'P_CO2']):
-            valid = grp[np.isfinite(grp[col])]
-            if valid.empty:
-                continue
-            ax.scatter(valid['ratio'], valid[col],
-                       marker=marker, s=28, zorder=3, linewidths=0.8,
-                       facecolors='none',
-                       edgecolors=cmap(norm(valid['instellation'].values)))
-
-    axes[0].set_ylabel('Temperature (K)')
-    axes[0].axhspan(T_SNOWBALL - 25, T_SNOWBALL, color='blue', alpha=0.12)
-    axes[0].axhspan(T_RUNAWAY - 20,  T_RUNAWAY,  color='red',  alpha=0.12)
-    axes[0].set_ylim(235, 360)
-
-    axes[1].set_ylabel('$P_{\\mathrm{CO_2}}$ (bar)')
-    axes[1].set_yscale('log')
-    axes[1].set_ylim(1e-8, 20)
-    axes[1].set_xlabel('Outgassing / Crust production rate')
-    axes[1].set_xlim([1e-3, 1e3])
-
-    for ax in axes:
-        ax.set_xscale('log')
-        ax.grid(True, linestyle='--', alpha=0.4)
-
-    _add_colorbar(fig, list(axes), cmap, norm, 'Instellation (S/S₀)', ticks=sorted(s_vals))
-
-    marker_handles = [
-        plt.scatter([], [], marker=m, s=22, color='k', label=TERM_LABELS[t])
-        for t, m in HAB_MARKERS.items()
-    ] + [
-        plt.scatter([], [], marker=m, s=28, facecolors='none', edgecolors='k',
-                    linewidths=0.8, label=TERM_LABELS[t])
-        for t, m in FAILED_MARKERS.items()
-    ]
-    fig.legend(handles=marker_handles, loc='outside lower center', ncol=_legend_ncol(marker_handles, 2))
-    _save_fig(fig, figure_path(output_path, 'ratio_scatter.png'))
-
-
-# ---------------------------------------------------------------------------
-# Mineral SI plot
-# ---------------------------------------------------------------------------
-
-# All minerals that can precipitate, in display order. These mirror the sets used by
-# Planet: clays in the pore space; carbonates, clays, silica, evaporites (+ reverse
-# weathering clays when enabled) in the ocean.
-_PORE_MINERALS  = list(clay_minerals)
-_OCEAN_MINERALS = (carbonate_minerals + clay_minerals + silica_minerals +
-                   evaporite_minerals + list(reverse_weathering_minerals))
-_ALL_MINERALS   = list(dict.fromkeys(_PORE_MINERALS + _OCEAN_MINERALS))  # ordered, unique
-
-_MINERAL_LABELS = {
-    'Calcite':      'Calcite',
-    'Siderite':     'Siderite (FeCO₃)',
-    'Nahcolite':    'Nahcolite (NaHCO₃)',
-    'Kaolinite':    'Kaolinite',
-    'Goethite':     'Goethite',
-    'SiO2(am)':     'Amorphous SiO₂',
-    'Halite':       'Halite (NaCl)',
-    'Sepiolite(d)': 'Sepiolite (Mg)',
-    'Saponite-Na':  'Saponite-Na',
-    'Greenalite':   'Greenalite (Fe)',
-}
+                               f'sweep_composition_map_{quantity}{"" if relative else "_abs"}.png'))
 
 
 def plot_damkohler_contour(df, output_path, out_targets=(0.1, 1.0, 10.0)):
-    """2D contourf of Damköhler number in (instellation × crust production) space.
-
-    One panel per outgassing rate (vertically stacked), coloured by log10(Da).
-    The Da = 1 boundary is drawn as a black contour.
-    Uses the reference-crust, rw=True, depth=3000, f_HT=0 baseline.
-    """
-    subset = df[
-        _ref_crust(df) &
-        df['reverse_weathering'] &
-        _ref_redox(df) &
-        (df['ocean_depth'] == 3000) &
-        (df['f_HT'] == 0.0)
-    ]
+    """log10(Da) over instellation x crust production, one panel per outgassing rate, with Da = 1 drawn."""
+    subset = df[_sweep_mask(df, land=None, chem=False, f_ht=True)]
     if subset.empty:
         print("No data for Da contour plot — skipping.")
         return
-
     all_out = sorted(subset['outgassing'].unique())
-    out_values = list(dict.fromkeys(
-        min(all_out, key=lambda x: abs(x - t)) for t in out_targets
-    ))
-
-    s_vals    = sorted(subset['instellation'].unique())
+    out_values = list(dict.fromkeys(min(all_out, key=lambda x: abs(x - t)) for t in out_targets))
+    s_vals = sorted(subset['instellation'].unique())
     crust_vals = sorted(subset['crust_production'].unique())
-
-    sel = subset[subset['outgassing'].isin(out_values)]
-    sel = _add_diag_columns(sel, output_path)
-
-    s_arr     = np.array(s_vals)
+    sel = _add_diag_columns(subset[subset['outgassing'].isin(out_values)], output_path)
     log_crust = np.log10(np.array(crust_vals))
-
-    vmin, vmax = -3.0, 3.0
-    norm = mcolors.TwoSlopeNorm(vmin=vmin, vcenter=0.0, vmax=vmax)
-    cmap = DIVERGING_CMAP
-    levels = np.linspace(vmin, vmax, 31)
-
-    nrows = len(out_values)
+    norm = mcolors.TwoSlopeNorm(vmin=-3.0, vcenter=0.0, vmax=3.0)
+    levels = np.linspace(-3.0, 3.0, 31)
 
     with plt.rc_context({'figure.constrained_layout.use': False}):
-        fig, axes = plt.subplots(nrows, 1, figsize=figure_size('single', n_rows=nrows, row_height=2.0),
-                                 sharex=True, sharey=True, squeeze=False)
-
-        for idx, out in enumerate(out_values):
-            ax = axes[idx, 0]
-            sub = sel[np.isclose(sel['outgassing'], out)]
-
-            pivot = sub.pivot_table(
-                index='crust_production', columns='instellation',
-                values='da', aggfunc='first',
-            ).reindex(index=crust_vals, columns=s_vals)
-
-            Z = np.log10(np.maximum(pivot.values.astype(float), 1e-10))
-            Z = np.ma.masked_invalid(Z)
-
-            ax.contourf(s_arr, log_crust, Z, levels=levels, cmap=cmap, norm=norm,
+        fig, axes = plt.subplots(len(out_values), 1, sharex=True, sharey=True, squeeze=False,
+                                 figsize=figure_size('single', n_rows=len(out_values), row_height=2.0))
+        for ax, out in zip(axes[:, 0], out_values):
+            pivot = (sel[np.isclose(sel['outgassing'], out)]
+                     .pivot_table(index='crust_production', columns='instellation', values='da',
+                                  aggfunc='first')
+                     .reindex(index=crust_vals, columns=s_vals))
+            Z = np.ma.masked_invalid(np.log10(np.maximum(pivot.values.astype(float), 1e-10)))
+            ax.contourf(s_vals, log_crust, Z, levels=levels, cmap=DIVERGING_CMAP, norm=norm,
                         extend='both')
             if not np.all(Z.mask if np.ma.is_masked(Z) else False):
-                ax.contour(s_arr, log_crust, Z, levels=[0.0],
-                           colors='k', linewidths=1.5)
-
+                ax.contour(s_vals, log_crust, Z, levels=[0.0], colors='k', linewidths=1.5)
             ax.set_title(f'Outgassing = {out:g}×', fontsize=9)
             ax.set_yticks(log_crust)
             ax.set_yticklabels([f'{v:g}' for v in crust_vals], fontsize=7)
             ax.set_ylabel('Crust prod. (×Earth)')
             ax.grid(True, linestyle='--', alpha=0.3, color='k')
-
         axes[-1, 0].set_xlabel('Instellation (S/S₀)')
 
         fig.subplots_adjust(left=0.16, right=0.82, top=0.91, bottom=0.12, hspace=0.25)
-
-        pos_top = axes[0, 0].get_position()
-        pos_bot = axes[-1, 0].get_position()
-        cbar_ax = fig.add_axes([0.85, pos_bot.y0, 0.03, pos_top.y1 - pos_bot.y0]) # type: ignore
-        sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+        top, bottom = axes[0, 0].get_position(), axes[-1, 0].get_position()
+        cbar_ax = fig.add_axes([0.85, bottom.y0, 0.03, top.y1 - bottom.y0])
+        sm = plt.cm.ScalarMappable(cmap=DIVERGING_CMAP, norm=norm)
         sm.set_array([])
         cbar = fig.colorbar(sm, cax=cbar_ax, label=r'$\log_{10}(\mathrm{Damkohler Coefficient})$')
         cbar.ax.axhline(0, color='k', linewidth=1.5)
-
-        # fig.suptitle('Damköhler number — basalt_49, rw=True, depth = 3000 m', fontsize=10)
         _save_fig(fig, figure_path(output_path, 'da_contour.png'))
 
 
-def plot_continental_baseline(df, output_path, show_hz=None):
-    """T, P_CO2, pH, salinity, and individual ion concentrations vs instellation
-    for the Earth-like continental baseline.
+# --- Continental baseline, land-fraction series and weathering crossover ---
+# The sweep design (land fractions, grid axes, Earth reference) is read from continental_baseline.py as cb.
+ARM_COLOURS = {0.3: '#a4632a', 0.0: '#2a6fa4'}
+ARM_LABELS = {0.3: 'Continental (land fraction 0.3)', 0.0: 'Ocean world (land free)'}
+OLR_FIT_T_MAX = 350.0   # upper T limit of the Haqq-Misra et al. (2016) OLR fit the climate model uses
 
-    Runs with land_fraction=0.3, reference crust, rw=True, out=1×, crust=1×, depth=3000 m.
-    """
-    subset = df[
-        (df['land_fraction'] == 0.3) &
-        _ref_crust(df) &
-        _ref_chem(df) &
-        df['reverse_weathering'] &
-        _ref_redox(df) &
-        (df['outgassing'] == 1.0) &
-        (df['crust_production'] == 1.0) &
-        (df['ocean_depth'] == 3000) &
-        (df['f_HT'] == 0.0)
-    ]
-    if subset.empty:
+# (index into b_ocean, label, Earth seawater mmol/kg, calibrate_earth.py's targets). Al, Fe, SO4 omitted.
+ION_SPEC = [(0, 'Alk', 2.3), (1, 'C', 2.1), (2, 'Si', 0.1), (5, 'Ca', 10.3),
+            (6, 'Mg', 52.8), (7, 'Na', 469.0), (8, 'Cl', 546.0)]
+
+
+def _arm(df, land):
+    """Runs at one land fraction with every other axis at the Earth reference."""
+    return df[_sweep_mask(df, depth=cb.OCEAN_DEPTH, land=land, f_ht=True, outgassing=cb.OUTGASSING,
+                          crust_production=cb.CRUST_PRODUCTION)].sort_values('instellation')
+
+
+def plot_continental_baseline(df, output_path, show_hz=None):
+    """Earth-like continental baseline: T/pCO2 and pH/salinity against instellation, and ions against seawater."""
+    group_all = _arm(df, cb.LAND_FRACTION)
+    if group_all.empty:
         print("No continental baseline data found — skipping.")
         return
+    group_hab = group_all[(group_all['T'] > T_SNOWBALL) & (group_all['T'] < T_RUNAWAY)]
 
-    group_all = subset.sort_values('instellation')
-    group_hab = group_all[
-        (group_all['T'] > T_SNOWBALL) &
-        (group_all['T'] < T_RUNAWAY)
-    ]
-
-    EARTH_S    = 1.0
-    EARTH_T    = 288.0
-    EARTH_PCO2 = 280e-6
-    EARTH_PH   = 8.1
-    EARTH_SAL  = (2.0e-3 * 61.0 + 0.1e-3 * 60.1 +
-                  10.3e-3 * 40.1 + 52.8e-3 * 24.3 +
-                  480e-3 * 23.0 + 550e-3 * 35.45)
-
-    earth_vals = {'T': EARTH_T, 'P_CO2': EARTH_PCO2, 'pH': EARTH_PH, 'salinity': EARTH_SAL}
-
-    # --- ion panel setup ---
-    # (index, label, Earth mmol/kg). Al(3) and Fe(4) are excluded: both are trace and the model
-    # holds them at ~0, so a log axis has nothing to show. SO4(9) is excluded because it is PINNED
-    # (planet.py F_net[so4_idx] = 0) -- whatever the seed carries is what it reports for ever, so
-    # plotting it would claim credit for an input. The `pinned` flag and its italic-label handling
-    # are kept wired so it can be put back in one line if the sulfur cycle is ever closed.
-    #
-    # Earth values are calibrate_earth.py's own fit targets, so the figure is scored against the
-    # same numbers the calibration was. They are the standard S = 35 seawater values per kg of
-    # solution; Na 469 / Cl 546 rather than the 480 / 550 previously hardcoded here.
-    ION_SPEC = [
-        (0, 'Alk',   2.3,   False),
-        (1, 'C',     2.1,   False),
-        (2, 'Si',    0.1,   False),
-        (5, 'Ca',   10.3,   False),
-        (6, 'Mg',   52.8,   False),
-        (7, 'Na',  469.0,   False),
-        (8, 'Cl',  546.0,   False),
-    ]
-    # Colour separates the two SERIES (Earth vs model), not the ions -- the ion is already given
-    # by x position, so per-ion colour was encoding nothing. Marker shape repeats the distinction
-    # so identity never rests on colour alone.
-    C_EARTH, C_MODEL = '#4C72B0', '#C44E52'
-
-    # Load final b_ocean for each run from the JSON files
-    ion_rows = []
-    for _, row in group_hab.iterrows():
-        fpath = os.path.join(output_path, f"{row['name']}.json")
-        try:
-            with open(fpath) as fh:
-                d_json = json.load(fh)
-            y = d_json['data']['y']
-            n_el = len(y) - 3
-            b = [max(float(y[2 + i][-1]), 1e-15) for i in range(n_el)]
-            # Pad to 10 elements if an older file lacks some ions
-            while len(b) < 10:
-                b.append(1e-15)
-            ion_rows.append((row['instellation'], b[:10]))
-        except Exception:
-            pass
-
-    # --- figure 1: summary panels, split T/P_CO2 from pH/salinity like every other figure ---
     for grp_cols, sfx in _panel_groups(True):
-        n_rows = len(grp_cols)
-        fig, axes = plt.subplots(n_rows, 1, sharex=True,
-                                 figsize=figure_size('single', n_rows=n_rows, row_height=1.5))
-        if n_rows == 1:
-            axes = [axes]
-
-        # T panel shows all runs (including failed); the rest show only runs in habitable T range
+        fig, axes = plt.subplots(len(grp_cols), 1, sharex=True,
+                                 figsize=figure_size('single', n_rows=len(grp_cols)))
+        # The T panel shows every run; the others only runs inside the temperate band.
         if 'T' in grp_cols:
             _plot_group_on_axes([axes[grp_cols.index('T')]], group_all, color='k',
                                 show_markers=False, cols=['T'])
@@ -2200,110 +1335,59 @@ def plot_continental_baseline(df, output_path, show_hz=None):
             _plot_group_on_axes([axes[grp_cols.index(c)] for c in other], group_hab, color='k',
                                 show_markers=False, cols=other)
         _style_axes(axes, grp_cols, show_hz=show_hz, show_eq_temp=True)
-
         for ax, col in zip(axes, grp_cols):
-            ax.scatter(EARTH_S, earth_vals[col], marker='*', s=220, color='blue',
+            ax.scatter(EARTH['S'], EARTH[col], marker='*', s=220, color='blue',
                        edgecolors='k', linewidths=0.7, zorder=6)
         if 'T' in grp_cols:
             axes[grp_cols.index('T')].annotate(
-                'Earth', xy=(EARTH_S, EARTH_T), xytext=(EARTH_S + 0.06, EARTH_T - 6),
-                fontsize=8, arrowprops=dict(arrowstyle='-', color='k', lw=0.8),
-            )
+                'Earth', xy=(EARTH['S'], EARTH['T']), xytext=(EARTH['S'] + 0.06, EARTH['T'] - 6),
+                fontsize=8, arrowprops=dict(arrowstyle='-', color='k', lw=0.8))
         _save_fig(fig, figure_path(output_path, f'continental_baseline{sfx}.png'))
 
-    # --- figure 2: absolute ion concentrations, model vs Earth seawater at S ~ 1 ---
-    # A dumbbell rather than the previous percent-difference scatter: the quantity of interest is
-    # the concentration itself, and the ions span five decades (Si 0.1 to Cl 546 mM), so a log
-    # axis showing both values directly is more honest than a ratio -- a "+40%" and a "+4000%"
-    # tell you nothing about whether either number is physically reasonable.
-    figsize2 = figure_size('single', height=2.6)
-    fig2, ax_ions = plt.subplots(1, 1, figsize=figsize2)
+    # Ions at the run nearest S = 1, model against Earth seawater, on a log axis.
+    ion_rows = []
+    for _, row in group_hab.iterrows():
+        try:
+            with open(os.path.join(RUN_PATH or output_path, f"{row['name']}.json")) as fh:
+                y = json.load(fh)['data']['y']
+            b = [max(float(y[2 + i][-1]), 1e-15) for i in range(len(y) - 3)]
+            ion_rows.append((row['instellation'], (b + [1e-15] * 10)[:10]))
+        except Exception:
+            pass
 
+    fig, ax = plt.subplots(1, 1, figsize=figure_size('single', height=2.6))
     if ion_rows:
-        s_arr  = np.array([r[0] for r in ion_rows])
-        b_mmol = np.array([r[1] for r in ion_rows]) * 1e3  # mol/kg -> mmol/kg
-        closest = int(np.argmin(np.abs(s_arr - EARTH_S)))
-        b_model = b_mmol[closest]
-
-        labels = [spec[1] for spec in ION_SPEC]
-        earth  = np.array([spec[2] for spec in ION_SPEC])
-        model  = np.array([max(b_model[spec[0]], 1e-4) for spec in ION_SPEC])
-        pinned = np.array([spec[3] for spec in ION_SPEC])
-        x      = np.arange(len(labels))
-
-        # Connector first, so the markers sit on top of it.
-        ax_ions.vlines(x, np.minimum(earth, model), np.maximum(earth, model),
-                       color='0.6', linewidth=1.0, zorder=2)
-        ax_ions.scatter(x, earth, marker='o', s=46, facecolors='none', edgecolors=C_EARTH,
-                        linewidths=1.4, zorder=3, label='Earth seawater')
-        ax_ions.scatter(x, model, marker='D', s=34, color=C_MODEL, edgecolors='w',
-                        linewidths=0.5, zorder=4, label='Model (calibrated)')
-
-        ax_ions.set_xticks(x)
-        ax_ions.set_xticklabels(labels)
-        # Mark the pinned species: SO4 has no source term, so its agreement is an input.
-        for xi, is_pin in zip(x, pinned):
-            if is_pin:
-                ax_ions.get_xticklabels()[xi].set_style('italic')
-                ax_ions.get_xticklabels()[xi].set_color('0.45')
-
-        ax_ions.axvline(2.5, color='gray', linestyle='--', linewidth=0.8, alpha=0.6, zorder=1)
-        trans = ax_ions.get_xaxis_transform()
-        ax_ions.text(1.0, 1.02, 'Biotically controlled', transform=trans,
-                     ha='center', va='bottom', fontsize=8)
-        ax_ions.text(4.5, 1.02, 'Abiotically controlled', transform=trans,
-                     ha='center', va='bottom', fontsize=8)
-        ax_ions.set_xlim(-0.6, len(labels) - 0.4)
-
-    ax_ions.set_yscale('log')
-    ax_ions.set_ylabel('Concentration (mmol kg$^{-1}$)')
-    ax_ions.set_ylim(0.05, 1.0e3)   # data spans Si 0.1 to Cl 546
-    ax_ions.spines['top'].set_visible(False)
-    ax_ions.spines['right'].set_visible(False)
-    ax_ions.grid(True, linestyle='--', alpha=0.35, axis='y', which='major')
-    ax_ions.legend(frameon=False, fontsize=7, loc='lower right', handletextpad=0.4,
-                   borderaxespad=0.6)
-    _save_fig(fig2, figure_path(output_path, 'continental_baseline_ions.png'))
-
-
-# ---------------------------------------------------------------------------
-# Continental baseline, land-fraction series and crossover figures
-# ---------------------------------------------------------------------------
-# Figures for the runs experiments/continental_baseline.py produces. The sweep design (land
-# fractions, grid axes, Earth reference values) is read from that module as `cb`.
-
-# Land-free blue against continental brown, the one colour decision these figures make.
-ARM_COLOURS = {0.3: '#a4632a', 0.0: '#2a6fa4'}
-ARM_LABELS = {0.3: 'Continental (land fraction 0.3)', 0.0: 'Ocean world (land free)'}
-
-# Modern Earth, for the reference marker. Salinity is the sum of the model's tracked ions at
-# their seawater concentrations, so it is comparable with the model's own salinity column.
-EARTH = {'S': 1.0, 'T': 288.0, 'P_CO2': 280e-6, 'pH': 8.1,
-         'salinity': (2.0e-3 * 61.0 + 0.1e-3 * 60.1 + 10.3e-3 * 40.1 +
-                      52.8e-3 * 24.3 + 480e-3 * 23.0 + 550e-3 * 35.45)}
-
-
-# When a run leaves the validity box the model records the box's own limit rather than a computed
-# temperature -- an exact 389 K or 400 K at the hot end, 181 K at the cold end. plot_results says
-# the same of the Da those states carry. Drawing a curve through them manufactures a plateau that
-# reads as physics, so they are dropped from any curve drawn here.
-T_CLAMP_HOT = 389.0
-T_CLAMP_COLD = 181.0
-
-# Validity of the climate model's OLR parameterisation (kamino.climate.analytic), which is the
-# Haqq-Misra et al. (2016) polynomial fit to the Kopparapu et al. (2013, 2014) 1-D
-# radiative-convective columns: 1e-5 bar < pCO2 < 10 bar and 150 K < T < 350 K, error <= 3.3 W/m2.
-# A state outside that box is an extrapolation of the fit, not a prediction of the model.
-OLR_FIT_T_MAX = 350.0
+        s_arr = np.array([r[0] for r in ion_rows])
+        b_model = np.array([r[1] for r in ion_rows])[int(np.argmin(np.abs(s_arr - EARTH['S'])))] * 1e3
+        earth = np.array([spec[2] for spec in ION_SPEC])
+        model = np.array([max(b_model[spec[0]], 1e-4) for spec in ION_SPEC])
+        x = np.arange(len(ION_SPEC))
+        ax.vlines(x, np.minimum(earth, model), np.maximum(earth, model), color='0.6',
+                  linewidth=1.0, zorder=2)
+        ax.scatter(x, earth, marker='o', s=46, facecolors='none', edgecolors='#4C72B0',
+                   linewidths=1.4, zorder=3, label='Earth seawater')
+        ax.scatter(x, model, marker='D', s=34, color='#C44E52', edgecolors='w',
+                   linewidths=0.5, zorder=4, label='Model (calibrated)')
+        ax.set_xticks(x)
+        ax.set_xticklabels([spec[1] for spec in ION_SPEC])
+        ax.axvline(2.5, color='gray', linestyle='--', linewidth=0.8, alpha=0.6, zorder=1)
+        trans = ax.get_xaxis_transform()
+        ax.text(1.0, 1.02, 'Biotically controlled', transform=trans, ha='center', va='bottom',
+                fontsize=8)
+        ax.text(4.5, 1.02, 'Abiotically controlled', transform=trans, ha='center', va='bottom',
+                fontsize=8)
+        ax.set_xlim(-0.6, len(ION_SPEC) - 0.4)
+    ax.set_yscale('log')
+    ax.set_ylabel('Concentration (mmol kg$^{-1}$)')
+    ax.set_ylim(0.05, 1.0e3)
+    ax.spines[['top', 'right']].set_visible(False)
+    ax.grid(True, linestyle='--', alpha=0.35, axis='y', which='major')
+    ax.legend(frameon=False, fontsize=7, loc='lower right', handletextpad=0.4, borderaxespad=0.6)
+    _save_fig(fig, figure_path(output_path, 'continental_baseline_ions.png'))
 
 
 def _olr_limit(pco2_bar):
-    """First local maximum of OLR(T) -- the Simpson-Nakajima radiation limit for this atmosphere.
-
-    OLR is NOT monotonic in T: water vapour makes it plateau near 271 W/m2 (at low CO2) and then
-    fall before the hot branch climbs again. Instellation above that plateau admits no cool-branch
-    solution, which is the runaway greenhouse.
-    """
+    """First local maximum of OLR(T): the Simpson-Nakajima radiation limit for this atmosphere."""
     from kamino.climate.analytic import OLR
     peak = OLR(180.0, pco2_bar)
     for T in np.arange(181.0, 391.0, 1.0):
@@ -2315,48 +1399,23 @@ def _olr_limit(pco2_bar):
 
 
 def _past_runaway(S, pco2_bar, albedo=0.3):
-    """True when absorbed instellation exceeds the OLR limit, i.e. the planet is in runaway.
-
-    This is the check `get_T_surface_analytic` does NOT make. When no cool-branch root exists it
-    returns the first sign change it finds, which lies on the HOT branch beyond the runaway --
-    a number near 357 K that a plain `T < 360` habitability test happily accepts. Measured on
-    this grid that put the continental inner edge at S = 1.15, one grid point too far.
-    """
+    """True when absorbed instellation exceeds the OLR limit, so the stored T is on the hot branch."""
     from kamino.climate.analytic import albedo_funtion
-    from kamino.constants import SOLAR_CONSTANT
-    pco2_bar = max(float(pco2_bar), 1e-5)      # the model's own 1 Pa CO2 floor
+    pco2_bar = max(float(pco2_bar), 1e-5)      # the model's 1 Pa CO2 floor
     A = albedo_funtion(pco2_bar, albedo)
     return S * SOLAR_CONSTANT * (1 - A) * 0.25 > _olr_limit(pco2_bar)
 
 
-def _drop_clamped(group):
-    """Drop out-of-domain rows whose stored T is a box limit rather than a computed value."""
-    clamped = (group['termination'].isin(OUT_OF_DOMAIN) &
-               ((group['T'] >= T_CLAMP_HOT) | (group['T'] <= T_CLAMP_COLD)))
-    return group[~clamped]
-
-
 def _draw_arm(axes, group, colour, cols):
-    """Draw one arm, and report whether any of it is habitable.
-
-    `plot_results._plot_group_on_axes` returns without drawing when a group contains no habitable
-    run at all, which is the right call for a facet of a larger figure but wrong here: at Earth's
-    outgassing rate EVERY land-free run leaves the domain, and silently omitting the line would
-    hide the very comparison this figure exists to make.
-
-    Such an arm is drawn faint, with its clamp sentinels removed and plot_results' hollow
-    per-termination markers on every point, so it reads as "measured, but not habitable". The
-    line stays SOLID deliberately: the line styles are already spoken for by DA_LEGEND, so a
-    dashed fallback would read as "Da >= 1" rather than "not habitable". Colour separates the
-    arms; the hollow markers say these are not habitable states.
-    """
+    """Draw one arm and return whether any run is habitable; a never-habitable arm is drawn faint with hollow markers."""
     if group['termination'].isin(HABITABLE).any():
         _plot_group_on_axes(axes, group, colour, show_markers=False, cols=cols)
         return True
-    shown = _drop_clamped(group)
+    clamped = (group['termination'].isin(OUT_OF_DOMAIN) &
+               ((group['T'] >= T_HOT_WALL) | (group['T'] <= T_COLD_WALL)))
+    shown = group[~clamped]
     for ax, col in zip(axes, cols):
-        ax.plot(shown['instellation'], shown[col], color=colour, linewidth=1.2, alpha=0.5,
-                zorder=2)
+        ax.plot(shown['instellation'], shown[col], color=colour, linewidth=1.2, alpha=0.5, zorder=2)
         for _, row in shown.iterrows():
             if np.isfinite(row[col]):
                 ax.scatter(row['instellation'], row[col],
@@ -2365,99 +1424,64 @@ def _draw_arm(axes, group, colour, cols):
     return False
 
 
-def _arm(df, land):
-    """Rows for one land-fraction arm of the baseline, at the Earth reference on every other axis."""
-    return df[
-        _ref_crust(df) &
-        _ref_redox(df) &
-        _ref_chem(df) &
-        df['reverse_weathering'] &
-        (df['ocean_depth'] == cb.OCEAN_DEPTH) &
-        (df['outgassing'] == cb.OUTGASSING) &
-        (df['crust_production'] == cb.CRUST_PRODUCTION) &
-        (df['f_HT'] == 0.0) &
-        np.isclose(df['land_fraction'], land)
-    ].sort_values('instellation')
+def _arm_handles(arms, habitable):
+    """Legend handles for the land arms, faint with a marker when an arm is never habitable."""
+    return [Line2D([0], [0], color=ARM_COLOURS[l], linewidth=1.6, alpha=1.0 if habitable[l] else 0.5,
+                   marker='' if habitable[l] else 's', markerfacecolor='none',
+                   label=ARM_LABELS[l] + ('' if habitable[l] else ' — never habitable'))
+            for l in arms]
 
 
 def _alk_fluxes(group):
-    """Continental and seafloor alkalinity flux at each run's final state, Tmol eq/yr.
+    """(continental, seafloor) alkalinity flux in Tmol eq/yr, both over the area the model applies them to.
 
-    Both are put on the SAME basis -- the flux the ODE actually applies -- so the ratio means
-    what it looks like:
-
-    * continental is `get_continental_weathering_flux(T, pCO2)` over `land_fraction * surface`,
-      which is how planet.py applies it. On modern Earth this is 8 Tmol eq/yr by calibration
-      (constants.EARTH_CONTINENTAL_WEATHERING_REF), so the number is readable on sight.
-    * seafloor is the recorded `alk_flux` diagnostic rescaled from the FIXED reference area it is
-      stored on to the area the model actually integrates over. planet.py normalises the
-      diagnostic on A_SEAFLOOR_EARTH (0.7 of the surface, a constant) so that it always agrees
-      with plot_results, but `F_diss` is applied over `seafloor_area = (1 - land_fraction) * A`.
-      The conversion is therefore x (1 - land_fraction) / EARTH_OCEAN_FRACTION -- exactly 1 at
-      Earth's land fraction, and 1.43x on a land-free world.
-
-    Returns (continental, seafloor) arrays aligned with `group`.
+    The stored seafloor flux is normalised on Earth's fixed seafloor area, so it is rescaled by
+    (1 - land_fraction) / EARTH_OCEAN_FRACTION.
     """
     from kamino.weathering import get_continental_weathering_flux
     from kamino.chemistry import alk_idx
     from kamino.constants import YR, R_EARTH, EARTH_OCEAN_FRACTION
-
     surface = 4 * np.pi * R_EARTH ** 2
     cont = np.full(len(group), np.nan)
     for i, (_, r) in enumerate(group.iterrows()):
         T, p, land = r['T'], r['P_CO2'], r['land_fraction']
-        if not (np.isfinite(T) and np.isfinite(p)) or land <= 0:
-            cont[i] = 0.0 if land <= 0 else np.nan
-            continue
-        f = get_continental_weathering_flux(float(T), float(p) * 1e5)   # pCO2 stored in bar
-        cont[i] = float(f[alk_idx]) * land * surface * YR / 1e12
+        if land <= 0:
+            cont[i] = 0.0
+        elif np.isfinite(T) and np.isfinite(p):
+            f = get_continental_weathering_flux(float(T), float(p) * 1e5)   # pCO2 stored in bar
+            cont[i] = float(f[alk_idx]) * land * surface * YR / 1e12
     sea = (group['alk_flux'].to_numpy(dtype=float)
            * (1.0 - group['land_fraction'].to_numpy(dtype=float)) / EARTH_OCEAN_FRACTION)
     return cont, sea
 
 
 def _crossover_land_fraction(lands, ratios):
-    """Land fraction where the two alkalinity fluxes are equal, log-interpolated.
-
-    `ratios` may be given either way up. The crossing sits where log10(ratio) = 0, and inverting
-    every ratio flips the sign of both the numerator and the denominator of the interpolation
-    weight, so the land fraction it returns is identical. Callers here pass continental/seafloor
-    in one place and seafloor/continental in the other; both are correct.
-
-    Returns None when the sampled land fractions do not bracket a crossing -- the sweep then
-    bounds the crossover rather than locating it, which the caller must say rather than
-    extrapolate off the end of the grid.
-    """
+    """Land fraction where the flux ratio (either way up) crosses 1, log-interpolated; None if not bracketed."""
     pairs = sorted((float(l), float(r)) for l, r in zip(lands, ratios)
                    if l > 0 and np.isfinite(r) and r > 0)
     for (l0, r0), (l1, r1) in zip(pairs, pairs[1:]):
         if (r0 - 1.0) * (r1 - 1.0) <= 0 and r0 != r1:
-            w = (0.0 - np.log10(r0)) / (np.log10(r1) - np.log10(r0))
+            w = -np.log10(r0) / (np.log10(r1) - np.log10(r0))
             return float(10 ** (np.log10(l0) + w * (np.log10(l1) - np.log10(l0))))
     return None
 
 
+def _crossings(ratio):
+    """{S: crossover land fraction} from {(S, land): flux ratio}, for instellations that bracket one."""
+    out = {}
+    for s in sorted({s for s, _ in ratio}):
+        lands = sorted(l for (s2, l) in ratio if s2 == s)
+        got = _crossover_land_fraction(lands, [ratio[(s, l)] for l in lands])
+        if got is not None:
+            out[s] = got
+    return out
+
+
 def hz_edges(group):
-    """Instellation limits of the habitable band along one instellation line.
+    """(S_outer, S_inner, outer_kind, inner_kind) of the habitable band on one line, or None.
 
-    Returns ``(S_outer, S_inner, outer_kind, inner_kind)``, or None where no run on the line is
-    habitable. A run counts as habitable when its integration is trustworthy (converged, or ran
-    to 2 Gyr) AND its final surface temperature lies between the snowball and runaway
-    thresholds -- the same two numbers `plot_results._style_axes` draws as walls.
-
-    How each edge was located is reported rather than assumed, because the three cases are not
-    equally good and the difference matters when the number is quoted:
-
-    ``crossing``   both bracketing runs are trustworthy, so T(S) is interpolated onto the
-                   threshold. This is a measurement.
-    ``bracketed``  the neighbour left the model domain at the matching wall -- frozen below the
-                   outer edge, runaway above the inner one. That is a real outcome, but its
-                   stored T is a clamp sentinel (an exact 181 K or 389 K), so interpolating
-                   through it would invent a slope. The edge is placed at the midpoint of the
-                   grid interval and is uncertain by half a grid step.
-    ``open``       there is no neighbour (the sweep ran out of range) or the neighbour's
-                   integration is not trustworthy. The edge is the last habitable grid point and
-                   is a BOUND -- the true edge is at least this far out.
+    kind is 'crossing' (interpolated between trustworthy runs), 'bracketed' (midpoint of the step to
+    a run at the matching wall) or 'open' (last habitable point; the true edge lies further out).
     """
     g = group.sort_values('instellation')
     S = g['instellation'].to_numpy(dtype=float)
@@ -2465,18 +1489,11 @@ def hz_edges(group):
     wall = (g['domain_wall'].to_numpy(dtype=object) if 'domain_wall' in g
             else np.full(len(g), None, dtype=object))
     trusted = g['termination'].isin(HABITABLE).to_numpy() & np.isfinite(T)
-
-    # A temperature window alone is not a habitability test in this model. Two states pass
-    # `T < T_RUNAWAY` without being habitable at all: one past the runaway greenhouse, whose T is
-    # read off the hot branch (see `_past_runaway`), and one above the OLR fit's 350 K ceiling,
-    # where the climate model is extrapolating. Both are excluded here rather than by moving
-    # T_RUNAWAY, which is a plot_results convention shared with every other figure.
-    S_ok = np.array([not _past_runaway(s, p) for s, p in
-                     zip(S, g['P_CO2'].to_numpy(dtype=float))])
+    # Past the runaway or above the OLR fit's range, a T inside the window is still not habitable.
+    S_ok = np.array([not _past_runaway(s, p) for s, p in zip(S, g['P_CO2'].to_numpy(dtype=float))])
     hab = trusted & (T > T_SNOWBALL) & (T < T_RUNAWAY) & (T <= OLR_FIT_T_MAX) & S_ok
     if not hab.any():
         return None
-
     idx = np.flatnonzero(hab)
     i0, i1 = int(idx[0]), int(idx[-1])
 
@@ -2494,34 +1511,17 @@ def hz_edges(group):
             inner = float(np.interp(T_RUNAWAY, [T[i1], T[i1 + 1]], [S[i1], S[i1 + 1]]))
             inner_kind = 'crossing'
         elif wall[i1 + 1] == 'hot' or not S_ok[i1 + 1]:
-            # `not S_ok` is the runaway greenhouse: the neighbour has no cool-branch solution, so
-            # the edge lies in this interval. Not interpolated -- the neighbour's T is on the hot
-            # branch, so a line drawn through it has no meaning.
             inner, inner_kind = 0.5 * (S[i1] + S[i1 + 1]), 'bracketed'
-
     return float(outer), float(inner), outer_kind, inner_kind
 
 
 def plot_baseline_vs_ocean(arms, output_path):
-    """T, pCO2, pH and salinity against instellation, continental arm against ocean arm.
-
-    Both lines carry plot_results' Damkohler styling, so the comparison also shows whether the
-    two arms sit in the same weathering regime -- which they do not: continental weathering is
-    transport-limited on Earth (Da >> 1) while the land-free worlds are kinetically limited.
-    """
-    habitable = {land: group['termination'].isin(HABITABLE).any()
-                 for land, group in arms.items()}
-    handles = [Line2D([0], [0], color=ARM_COLOURS[l], linewidth=1.6,
-                         alpha=1.0 if habitable[l] else 0.5,
-                         marker='' if habitable[l] else 's', markerfacecolor='none',
-                         label=ARM_LABELS[l] + ('' if habitable[l]
-                                                else ' — never habitable'))
-               for l in arms] + list(DA_LEGEND)
-
+    """Continental arm against the ocean-world arm: T, pCO2, pH and salinity against instellation."""
+    habitable = {land: group['termination'].isin(HABITABLE).any() for land, group in arms.items()}
+    handles = _arm_handles(arms, habitable) + list(DA_LEGEND)
     for cols, sfx in _panel_groups(True):
         fig, axes = plt.subplots(len(cols), 1, sharex=True,
-                                    figsize=figure_size('single', n_rows=len(cols),
-                                                           row_height=2.0))
+                                 figsize=figure_size('single', n_rows=len(cols), row_height=2.0))
         for land, group in arms.items():
             _draw_arm(axes, group, ARM_COLOURS[land], cols)
         _style_axes(axes, cols)
@@ -2533,38 +1533,23 @@ def plot_baseline_vs_ocean(arms, output_path):
 
 
 def plot_habitable_zone(arms, output_path):
-    """The headline figure: where the model keeps a planet temperate, with land and without.
-
-    Upper panel is the temperature curve each zone is read off; lower panel is the zone itself,
-    one bar per arm on the same instellation axis. Edges located only as bounds (see `hz_edges`)
-    carry a caret pointing the way the true edge lies, so a bar that is merely wider than the
-    sweep could resolve cannot be read as a measured one.
-    """
-    edges = {}
-    for land, group in arms.items():
-        got = hz_edges(group)
-        if got is not None:
-            edges[land] = got
+    """Temperature curves with the habitable zone of each arm as a bar; carets mark edges that are only bounds."""
+    edges = {land: e for land, group in arms.items() if (e := hz_edges(group)) is not None}
     if cb.LAND_FRACTION not in edges:
         print("No habitable band on the continental arm -- skipping the habitable-zone figure.")
         return edges
 
     fig, (ax, ax_z) = plt.subplots(2, 1, sharex=True, height_ratios=[3, 1],
-                                      figsize=figure_size('single', height=4.0))
-
-    habitable = {}
-    for land, group in arms.items():
-        habitable[land] = _draw_arm([ax], group, ARM_COLOURS[land], ['T'])
+                                   figsize=figure_size('single', height=4.0))
+    habitable = {land: _draw_arm([ax], group, ARM_COLOURS[land], ['T'])
+                 for land, group in arms.items()}
     _style_axes([ax], ['T'])
     ax.set_xlabel('')
     ax.scatter(EARTH['S'], EARTH['T'], marker='*', s=180, color='gold', edgecolors='k',
                linewidths=0.7, zorder=6)
 
-    # Every arm gets a row, including one with no habitable band at all -- that is the result at
-    # Earth outgassing, and a missing row would read as a missing run rather than an empty zone.
-    for row, land in enumerate(arms):
-        colour = ARM_COLOURS[land]
-        y = len(arms) - 1 - row
+    for row, land in enumerate(arms):   # every arm gets a row, even one with no habitable band
+        colour, y = ARM_COLOURS[land], len(arms) - 1 - row
         if land not in edges:
             ax_z.text(0.5 * sum(ax.get_xlim()), y, 'no habitable zone', ha='center',
                       va='center', fontsize=7, color=colour, style='italic', zorder=6)
@@ -2587,22 +1572,17 @@ def plot_habitable_zone(arms, output_path):
     ax_z.grid(True, axis='x', linestyle='--', alpha=0.4, zorder=0)
     ax_z.set_xlim(*ax.get_xlim())
 
-    handles = [Line2D([0], [0], color=ARM_COLOURS[l], linewidth=1.6,
-                         alpha=1.0 if habitable[l] else 0.5,
-                         marker='' if habitable[l] else 's', markerfacecolor='none',
-                         label=ARM_LABELS[l] + ('' if habitable[l]
-                                                else ' — never habitable'))
-               for l in arms]
+    handles = _arm_handles(arms, habitable)
     if any(k == 'open' for e in edges.values() for k in e[2:]):
         handles.append(Line2D([0], [0], color='k', linestyle='none', marker='>', markersize=5,
-                                 label='Edge is a bound (sweep limit)'))
+                              label='Edge is a bound (sweep limit)'))
     _add_figure_legend(fig, [ax, ax_z], handles)
     _save_fig(fig, figure_path(output_path, 'continental_habitable_zone.png'))
     return edges
 
 
 def _report(arms, edges):
-    """Print the habitable-zone edges, with how each was located. See `hz_edges`."""
+    """Print the habitable-zone edges and warn if CONTINENTAL_HZ_* no longer match them."""
     print(f"\nHabitable zone (T between {T_SNOWBALL:.0f} K and {T_RUNAWAY:.0f} K), "
           f"{cb._pe_label(REF_PE)} ocean, {cb.OCEAN_DEPTH/1000:g} km, outgassing "
           f"{cb.OUTGASSING:g}x, crust {cb.CRUST_PRODUCTION:g}x Earth:")
@@ -2621,11 +1601,6 @@ def _report(arms, edges):
         (a_lo, a_hi, _, _), (b_lo, b_hi, _, _) = edges[cb.LAND_FRACTION], edges[0.0]
         print(f"  continental zone is {(a_hi - a_lo) - (b_hi - b_lo):+.3f} S wide relative to "
               f"the ocean world ({(a_hi - a_lo) / (b_hi - b_lo):.2f}x)")
-
-    # plot_results draws these edges as vertical lines on every other instellation figure, from
-    # its own hardcoded copy. Say so loudly when the two disagree rather than let every figure
-    # in the paper quote a stale zone -- the same reason parameter_sweep._warn_constant_drift
-    # exists for the chemistry constants.
     if cb.LAND_FRACTION in edges:
         lo, hi = edges[cb.LAND_FRACTION][:2]
         for label, here, there in (('CONTINENTAL_HZ_OUTER', lo, CONTINENTAL_HZ_OUTER),
@@ -2636,7 +1611,7 @@ def _report(arms, edges):
 
 
 def _land_series(df, output_path):
-    """{land_fraction: instellation-sorted rows with diagnostics}, for the land fractions present."""
+    """{land_fraction: runs with diagnostics} for the land-fraction series on disk."""
     series = {}
     for land in cb.LAND_FRACTIONS:
         sub = _arm(df, land)
@@ -2645,80 +1620,47 @@ def _land_series(df, output_path):
     return series
 
 
-def _land_colours(lands):
-    """Colour per land fraction, log-scaled over the positive ones.
-
-    0 cannot sit on a log scale and is not just 'a bit less land' -- it is the land-free ocean
-    world every other sweep runs. It keeps the baseline figures' blue and its own legend entry.
-    """
-    positive = sorted(l for l in lands if l > 0)
-    cmap = LAND_FRACTION_CMAP
-    # A single positive value gives LogNorm(vmin == vmax), which cannot be normalised. That
-    # happens whenever only the baseline's own land fraction is on disk -- i.e. before the
-    # land-fraction sweep has been run -- so it is the ordinary case, not an error.
-    norm = (mcolors.LogNorm(vmin=min(positive), vmax=max(positive))
-            if len(positive) > 1 else None)
-    if norm is not None:
-        colours = {l: cmap(norm(l)) for l in positive}
-    else:
-        colours = {l: ARM_COLOURS[cb.LAND_FRACTION] for l in positive}
-    if 0.0 in lands:
-        colours[0.0] = ARM_COLOURS[0.0]
-    return colours, cmap, norm
-
-
 def plot_land_fraction_series(series, output_path):
-    """T, pCO2, pH and salinity against instellation, one line per land fraction."""
+    """T, pCO2, pH and salinity against instellation, one line per land fraction (0 in the ocean-world blue)."""
     if len(series) < 2:
         print("Fewer than two land fractions on disk -- skipping the land-fraction series.")
         return
-    colours, cmap, norm = _land_colours(series)
+    positive = sorted(l for l in series if l > 0)
+    norm = mcolors.LogNorm(vmin=min(positive), vmax=max(positive)) if len(positive) > 1 else None
+    colours = {l: LAND_FRACTION_CMAP(norm(l)) if norm else ARM_COLOURS[cb.LAND_FRACTION]
+               for l in positive}
+    colours[0.0] = ARM_COLOURS[0.0]
 
     for cols, sfx in _panel_groups(True):
         fig, axes = plt.subplots(len(cols), 1, sharex=True,
-                                    figsize=figure_size('single', n_rows=len(cols),
-                                                           row_height=2.0))
+                                 figsize=figure_size('single', n_rows=len(cols), row_height=2.0))
         for land, group in sorted(series.items(), reverse=True):
             _draw_arm(axes, group, colours[land], cols)
         _style_axes(axes, cols)
         if norm is not None:
-            positive = sorted(l for l in series if l > 0)
-            _add_colorbar(fig, list(axes), cmap, norm, 'Land fraction',
-                             ticks=positive, ticklabels=[f'{v:g}' for v in positive],
-                             aspect=len(cols) * 7.5)
-        handles = []
-        if 0.0 in series:
-            handles.append(Line2D([0], [0], color=ARM_COLOURS[0.0], linewidth=1.6,
-                                     label='Land free (0)'))
-        handles += list(DA_LEGEND)
+            _add_colorbar(fig, list(axes), LAND_FRACTION_CMAP, norm, 'Land fraction', ticks=positive,
+                          ticklabels=[f'{v:g}' for v in positive], aspect=len(cols) * 7.5)
+        handles = ([Line2D([0], [0], color=ARM_COLOURS[0.0], linewidth=1.6, label='Land free (0)')]
+                   if 0.0 in series else []) + list(DA_LEGEND)
         _add_figure_legend(fig, axes, handles)
         _save_fig(fig, figure_path(output_path, f'land_fraction_series{sfx}.png'))
 
 
 def plot_weathering_crossover(series, output_path):
-    """Where seafloor weathering overtakes continental weathering as land fraction falls.
+    """Continental and seafloor alkalinity flux against land fraction near S = 1, and the crossover against S.
 
-    Left: both alkalinity fluxes against land fraction at the instellation nearest Earth's.
-    Right: the crossover land fraction across instellation.
-
-    Only runs that reached a steady state (converged, or integrated to 2 Gyr) are used. A run
-    stopped at a domain wall is a planet still evolving when the model gave up, and its fluxes
-    are not a balance of anything -- reading a crossover off one would be reading it off a
-    transient.
+    Only steady states (converged or 2 Gyr) are used; a run stopped at a wall is still evolving.
     """
     if len(series) < 2:
         print("Fewer than two land fractions on disk -- skipping the crossover figure.")
         return None
-
-    # (land, S) -> (continental, seafloor), steady states only.
-    rows, dropped = {}, 0
+    rows, dropped = {}, 0   # (land, S) -> (continental, seafloor)
     for land, group in series.items():
         steady = group[group['termination'].isin(HABITABLE)]
         dropped += len(group) - len(steady)
         if steady.empty:
             continue
-        cont, sea = _alk_fluxes(steady)
-        for s, c, f in zip(steady['instellation'], cont, sea):
+        for s, c, f in zip(steady['instellation'], *_alk_fluxes(steady)):
             if np.isfinite(c) and np.isfinite(f) and f > 0:
                 rows[(float(land), float(s))] = (float(c), float(f))
     if not rows:
@@ -2728,14 +1670,7 @@ def plot_weathering_crossover(series, output_path):
         print(f"  crossover: ignoring {dropped} run(s) that never reached a steady state.")
 
     s_vals = sorted({s for _, s in rows})
-    crossings = {}
-    for s in s_vals:
-        lands = [l for (l, ss) in rows if ss == s]
-        ratios = [rows[(l, s)][0] / rows[(l, s)][1] for l in lands]
-        got = _crossover_land_fraction(lands, ratios)
-        if got is not None:
-            crossings[s] = got
-
+    crossings = _crossings({(s, l): c / f for (l, s), (c, f) in rows.items()})
     s_ref = min(s_vals, key=lambda s: abs(s - EARTH['S']))
     fig, (ax, ax_c) = plt.subplots(1, 2, figsize=figure_size('double', height=2.8))
 
@@ -2759,10 +1694,9 @@ def plot_weathering_crossover(series, output_path):
     ax.set_title(f'S = {s_ref:g}', fontsize=8)
     ax.grid(True, linestyle='--', alpha=0.4)
     ax.legend(fontsize=7, frameon=False)
-
     if crossings:
-        ax_c.plot(list(crossings), [crossings[s] for s in crossings], color='k',
-                  marker='o', markersize=3, linewidth=1.4)
+        ax_c.plot(list(crossings), list(crossings.values()), color='k', marker='o', markersize=3,
+                  linewidth=1.4)
     ax_c.set_yscale('log')
     ax_c.set_xlabel('Instellation (S/S₀)')
     ax_c.set_ylabel('Crossover land fraction')
@@ -2772,167 +1706,25 @@ def plot_weathering_crossover(series, output_path):
     print("\nContinental vs seafloor alkalinity flux (Tmol eq/yr), steady states only:")
     print(f"  {'land':>8} " + ' '.join(f'{s:>9.2f}' for s in s_vals))
     for land in sorted(series, reverse=True):
-        cells = []
-        for s in s_vals:
-            v = rows.get((land, s))
-            cells.append(f"{v[0] / v[1]:9.3g}" if v else f"{'--':>9}")
+        cells = [f"{rows[(land, s)][0] / rows[(land, s)][1]:9.3g}" if (land, s) in rows
+                 else f"{'--':>9}" for s in s_vals]
         print(f"  {land:8g} " + ' '.join(cells))
     print("  (continental / seafloor; < 1 means seafloor weathering dominates)")
     if crossings:
-        lo, hi = min(crossings.values()), max(crossings.values())
-        print(f"  crossover land fraction: {lo:.3g} to {hi:.3g} over S = "
-              f"{min(crossings):g}-{max(crossings):g}")
+        print(f"  crossover land fraction: {min(crossings.values()):.3g} to "
+              f"{max(crossings.values()):.3g} over S = {min(crossings):g}-{max(crossings):g}")
     else:
         ratios_all = [c / f for c, f in rows.values()]
         print(f"  no crossing inside the sampled land fractions -- ratio spans "
-              f"{min(ratios_all):.3g} to {max(ratios_all):.3g}; extend continental_baseline.LAND_FRACTIONS to bracket it.")
+              f"{min(ratios_all):.3g} to {max(ratios_all):.3g}; "
+              f"extend continental_baseline.LAND_FRACTIONS to bracket it.")
     return crossings
 
 
-def plot_weathering_ratio_map(series, output_path, levels=13):
-    """Contour map of seafloor / continental alkalinity flux over instellation x land fraction.
-
-    The quantity is a POLARITY -- which of the two sinks is winning -- so it is contoured as
-    log10(seafloor / continental) on a diverging scale with a neutral midpoint pinned to a ratio
-    of 1, and the ratio = 1 contour is drawn as a solid line. That line is the answer to "where
-    does seafloor weathering take over": everything above it (toward less land) is
-    seafloor-dominated, everything below is continental-dominated.
-
-    Land fraction 0 is NOT on the map. Continental weathering there is exactly zero, so the ratio
-    is infinite rather than large -- it is the limit the map runs toward, not a row in it.
-
-    Only steady states (converged, or integrated to 2 Gyr) are contoured. A run stopped at a
-    domain wall was still evolving when the model gave up, so its two fluxes are not a balance of
-    anything; those cells are left blank and marked, rather than interpolated through silently.
-    """
-    lands = sorted(l for l in series if l > 0)
-    if len(lands) < 2:
-        print("Fewer than two positive land fractions -- skipping the ratio map.")
-        return None
-
-    ratio, dropped_pts = {}, []
-    for land in lands:
-        group = series[land]
-        steady = group[group['termination'].isin(HABITABLE)]
-        for _, r in group.iterrows():
-            if r['name'] not in set(steady['name']):
-                dropped_pts.append((float(r['instellation']), land))
-        if steady.empty:
-            continue
-        cont, sea = _alk_fluxes(steady)
-        for s, c, f in zip(steady['instellation'], cont, sea):
-            if np.isfinite(c) and np.isfinite(f) and c > 0 and f > 0:
-                ratio[(float(s), land)] = f / c
-
-    if not ratio:
-        print("No steady-state runs with both fluxes positive -- skipping the ratio map.")
-        return None
-
-    s_vals = sorted({s for s, _ in ratio})
-    Z = np.full((len(lands), len(s_vals)), np.nan)
-    for i, land in enumerate(lands):
-        for j, s in enumerate(s_vals):
-            v = ratio.get((s, land))
-            if v is not None:
-                Z[i, j] = np.log10(v)
-    Zm = np.ma.masked_invalid(Z)
-
-    # Diverging about ratio = 1, but NOT forced symmetric. The ratio runs from ~1e-3.5 to only
-    # ~1e0.5, so a symmetric range would reserve half the ramp for values that do not occur and
-    # squeeze every real contrast into one end. TwoSlopeNorm scales the two sides independently,
-    # which keeps the neutral midpoint pinned to 1 -- the only value that means anything here --
-    # while both halves still use their full colour range.
-    zmin, zmax = float(np.nanmin(Z)), float(np.nanmax(Z))
-    step = 0.5                                   # half-decade bands, so 0 is always a boundary
-    lo = np.floor(zmin / step) * step
-    hi = np.ceil(zmax / step) * step
-    bands = np.arange(lo, hi + 0.5 * step, step)
-    norm = mcolors.TwoSlopeNorm(vmin=lo, vcenter=0.0, vmax=max(hi, step))
-    cmap = WEATHERING_RATIO_CMAP   # diverging, neutral (white) midpoint at ratio = 1
-
-    fig, ax = plt.subplots(1, 1, figsize=figure_size('single', height=2.9))
-    cf = ax.contourf(s_vals, lands, Zm, levels=bands, cmap=cmap, norm=norm, extend='both')
-    # The crossover itself, drawn on top of the fill.
-    if np.nanmin(Z) < 0 < np.nanmax(Z):
-        cs = ax.contour(s_vals, lands, Zm, levels=[0.0], colors='k', linewidths=1.4)
-        ax.clabel(cs, fmt={0.0: 'equal'}, fontsize=7, inline=True)
-
-    for s, land in dropped_pts:
-        ax.plot(s, land, marker='x', color='0.45', markersize=3.5, mew=0.9, zorder=4)
-
-    ax.set_yscale('log')
-    ax.set_xlabel('Instellation (S/S₀)')
-    ax.set_ylabel('Land fraction')
-    # A small margin on both axes so the markers on the edge rows and columns are not sliced in
-    # half by the frame; the y margin is taken in log space, where that axis lives.
-    dx = 0.02 * (max(s_vals) - min(s_vals))
-    dy = 0.04 * (np.log10(max(lands)) - np.log10(min(lands)))
-    ax.set_xlim(min(s_vals) - dx, max(s_vals) + dx)
-    ax.set_ylim(10 ** (np.log10(min(lands)) - dy), 10 ** (np.log10(max(lands)) + dy))
-
-    # Ticks as ratios, not decades of a log ratio -- the reader wants "10x", not "1 dex".
-    ticks = [t for t in range(-9, 10) if lo <= t <= hi]
-    cbar = fig.colorbar(cf, ax=ax, pad=0.02, aspect=22, ticks=ticks)
-    cbar.set_label('Seafloor / continental alkalinity flux')
-    cbar.set_ticklabels([('1' if t == 0 else f'$10^{{{t}}}$') for t in ticks])
-    if np.nanmin(Z) < 0 < np.nanmax(Z):
-        cbar.ax.axhline(0, color='k', linewidth=1.2)
-
-    _save_fig(fig, figure_path(output_path, 'weathering_ratio_map.png'))
-
-    print("\nSeafloor / continental alkalinity flux (steady states only):")
-    print(f"  {'land':>8} " + ' '.join(f'{s:>8.2f}' for s in s_vals))
-    for i, land in enumerate(reversed(lands)):
-        row = Z[len(lands) - 1 - i]
-        cells = [(f"{10 ** v:8.2g}" if np.isfinite(v) else f"{'--':>8}") for v in row]
-        print(f"  {land:8g} " + ' '.join(cells))
-    if dropped_pts:
-        print(f"  ({len(dropped_pts)} cell(s) blank: no steady state)")
-    return ratio
-
-
-def _grid_slice(df, outgassing, crust, mg_si):
-    """{land_fraction: rows} for one (outgassing, crust production, Mg/Si) cell of the grid.
-
-    Restricted to the COARSE axes even where finer runs exist. The Earth-reference cell
-    (out 1x, crust 1x, Mg/Si 1.25) is also where the land-fraction series ran, so without this it
-    would carry ~3x the instellation samples and two extra land fractions. Contour interpolation
-    depends on sampling density, so that one panel would be smoother and reach further in
-    instellation than its neighbours -- a difference in the sampling, read as a difference in the
-    physics. The fine runs keep their own figure (plot_weathering_ratio_map).
-    """
-    sub = df[
-        df['instellation'].isin(cb.COARSE_INSTELLATION) &
-        df['land_fraction'].apply(
-            lambda v: any(np.isclose(v, l) for l in cb.COARSE_LAND_FRACTIONS)) &
-        _ref_redox(df) &
-        _ref_chem(df) &
-        df['reverse_weathering'] &
-        (df['ocean_depth'] == cb.OCEAN_DEPTH) &
-        (df['outgassing'] == outgassing) &
-        (df['crust_production'] == crust) &
-        (df['f_HT'] == 0.0) &
-        np.isclose(df['mg_si'], mg_si) &
-        np.isclose(df['delta_iw'], cb.DELTA_IW)
-    ]
-    return {float(l): sub[np.isclose(sub['land_fraction'], l)].sort_values('instellation')
-            for l in sorted(sub['land_fraction'].unique())}
-
-
 def _ratio_cells(series, output_path):
-    """Ratio cells for one panel: ``(ratio, not_steady, net_sink)``.
+    """(ratio, not_steady, net_sink) for one panel: seafloor/continental flux keyed by (S, land).
 
-    A cell can be missing for two quite different reasons, and they are returned separately so a
-    figure can mark them differently rather than leaving identical blanks:
-
-    ``not_steady``  the run never reached a steady state (left the model domain, or hit the
-                    wall-clock cap), so its fluxes are a transient, not a balance.
-    ``net_sink``    the run IS a steady state but its seafloor alkalinity flux is NEGATIVE -- the
-                    pore space precipitates more than the basalt dissolves, so the seafloor is a
-                    net alkalinity sink. That is a real outcome, not a failure; it just has no
-                    place on a log ratio. It shows up where continental weathering is enormous
-                    (~150 Tmol/yr at 10x outgassing with land), which floods the ocean with
-                    cations until pore precipitation overwhelms dissolution.
+    not_steady runs never reached a steady state; net_sink runs are steady with a negative seafloor flux.
     """
     ratio, not_steady, net_sink = {}, [], []
     for land, group in series.items():
@@ -2945,8 +1737,7 @@ def _ratio_cells(series, output_path):
                        if r['name'] not in names]
         if steady.empty:
             continue
-        cont, sea = _alk_fluxes(steady)
-        for s, c, f in zip(steady['instellation'], cont, sea):
+        for s, c, f in zip(steady['instellation'], *_alk_fluxes(steady)):
             if np.isfinite(c) and np.isfinite(f) and c > 0 and f > 0:
                 ratio[(float(s), land)] = f / c
             elif np.isfinite(f) and f <= 0:
@@ -2954,46 +1745,147 @@ def _ratio_cells(series, output_path):
     return ratio, not_steady, net_sink
 
 
-def plot_weathering_ratio_grid(df, output_path, step=0.5):
-    """The ratio map faceted over the coarse grid: crust production x outgassing, per Mg/Si.
+def _ratio_scale(log_values, step=0.5):
+    """(bands, norm, ticks): half-decade bands and a norm diverging about ratio 1, not forced symmetric."""
+    lo = np.floor(min(log_values) / step) * step
+    hi = np.ceil(max(log_values) / step) * step
+    norm = mcolors.TwoSlopeNorm(vmin=min(lo, -step), vcenter=0.0, vmax=max(hi, step))
+    return np.arange(lo, hi + 0.5 * step, step), norm, [t for t in range(-9, 10) if lo <= t <= hi]
 
-    One figure per mantle Mg/Si, so the two compositions are compared panel-for-panel rather than
-    by colour. Every panel shares ONE colour scale, computed across BOTH figures -- otherwise each
-    panel would renormalise to its own range and the question the grid exists to answer (does the
-    crossover move with tectonics or crust chemistry?) would be invisible, because every panel
-    would look alike whatever its numbers were.
 
-    Same conventions as the single map: diverging about a ratio of 1, land fraction 0 excluded
-    (continental weathering is exactly zero there, so the ratio is infinite), steady states only,
-    and cells without one left blank and marked.
+def _ratio_panel(ax, cells, bands, norm, lands=None, marker_size=3, line_width=1.2):
+    """Contour one (ratio, not_steady, net_sink) panel; returns (contourf, ratio = 1 contour) or Nones."""
+    ratio, not_steady, net_sink = cells
+    s_vals = sorted({s for s, _ in ratio})
+    lands = sorted({l for _, l in ratio}) if lands is None else lands
+    cf = cs = None
+    if len(s_vals) > 1 and len(lands) > 1:
+        Z = np.full((len(lands), len(s_vals)), np.nan)
+        for (s, l), v in ratio.items():
+            Z[lands.index(l), s_vals.index(s)] = np.log10(v)
+        Zm = np.ma.masked_invalid(Z)
+        cf = ax.contourf(s_vals, lands, Zm, levels=bands, cmap=WEATHERING_RATIO_CMAP, norm=norm,
+                         extend='both')
+        if np.nanmin(Z) < 0 < np.nanmax(Z):
+            cs = ax.contour(s_vals, lands, Zm, levels=[0.0], colors='k', linewidths=line_width)
+    else:
+        ax.text(0.5, 0.5, 'no steady state', transform=ax.transAxes, ha='center', va='center',
+                fontsize=7, color='0.5', style='italic')
+    for s, l in not_steady:
+        ax.plot(s, l, marker='x', color='0.45', markersize=marker_size, mew=0.8, zorder=4)
+    for s, l in net_sink:
+        ax.plot(s, l, marker='o', markerfacecolor='none', markeredgecolor='0.25',
+                markersize=marker_size + 1, mew=0.9, zorder=4)
+    ax.set_yscale('log')
+    return cf, cs
 
-    READ THE Mg/Si AND CRUST-PRODUCTION AXES WITH CARE. Both feed the SEAFLOOR side only:
-    `mantle_mg_si` reaches the model through `Planet.crust_composition`, and
-    `crust_production_rate` through `J_total`, and neither is an argument to
-    `get_continental_weathering_flux`, which sees only T and pCO2 against a `F_alk_ref` pinned to
-    modern Earth and a cation split fixed to modern river chemistry. So continental weathering
-    cannot respond to crust chemistry or tectonic rate except through the shared climate.
 
-    That is not a small correction. Measured at land 0.003, S = 0.8, going Mg/Si 1.25 -> 1.8:
-    the seafloor flux rises only 1.3-1.8x while the continental flux FALLS to 0.48-0.68x, because
-    the stronger seafloor sink draws pCO2 down (1.45 -> 0.76 bar) and cools the planet
-    (330.5 -> 321.6 K), weakening WHAK. In 4 of 5 cells the climate-mediated continental change
-    is the larger of the two. The Mg/Si signal here is therefore mostly an indirect response of a
-    composition-blind continental law; a continental crust that tracked mantle Mg/Si would weather
-    faster too and cancel part of it, so treat the shift as an UPPER BOUND.
+def _ratio_colorbar(fig, ax, cf, ticks, aspect):
+    cbar = fig.colorbar(cf, ax=ax, pad=0.02, aspect=aspect, ticks=ticks)
+    cbar.set_label('Seafloor / continental alkalinity flux')
+    cbar.set_ticklabels(['1' if t == 0 else f'$10^{{{t}}}$' for t in ticks])
+    if 0 in ticks:
+        cbar.ax.axhline(0, color='k', linewidth=1.2)
 
-    The crust-production axis is likewise one-sided. On a real planet tectonic vigour also drives
-    orogeny and uplift, hence physical erosion and the supply of fresh silicate to continental
-    weathering -- the supply-limited regime of West et al. (2005) and Maher & Chamberlain (2014).
-    The seafloor law here carries transport/supply limitation (sedimentation, Damkohler number)
-    but the continental law is pure kinetic WHAK with no runoff and no supply term, so that
-    coupling has no route into the model at all.
+
+def _ratio_facets(cells, rows, cols, row_label, col_label, scale, path, title=None, height=5.0):
+    """Grid of ratio panels, largest row value on top, all on one shared colour scale."""
+    bands, norm, ticks = scale
+    fig, axes = plt.subplots(len(rows), len(cols), sharex=True, sharey=True, squeeze=False,
+                             figsize=figure_size('double', height=height))
+    cf = None
+    for i, rv in enumerate(reversed(rows)):
+        for j, cv in enumerate(cols):
+            ax = axes[i, j]
+            got, _ = _ratio_panel(ax, cells.get((rv, cv), ({}, [], [])), bands, norm)
+            cf = got if got is not None else cf
+            ax.grid(True, linestyle='--', alpha=0.3)
+            if i == 0:
+                ax.set_title(col_label(cv), fontsize=8)
+            if j == 0:
+                lbl = row_label(rv)
+                ax.set_ylabel(f'{lbl}\nLand fraction' if lbl else 'Land fraction', fontsize=7)
+            if i == len(rows) - 1 and j == len(cols) // 2:
+                ax.set_xlabel('Instellation (S/S₀)')
+    if cf is not None:
+        _ratio_colorbar(fig, list(axes.ravel()), cf, ticks, aspect=30)
+    if title:
+        fig.suptitle(title, fontsize=9)
+    _save_fig(fig, path)
+
+
+def plot_weathering_ratio_map(series, output_path):
+    """Seafloor / continental alkalinity flux over instellation x land fraction (steady states only)."""
+    lands = sorted(l for l in series if l > 0)
+    if len(lands) < 2:
+        print("Fewer than two positive land fractions -- skipping the ratio map.")
+        return None
+    cells = _ratio_cells(series, output_path)
+    ratio, not_steady = cells[0], cells[1]
+    if not ratio:
+        print("No steady-state runs with both fluxes positive -- skipping the ratio map.")
+        return None
+    s_vals = sorted({s for s, _ in ratio})
+    bands, norm, ticks = _ratio_scale([np.log10(v) for v in ratio.values()])
+
+    fig, ax = plt.subplots(1, 1, figsize=figure_size('single', height=2.9))
+    cf, cs = _ratio_panel(ax, cells, bands, norm, lands=lands, marker_size=3.5, line_width=1.4)
+    if cs is not None:
+        ax.clabel(cs, fmt={0.0: 'equal'}, fontsize=7, inline=True)
+    ax.set_xlabel('Instellation (S/S₀)')
+    ax.set_ylabel('Land fraction')
+    dx = 0.02 * (max(s_vals) - min(s_vals))   # margins so edge markers are not cut by the frame
+    dy = 0.04 * (np.log10(max(lands)) - np.log10(min(lands)))
+    ax.set_xlim(min(s_vals) - dx, max(s_vals) + dx)
+    ax.set_ylim(10 ** (np.log10(min(lands)) - dy), 10 ** (np.log10(max(lands)) + dy))
+    _ratio_colorbar(fig, ax, cf, ticks, aspect=22)
+    _save_fig(fig, figure_path(output_path, 'weathering_ratio_map.png'))
+
+    print("\nSeafloor / continental alkalinity flux (steady states only):")
+    print(f"  {'land':>8} " + ' '.join(f'{s:>8.2f}' for s in s_vals))
+    for land in reversed(lands):
+        print(f"  {land:8g} " + ' '.join(f"{ratio[(s, land)]:8.2g}" if (s, land) in ratio
+                                          else f"{'--':>8}" for s in s_vals))
+    if not_steady:
+        print(f"  ({len(not_steady)} cell(s) blank: no steady state)")
+    return ratio
+
+
+def _coarse_mask(df):
+    """Runs on the coarse grid's instellation and land-fraction values."""
+    return (df['instellation'].isin(cb.COARSE_INSTELLATION) &
+            df['land_fraction'].apply(lambda v: any(np.isclose(v, l) for l in cb.COARSE_LAND_FRACTIONS)))
+
+
+def _by_land(sub):
+    return {float(l): sub[np.isclose(sub['land_fraction'], l)].sort_values('instellation')
+            for l in sorted(sub['land_fraction'].unique())}
+
+
+def _grid_slice(df, outgassing, crust, mg_si):
+    """{land_fraction: runs} for one (outgassing, crust, Mg/Si) cell of the coarse grid."""
+    return _by_land(df[_coarse_mask(df) & _sweep_mask(
+        df, depth=cb.OCEAN_DEPTH, land=None, crust=False, f_ht=True, outgassing=outgassing,
+        crust_production=crust, mg_si=mg_si, delta_iw=cb.DELTA_IW)])
+
+
+def _alpha_slice(df, outgassing, alpha):
+    """{land_fraction: runs} for one (outgassing, alpha) cell; alpha is pinned here, not by _ref_chem."""
+    return _by_land(df[_coarse_mask(df) & _sweep_mask(
+        df, depth=cb.OCEAN_DEPTH, land=None, crust=False, chem=False, f_ht=True,
+        outgassing=outgassing, crust_production=cb.CRUST_PRODUCTION, mg_si=cb.MG_SI_EARTH,
+        delta_iw=cb.DELTA_IW, alpha=alpha, kd_mg=cb.KD_MG_CALIB, k_na=cb.K_NA_CALIB)])
+
+
+def plot_weathering_ratio_grid(df, output_path):
+    """Ratio map faceted over crust production x outgassing, one figure per Mg/Si, on one shared scale.
+
+    Mg/Si and crust production reach only the seafloor sink; continental weathering sees them via climate alone.
     """
     mg_vals = [m for m in cb.GRID_MG_SI if np.isclose(df['mg_si'], m).any()]
     if not mg_vals:
         print("No grid runs on disk -- skipping the faceted ratio map.")
         return None
-
     cells = {}
     for mg in mg_vals:
         for c in cb.GRID_CRUST:
@@ -3001,144 +1893,44 @@ def plot_weathering_ratio_grid(df, output_path, step=0.5):
                 series = _grid_slice(df, o, c, mg)
                 if series:
                     cells[(mg, c, o)] = _ratio_cells(series, output_path)
-
     allv = [np.log10(v) for r, *_ in cells.values() for v in r.values()]
     if not allv:
         print("No steady-state grid runs with both fluxes positive -- skipping.")
         return None
-    lo = np.floor(min(allv) / step) * step
-    hi = np.ceil(max(allv) / step) * step
-    bands = np.arange(lo, hi + 0.5 * step, step)
-    norm = mcolors.TwoSlopeNorm(vmin=lo, vcenter=0.0, vmax=max(hi, step))
-    cmap = WEATHERING_RATIO_CMAP
-    ticks = [t for t in range(-9, 10) if lo <= t <= hi]
-
+    scale = _ratio_scale(allv)
     for mg in mg_vals:
-        fig, axes = plt.subplots(len(cb.GRID_CRUST), len(cb.GRID_OUTGASSING), sharex=True,
-                                    sharey=True, squeeze=False,
-                                    figsize=figure_size('double', height=5.0))
-        cf = None
-        for i, c in enumerate(reversed(cb.GRID_CRUST)):
-            for j, o in enumerate(cb.GRID_OUTGASSING):
-                ax = axes[i, j]
-                got = cells.get((mg, c, o))
-                ratio, skipped, sinks = got if got else ({}, [], [])
-                s_vals = sorted({s for s, _ in ratio})
-                lands = sorted({l for _, l in ratio})
-                if len(s_vals) > 1 and len(lands) > 1:
-                    Z = np.full((len(lands), len(s_vals)), np.nan)
-                    for a, land in enumerate(lands):
-                        for b, sv in enumerate(s_vals):
-                            v = ratio.get((sv, land))
-                            if v is not None:
-                                Z[a, b] = np.log10(v)
-                    Zm = np.ma.masked_invalid(Z)
-                    cf = ax.contourf(s_vals, lands, Zm, levels=bands, cmap=cmap, norm=norm,
-                                     extend='both')
-                    if np.nanmin(Z) < 0 < np.nanmax(Z):
-                        ax.contour(s_vals, lands, Zm, levels=[0.0], colors='k', linewidths=1.2)
-                else:
-                    ax.text(0.5, 0.5, 'no steady state', transform=ax.transAxes, ha='center',
-                            va='center', fontsize=7, color='0.5', style='italic')
-                for sv, land in skipped:
-                    ax.plot(sv, land, marker='x', color='0.45', markersize=3, mew=0.8)
-                for sv, land in sinks:
-                    ax.plot(sv, land, marker='o', markerfacecolor='none', markeredgecolor='0.25',
-                            markersize=4, mew=0.9)
-                ax.set_yscale('log')
-                ax.grid(True, linestyle='--', alpha=0.3)
-                if i == 0:
-                    ax.set_title(f'outgassing {o:g}x', fontsize=8)
-                if j == 0:
-                    ax.set_ylabel(f'crust {c:g}x\nLand fraction', fontsize=7)
-                if i == len(cb.GRID_CRUST) - 1:
-                    ax.set_xlabel('Instellation (S/S0)')
-
-        if cf is not None:
-            cbar = fig.colorbar(cf, ax=list(axes.ravel()), pad=0.02, aspect=30, ticks=ticks)
-            cbar.set_label('Seafloor / continental alkalinity flux')
-            cbar.set_ticklabels([('1' if t == 0 else f'$10^{{{t}}}$') for t in ticks])
-            cbar.ax.axhline(0, color='k', linewidth=1.2)
-        fig.suptitle(f'Mantle Mg/Si = {mg:g}', fontsize=9)
-        _save_fig(fig, figure_path(output_path, f'weathering_ratio_grid_mgsi{mg:g}.png'))
+        _ratio_facets({(c, o): v for (m, c, o), v in cells.items() if m == mg},
+                      cb.GRID_CRUST, cb.GRID_OUTGASSING, lambda c: f'crust {c:g}x',
+                      lambda o: f'outgassing {o:g}x', scale,
+                      figure_path(output_path, f'weathering_ratio_grid_mgsi{mg:g}.png'),
+                      f'Mantle Mg/Si = {mg:g}')
 
     print("\nCrossover land fraction across the grid (steady states only):")
     print(f"  {'Mg/Si':>6} {'crust':>7} {'out':>6}   crossover (by instellation)")
     for (mg, c, o), (ratio, *_) in sorted(cells.items()):
-        s_vals = sorted({s for s, _ in ratio})
-        pts = []
-        for sv in s_vals:
-            lands = sorted({l for (s2, l) in ratio if s2 == sv})
-            got = _crossover_land_fraction(lands, [ratio[(sv, l)] for l in lands])
-            if got is not None:
-                pts.append(got)
+        pts = list(_crossings(ratio).values())
         span = (f"{min(pts):.2g}-{max(pts):.2g}" if pts else
                 ("none in range" if ratio else "no steady state"))
         print(f"  {mg:6g} {c:7g} {o:6g}   {span}")
     return cells
 
 
-def _alpha_slice(df, outgassing, alpha, crust=None, mg_si=None):
-    """{land_fraction: rows} for one (outgassing, alpha) cell.
-
-    Deliberately does NOT use _ref_chem: that helper pins alpha to the most-run value, which
-    would silently discard the alpha = 10 and 50 arms and leave a "sweep" of one point. kd_mg and
-    k_na are still pinned, explicitly, to the calibrated values.
-    """
-    crust = cb.CRUST_PRODUCTION if crust is None else crust
-    mg_si = cb.MG_SI_EARTH if mg_si is None else mg_si
-    sub = df[
-        df['instellation'].isin(cb.COARSE_INSTELLATION) &
-        df['land_fraction'].apply(
-            lambda v: any(np.isclose(v, l) for l in cb.COARSE_LAND_FRACTIONS)) &
-        _ref_redox(df) &
-        df['reverse_weathering'] &
-        (df['ocean_depth'] == cb.OCEAN_DEPTH) &
-        (df['outgassing'] == outgassing) &
-        (df['crust_production'] == crust) &
-        (df['f_HT'] == 0.0) &
-        np.isclose(df['mg_si'], mg_si) &
-        np.isclose(df['delta_iw'], cb.DELTA_IW) &
-        np.isclose(df['alpha'], alpha) &
-        np.isclose(df['kd_mg'], cb.KD_MG_CALIB) &
-        np.isclose(df['k_na'], cb.K_NA_CALIB)
-    ]
-    return {float(l): sub[np.isclose(sub['land_fraction'], l)].sort_values('instellation')
-            for l in sorted(sub['land_fraction'].unique())}
-
-
 def plot_alpha_scaling(df, output_path):
-    """Does the crossover land fraction really go as alpha^1?
-
-    In the kinetic limit the seafloor flux is linear in alpha while continental weathering does
-    not see alpha at all, so f* should scale as alpha^1. The climate feedback should DAMP that:
-    raising alpha strengthens the sink, which cools the planet and draws CO2 down, weakening both
-    fluxes again. An exponent below 1 is therefore the expected outcome, and its size is the
-    result -- it says how much of alpha's nominal leverage survives the feedback.
-    """
+    """Crossover land fraction against alpha per outgassing rate, with the alpha^1 kinetic-limit reference."""
     rows = []
     for o in cb.GRID_OUTGASSING:
         for a in cb.GRID_ALPHA:
             series = _alpha_slice(df, o, a)
-            if not series:
-                continue
-            ratio, _, _ = _ratio_cells(series, output_path)
-            if not ratio:
-                continue
-            for sv in sorted({s for s, _ in ratio}):
-                lands = sorted({l for (s2, l) in ratio if s2 == sv})
-                got = _crossover_land_fraction(lands, [ratio[(sv, l)] for l in lands])
-                if got is not None:
-                    rows.append({'outgassing': o, 'alpha': a, 'instellation': sv, 'f_star': got})
+            if series:
+                rows += [{'outgassing': o, 'alpha': a, 'instellation': s, 'f_star': f}
+                         for s, f in _crossings(_ratio_cells(series, output_path)[0]).items()]
     if not rows:
         print("No crossovers found across the alpha grid -- skipping.")
         return None
     tab = pd.DataFrame(rows)
 
     fig, ax = plt.subplots(1, 1, figsize=figure_size('single', height=3.0))
-    cmap = OUTGASSING_CMAP
     norm = mcolors.LogNorm(vmin=min(cb.GRID_OUTGASSING), vmax=max(cb.GRID_OUTGASSING))
-
     print("\nCrossover land fraction f* against alpha (geometric mean over instellation):")
     print(f"  {'outgassing':>10} " + ' '.join(f'{a:>10.4g}' for a in cb.GRID_ALPHA)
           + f" {'exponent':>9}")
@@ -3147,28 +1939,23 @@ def plot_alpha_scaling(df, output_path):
         g = tab[tab.outgassing == o]
         if g.empty:
             continue
-        # Geometric mean over instellation: f* spans decades, so an arithmetic mean would be
-        # dominated by whichever instellation sits nearest the runaway.
+        # Geometric mean: f* spans decades.
         means = {a: float(np.exp(np.log(g[g.alpha == a].f_star).mean()))
                  for a in cb.GRID_ALPHA if (g.alpha == a).any()}
-        cells = [(f'{means[a]:10.4g}' if a in means else f'{"--":>10}') for a in cb.GRID_ALPHA]
         slope = float('nan')
         if len(means) >= 2:
-            slope = float(np.polyfit(np.log10(list(means)),
-                                     np.log10(list(means.values())), 1)[0])
-            exponents[o] = slope
-        print(f"  {o:10g} " + ' '.join(cells) + f" {slope:9.2f}")
+            slope = exponents[o] = float(np.polyfit(np.log10(list(means)),
+                                                    np.log10(list(means.values())), 1)[0])
+        print(f"  {o:10g} " + ' '.join(f'{means[a]:10.4g}' if a in means else f'{"--":>10}'
+                                       for a in cb.GRID_ALPHA) + f" {slope:9.2f}")
         ax.plot(list(means), list(means.values()), marker='o', markersize=4,
-                color=cmap(norm(o)), linewidth=1.6, label=f'{o:g}x')
+                color=OUTGASSING_CMAP(norm(o)), linewidth=1.6, label=f'{o:g}x')
         if anchor is None and means:
             anchor = (min(means), means[min(means)])
-
     if anchor is not None:
-        a0, f0 = anchor
         xs = np.array(cb.GRID_ALPHA, dtype=float)
-        ax.plot(xs, f0 * xs / a0, color='0.4', linestyle=(0, (6, 3)), linewidth=1.2,
+        ax.plot(xs, anchor[1] * xs / anchor[0], color='0.4', linestyle=(0, (6, 3)), linewidth=1.2,
                 label=r'$\propto \alpha$')
-
     ax.set_xscale('log')
     ax.set_yscale('log')
     ax.set_xlabel(r'Reactive area scaling $\alpha$')
@@ -3176,94 +1963,49 @@ def plot_alpha_scaling(df, output_path):
     ax.grid(True, linestyle='--', alpha=0.4)
     ax.legend(fontsize=7, frameon=False, title='Outgassing', title_fontsize=7)
     _save_fig(fig, figure_path(output_path, 'alpha_scaling.png'))
-
     if exponents:
-        v = list(exponents.values())
-        print(f"  exponent d log f* / d log alpha: {min(v):.2f} to {max(v):.2f} "
-              f"(alpha^1 would be 1.00)")
+        print(f"  exponent d log f* / d log alpha: {min(exponents.values()):.2f} to "
+              f"{max(exponents.values()):.2f} (alpha^1 would be 1.00)")
     tab.to_csv(os.path.join(output_path, 'alpha_crossover.csv'), index=False)
     return tab
 
 
-def plot_alpha_ratio_grid(df, output_path, step=0.5):
-    """Ratio map faceted over alpha x outgassing: columns are outgassing, rows are alpha.
+def plot_alpha_ratio_grid(df, output_path, outgassing=1.0):
+    """Ratio map at each reactive-area scaling alpha, one panel per value, at fixed outgassing.
 
-    Same conventions as the other ratio maps -- diverging about a ratio of 1 with the neutral
-    midpoint pinned there, land fraction 0 excluded (continental weathering is exactly zero, so
-    the ratio is infinite), steady states only, cells without one left blank and marked.
-
-    ONE colour scale across all nine panels. Per-panel normalisation would make every panel look
-    alike whatever its numbers were, which would hide the whole point: alpha slides the ratio
-    bodily up the land-fraction axis (measured d log f*/d log alpha = 0.78-1.16) while outgassing
-    decides whether a crossover exists at all.
-
-    To transpose the layout, swap ROWS and COLS below.
+    Outgassing is held fixed because it moves the crossover the same way alpha does, so sweeping
+    both adds no information; the panels share axes and one colour scale.
     """
-    ROWS, COLS = cb.GRID_ALPHA, cb.GRID_OUTGASSING          # rows: alpha, columns: outgassing
-    row_label, col_label = r'$\alpha$', 'outgassing'
-
     cells = {}
-    for a in ROWS:
-        for o in COLS:
-            series = _alpha_slice(df, o, a)
-            if series:
-                cells[(a, o)] = _ratio_cells(series, output_path)
-
+    for a in cb.GRID_ALPHA:
+        series = _alpha_slice(df, outgassing, a)
+        if series:
+            cells[(outgassing, a)] = _ratio_cells(series, output_path)
     allv = [np.log10(v) for r, *_ in cells.values() for v in r.values()]
     if not allv:
         print("No steady-state alpha runs with both fluxes positive -- skipping.")
         return None
-    lo = np.floor(min(allv) / step) * step
-    hi = np.ceil(max(allv) / step) * step
-    bands = np.arange(lo, hi + 0.5 * step, step)
-    norm = mcolors.TwoSlopeNorm(vmin=min(lo, -step), vcenter=0.0, vmax=max(hi, step))
-    cmap = WEATHERING_RATIO_CMAP
+    _ratio_facets(cells, [outgassing], cb.GRID_ALPHA, lambda o: '',
+                  lambda a: rf'$\alpha$ = {a:g}', _ratio_scale(allv),
+                  figure_path(output_path, 'weathering_ratio_alpha_grid.png'), height=2.9)
+    return cells
 
-    fig, axes = plt.subplots(len(ROWS), len(COLS), sharex=True, sharey=True, squeeze=False,
-                                figsize=figure_size('double', height=5.0))
-    cf = None
-    for i, rv in enumerate(reversed(ROWS)):          # largest alpha at the top
-        for j, cv in enumerate(COLS):
-            ax = axes[i, j]
-            ratio, skipped, sinks = cells.get((rv, cv), ({}, [], []))
-            s_vals = sorted({s for s, _ in ratio})
-            lands = sorted({l for _, l in ratio})
-            if len(s_vals) > 1 and len(lands) > 1:
-                Z = np.full((len(lands), len(s_vals)), np.nan)
-                for a_, land in enumerate(lands):
-                    for b_, sv in enumerate(s_vals):
-                        v = ratio.get((sv, land))
-                        if v is not None:
-                            Z[a_, b_] = np.log10(v)
-                Zm = np.ma.masked_invalid(Z)
-                cf = ax.contourf(s_vals, lands, Zm, levels=bands, cmap=cmap, norm=norm,
-                                 extend='both')
-                if np.nanmin(Z) < 0 < np.nanmax(Z):
-                    ax.contour(s_vals, lands, Zm, levels=[0.0], colors='k', linewidths=1.2)
-            else:
-                ax.text(0.5, 0.5, 'no steady state', transform=ax.transAxes, ha='center',
-                        va='center', fontsize=7, color='0.5', style='italic')
-            for sv, land in skipped:
-                ax.plot(sv, land, marker='x', color='0.45', markersize=3, mew=0.8)
-            for sv, land in sinks:
-                ax.plot(sv, land, marker='o', markerfacecolor='none', markeredgecolor='0.25',
-                        markersize=4, mew=0.9)
-            ax.set_yscale('log')
-            ax.grid(True, linestyle='--', alpha=0.3)
-            if i == 0:
-                ax.set_title(f'{col_label} {cv:g}x', fontsize=8)
-            if j == 0:
-                ax.set_ylabel(f'{row_label} = {rv:g}\nLand fraction', fontsize=7)
-            if i == len(ROWS) - 1:
-                ax.set_xlabel('Instellation (S/S0)')
 
-    if cf is not None:
-        ticks = [t for t in range(-9, 10) if lo <= t <= hi]
-        cbar = fig.colorbar(cf, ax=list(axes.ravel()), pad=0.02, aspect=30, ticks=ticks)
-        cbar.set_label('Seafloor / continental alkalinity flux')
-        cbar.set_ticklabels([('1' if t == 0 else f'$10^{{{t}}}$') for t in ticks])
-        cbar.ax.axhline(0, color='k', linewidth=1.2)
-    _save_fig(fig, figure_path(output_path, 'weathering_ratio_alpha_grid.png'))
+def plot_outgassing_ratio_grid(df, output_path, alpha=None):
+    """The companion of plot_alpha_ratio_grid: one panel per outgassing rate at fixed alpha."""
+    alpha = cb.GRID_ALPHA[0] if alpha is None else alpha
+    cells = {}
+    for o in cb.GRID_OUTGASSING:
+        series = _alpha_slice(df, o, alpha)
+        if series:
+            cells[(alpha, o)] = _ratio_cells(series, output_path)
+    allv = [np.log10(v) for r, *_ in cells.values() for v in r.values()]
+    if not allv:
+        print("No steady-state outgassing runs with both fluxes positive -- skipping.")
+        return None
+    _ratio_facets(cells, [alpha], cb.GRID_OUTGASSING, lambda a: '',
+                  lambda o: f'Outgassing = {o:g}×', _ratio_scale(allv),
+                  figure_path(output_path, 'weathering_ratio_outgassing_grid.png'), height=2.9)
     return cells
 
 
@@ -3281,10 +2023,7 @@ def plot_continental(df, output_path):
         print(f"  {len(group)} run(s) on the {ARM_LABELS[land].lower()} arm.")
 
     plot_baseline_vs_ocean(arms, output_path)
-    edges = plot_habitable_zone(arms, output_path)
-    _report(arms, edges or {})
-
-    # The land-fraction series only draws once intermediate land fractions are on disk.
+    _report(arms, plot_habitable_zone(arms, output_path) or {})
     series = _land_series(df, output_path)
     if len(series) > len(cb.LAND_ARMS):
         print(f"\n  land fractions on disk: {sorted(series, reverse=True)}")
@@ -3294,164 +2033,17 @@ def plot_continental(df, output_path):
     plot_weathering_ratio_grid(df, output_path)
     plot_alpha_scaling(df, output_path)
     plot_alpha_ratio_grid(df, output_path)
+    plot_outgassing_ratio_grid(df, output_path)
     plot_continental_baseline(df, output_path)
 
 
-def _get_mineral_si(d):
-    """Return {'pore': {mineral: SI}, 'ocean': {mineral: SI}, 'da': float, 'T': float}
-    for all precipitating minerals in pore space and ocean."""
-    from kamino.precipitation import get_precipitation
-    from kamino.chemistry import ChemistryError
-    nan_result = {'pore': {}, 'ocean': {}, 'da': np.nan, 'T': np.nan}
-    try:
-        y_list = d.get('data', {}).get('y', [])
-        if not y_list or len(y_list) - 3 < 7:
-            return nan_result
-
-        b_ocean, P_pore, T_pore, T_seafloor, P_CO2, crust_rate, J_total = _pore_conditions(d)
-        T_surface = float(d['T'])
-
-        rw        = bool(d.get('reverse_weathering', False))
-        pore_min  = list(clay_minerals)  # planet.pore_precipitating_minerals
-        ocean_min = (carbonate_minerals + clay_minerals + silica_minerals + evaporite_minerals +
-                     (list(reverse_weathering_minerals) if rw else []))
-
-        _, diag = get_weathering_flux(
-            P_pore, T_pore, P_CO2, b_ocean,
-            alpha=float(d.get('alpha', 1.43)),
-            rate=crust_rate, J=J_total,
-            crust_composition=_crust_composition_of(d),
-            sedimentation_rate=_sedimentation_rate(d, b_ocean, P_pore, T_seafloor),
-            precipitating_minerals=pore_min
-        )
-        pore_si = diag.get('secondary_SI', {})
-
-        try:
-            _, _, ocean_si = get_precipitation(P_pore, T_seafloor, b_ocean, ocean_min,
-                                               precipitation_timescale=1e6 * YR)
-        except (ChemistryError, Exception):
-            ocean_si = {}
-
-        return {'pore': pore_si, 'ocean': ocean_si, 'da': float(diag['Da']), 'T': T_surface}
-    except Exception:
-        return nan_result
-
-
-def plot_mineral_si(df, output_path):
-    """SI of all precipitating minerals vs instellation, split into pore-space and ocean columns.
-
-    One figure per crust production rate, lines coloured by outgassing rate.
-    """
-    base = _base(df)
-    if base.empty:
-        print("No base data for mineral SI plot — skipping.")
-        return
-
-    crust_rates     = sorted(base['crust_production'].unique())
-    outgassing_vals = sorted(base['outgassing'].unique())
-    norm = mcolors.LogNorm(vmin=min(outgassing_vals), vmax=max(outgassing_vals))
-    cmap = OUTGASSING_CMAP
-
-    pore_mineral_set  = set(_PORE_MINERALS)
-    ocean_mineral_set = set(_OCEAN_MINERALS)
-
-    n_min  = len(_ALL_MINERALS)
-    panels = [('Pore space', 'pore', pore_mineral_set),
-              ('Ocean',      'ocean', ocean_mineral_set)]
-
-    for c in crust_rates:
-        subset_c = base[base['crust_production'] == c]
-
-        # Load mineral SI data for every run in this crust-rate slice
-        si_by_name = {}
-        for _, row in subset_c.iterrows():
-            fpath = os.path.join(output_path, f'{row["name"]}.json')
-            try:
-                with open(fpath) as fh:
-                    d = json.load(fh)
-                rec = _get_mineral_si(d)
-                si_by_name[row['name']] = {
-                    'pore':         rec['pore'],
-                    'ocean':        rec['ocean'],
-                    'da':           rec['da'],
-                    'T':            rec['T'],
-                    'instellation': row['instellation'],
-                    'outgassing':   row['outgassing'],
-                }
-            except Exception:
-                pass
-
-        # Diagnostic sheet (one per crust rate), read on screen -- not page-sized.
-        fig, axes = plt.subplots(n_min, 2, figsize=diagnostic_size(n_min, 1, col_width=3.5,
-                                                                   row_height=1.0, pad=0.0),
-                                  sharex=True, squeeze=False)
-
-        for o in outgassing_vals:
-            color = cmap(norm(o))
-            runs  = sorted(
-                [v for v in si_by_name.values() if v['outgassing'] == o],
-                key=lambda v: v['instellation'],
-            )
-            if len(runs) < 2:
-                continue
-            s_arr  = np.array([r['instellation'] for r in runs])
-            da_arr = np.array([r['da']           for r in runs])
-            T_arr  = np.array([r['T']            for r in runs])
-            at_floor = 1.02 * T_arr - 16.7 <= 274.001
-
-            for mi, mineral in enumerate(_ALL_MINERALS):
-                for ci, (_, loc, min_set) in enumerate(panels):
-                    ax = axes[mi, ci]
-                    if mineral not in min_set:
-                        continue
-                    si_arr = np.array([r[loc].get(mineral, np.nan) for r in runs])
-                    if np.all(np.isnan(si_arr)):
-                        continue
-                    _plot_line_da_style(ax, s_arr, si_arr, da_arr, color, at_floor=at_floor)
-
-        # Style axes
-        for mi, mineral in enumerate(_ALL_MINERALS):
-            label = _MINERAL_LABELS.get(mineral, mineral)
-            for ci, (col_title, loc, min_set) in enumerate(panels):
-                ax = axes[mi, ci]
-                ax.axhline(0, color='k', linewidth=0.6, linestyle='--', alpha=0.5)
-                ax.set_xlim(0.25, 1.45)
-                ax.grid(True, linestyle='--', alpha=0.4)
-                if mineral in min_set:
-                    ax.set_ylabel('SI')
-                    ax.set_title(f'{label} — {col_title}', fontsize=7, pad=2)
-                else:
-                    ax.set_visible(False)
-
-        axes[-1, 0].set_xlabel('Instellation (S/S₀)')
-        axes[-1, 1].set_xlabel('Instellation (S/S₀)')
-
-        _add_colorbar(fig, list(axes.ravel()), cmap, norm, 'Earth Outgassing',
-                      ticks=outgassing_vals, ticklabels=[f'{v}×' for v in outgassing_vals],
-                      aspect=n_min * 8)
-        fig.legend(handles=DA_LEGEND, loc='outside lower center', ncol=_legend_ncol(DA_LEGEND, 3))
-        fig.suptitle(f'Mineral saturation indices — Crust = {c}× Earth')
-        _save_fig(fig, figure_path(output_path, f'mineral_si_crust_{c}.png'))
-
-# ---------------------------------------------------------------------------
-# Reactive area (alpha) against outgassing
-# ---------------------------------------------------------------------------
-# Marker per alpha value for plot_alpha_outgassing. The point of the figure is that the three
-# alphas land on ONE curve, so they must be distinguishable by shape while sharing the
-# instellation colour scale -- colouring by alpha instead would make the collapse unreadable.
-ALPHA_MARKERS = ('o', 's', 'D', '^', 'v')
+# --- Reactive area (alpha), temperature planes, Da transition and climate-state map ---
+ALPHA_MARKERS = ('o', 's', 'D', '^', 'v')   # alphas share the instellation colours, so shape tells them apart
 
 
 def _alpha_collapse_exponent(sub, exponents=np.arange(-1.0, 2.01, 0.05)):
-    """The p that best collapses T onto a single curve in outgassing / alpha**p.
-
-    Measured, not assumed: at each instellation the runs are fitted with a quadratic in
-    log10(outgassing / alpha**p) and the residuals pooled across instellations. p = 1 is exact
-    trade-off (one decade of alpha cancels one decade of outgassing); p = -1 is the product.
-    Returns (best_p, rms_at_best, rms_by_exponent) or (nan, nan, {}) if nothing is comparable.
-    """
-    groups = [g for _, g in sub.groupby('instellation')
-              if g['alpha'].nunique() > 1 and len(g) >= 4]
+    """(best p, rms, rms by p) for collapsing T onto one quadratic in log10(outgassing / alpha**p)."""
+    groups = [g for _, g in sub.groupby('instellation') if g['alpha'].nunique() > 1 and len(g) >= 4]
     if not groups:
         return np.nan, np.nan, {}
     rms = {}
@@ -3460,109 +2052,15 @@ def _alpha_collapse_exponent(sub, exponents=np.arange(-1.0, 2.01, 0.05)):
         for g in groups:
             x = np.log10(g['outgassing'].to_numpy() / g['alpha'].to_numpy() ** p)
             y = g['T'].to_numpy()
-            resid = y - np.polyval(np.polyfit(x, y, 2), x)
-            total += float(np.sum(resid ** 2))
-            n += len(resid)
+            total += float(np.sum((y - np.polyval(np.polyfit(x, y, 2), x)) ** 2))
+            n += len(y)
         rms[round(float(p), 3)] = np.sqrt(total / n)
-    best = min(rms, key=lambda k: rms[k])
+    best = min(rms, key=rms.get)
     return best, rms[best], rms
 
 
-def plot_alpha_outgassing(df, output_path, mg_si=REF_MG_SI, crust_production=1.0,
-                          alpha_exponent=1.0, ocean_depth=3000,
-                          s_vals=(0.4, 0.6, 0.8, 1.0, 1.2)):
-    """Temperature against outgassing and reactive area combined into one variable.
-
-    Raising alpha raises the seafloor weathering sink; raising outgassing raises the CO2 source.
-    If the two are exactly interchangeable, T depends only on their RATIO, and the runs at every
-    alpha fall on one curve at fixed instellation. `alpha_exponent` p sets the combination
-    plotted, outgassing / alpha**p: p = 1 is exact trade-off, p = -1 is the product, p = 0 drops
-    alpha entirely. The measured best-collapsing p is printed for comparison.
-
-    Only Da < 1 runs are drawn: past Da = 1 the sink is thermodynamically limited and stops
-    responding to alpha, so those runs carry no information about the trade-off and only add
-    scatter. Held fixed at one mantle Mg/Si and one crust production rate, since both change the
-    sink for reasons that have nothing to do with alpha. Coloured by instellation, with a marker per
-    alpha: a collapse is the three marker shapes interleaving along a single colour band.
-    `s_vals` thins the instellation grid to a few well-separated bands (as plot_ratio_scatter
-    does) -- the full 19-value grid renders as a colour continuum in which no band is legible.
-    The exponent is measured on every run, not only the ones drawn.
-    """
-    sub = df[
-        df['reverse_weathering'] &
-        _ref_redox(df) &
-        np.isclose(df['mg_si'], mg_si) &
-        np.isclose(df['delta_iw'], REF_DIW) &
-        (df['ocean_depth'] == ocean_depth) &
-        (df['land_fraction'] == 0.0) &
-        (df['outgassing'] > 0) &
-        np.isclose(df['crust_production'], crust_production)
-    ].copy()
-    # T clamped to a validity wall is a sentinel, not a temperature the climate solver found,
-    # and a band of runs pinned to exactly 389 K would read as a real plateau in the collapse.
-    sub = sub[np.isfinite(sub['T']) & (sub['T'] < T_HOT_WALL) & (sub['T'] > T_COLD_WALL)]
-    if sub.empty:
-        print("No in-domain runs for the alpha figure — skipping.")
-        return
-    # Kinetic runs only. Past Da = 1 the sink is thermodynamically limited, so it no longer
-    # responds to alpha at all -- those runs pile up on whatever temperature the saturated sink
-    # allows and scatter across the whole x range, which is what made the figure unreadable.
-    # The trade-off alpha vs outgassing is a statement about the KINETIC regime.
-    sub = _add_diag_columns(sub, output_path)
-    sub = sub[np.isfinite(sub['da']) & (sub['da'] < 1.0)]
-    if sub['alpha'].nunique() < 2:
-        print("Fewer than two alpha values with Da < 1 — skipping alpha figure.")
-        return
-
-    best_p, best_rms, rms = _alpha_collapse_exponent(sub)
-    shown_rms = rms.get(round(float(alpha_exponent), 3), np.nan)
-    print(f"Alpha vs outgassing [Mg/Si={mg_si:g}, crust={crust_production:g}]: {len(sub)} runs, "
-          f"alpha = {', '.join(f'{a:g}' for a in sorted(sub['alpha'].unique()))}")
-    print(f"  best collapse at p = {best_p:+.2f} (rms {best_rms:.1f} K); "
-          f"plotted p = {alpha_exponent:+.2f} (rms {shown_rms:.1f} K)")
-
-    if s_vals is not None:
-        keep = [min(sorted(sub['instellation'].unique()), key=lambda v: abs(v - t))
-                for t in s_vals]
-        sub = sub[sub['instellation'].isin(keep)]
-    sub['combined'] = sub['outgassing'] / sub['alpha'] ** alpha_exponent
-
-    s_vals = sorted(sub['instellation'].unique())
-    norm = mcolors.Normalize(vmin=min(s_vals), vmax=max(s_vals))
-    cmap = INSTELLATION_CMAP
-
-    fig, ax = plt.subplots(1, 1, figsize=figure_size('single', height=2.6))
-
-    alphas = sorted(sub['alpha'].unique())
-    for a, marker in zip(alphas, ALPHA_MARKERS):
-        grp = sub[np.isclose(sub['alpha'], a)]
-        if grp.empty:
-            continue
-        ax.scatter(grp['combined'], grp['T'], marker=marker, c=grp['instellation'],
-                   cmap=cmap, norm=norm, s=20, alpha=0.9, zorder=4,
-                   linewidths=0.4, edgecolors='0.25')
-
-    ax.axhspan(T_SNOWBALL - 25, T_SNOWBALL, color='blue', alpha=0.12, zorder=0)
-    ax.axhspan(T_RUNAWAY - 20,  T_RUNAWAY,  color='red',  alpha=0.12, zorder=0)
-    ax.set_xscale('log')
-    ax.set_ylabel('Temperature (K)')
-    ax.set_xlabel(_alpha_combination_label(alpha_exponent))
-    ax.grid(True, linestyle='--', alpha=0.4)
-
-    _add_colorbar(fig, ax, cmap, norm, 'Instellation (S/S₀)',
-                  ticks=_colorbar_ticks(s_vals)[0])
-
-    handles = [Line2D([0], [0], marker=m, color='0.25', linestyle='none', markersize=4,
-                      markerfacecolor='0.6', label=rf'$\alpha$ = {a:g}')
-               for a, m in zip(alphas, ALPHA_MARKERS)]
-    _add_figure_legend(fig, [ax], handles)
-
-    tag = '' if np.isclose(alpha_exponent, 1.0) else f'_p{alpha_exponent:g}'
-    _save_fig(fig, figure_path(output_path, f'alpha_outgassing{tag}.png'))
-
-
 def _alpha_combination_label(p):
-    """Axis label for outgassing / alpha**p, written the way that p is normally read."""
+    """Axis label for outgassing / alpha**p."""
     if np.isclose(p, 1.0):
         return r'Outgassing / $\alpha$ (×Earth)'
     if np.isclose(p, -1.0):
@@ -3572,13 +2070,64 @@ def _alpha_combination_label(p):
     return rf'Outgassing / $\alpha^{{{p:g}}}$ (×Earth)'
 
 
-def _temperature_plane(sub, xcol, ycol, xlabel, ylabel, title, path, what):
-    """Filled surface-temperature contours over (log10 xcol, log10 ycol), saved to `path`.
+def plot_alpha_outgassing(df, output_path, mg_si=REF_MG_SI, crust_production=1.0,
+                          alpha_exponent=1.0, ocean_depth=3000, s_vals=(0.4, 0.6, 0.8, 1.0, 1.2)):
+    """T against outgassing / alpha**p for kinetic (Da < 1) runs, coloured by instellation, marker per alpha.
 
-    Only steady states are contoured; runs that never reached one are marked, since their stored
-    T is often a domain-wall sentinel rather than a computed temperature.
+    If alpha and outgassing trade off exactly, every alpha falls on one curve; the best-collapsing p is printed.
     """
-    # Values from other sweeps' grids sit beside this plane's own; keep the ones shared across it.
+    sub = df[_sweep_mask(df, depth=ocean_depth, crust=False, chem=False, mg_si=mg_si,
+                         delta_iw=REF_DIW, crust_production=crust_production)
+             & (df['outgassing'] > 0)].copy()
+    sub = sub[np.isfinite(sub['T']) & (sub['T'] < T_HOT_WALL) & (sub['T'] > T_COLD_WALL)]
+    if sub.empty:
+        print("No in-domain runs for the alpha figure — skipping.")
+        return
+    # Past Da = 1 the sink no longer responds to alpha, so those runs say nothing about the trade-off.
+    sub = _add_diag_columns(sub, output_path)
+    sub = sub[np.isfinite(sub['da']) & (sub['da'] < 1.0)]
+    if sub['alpha'].nunique() < 2:
+        print("Fewer than two alpha values with Da < 1 — skipping alpha figure.")
+        return
+
+    best_p, best_rms, rms = _alpha_collapse_exponent(sub)
+    print(f"Alpha vs outgassing [Mg/Si={mg_si:g}, crust={crust_production:g}]: {len(sub)} runs, "
+          f"alpha = {', '.join(f'{a:g}' for a in sorted(sub['alpha'].unique()))}")
+    print(f"  best collapse at p = {best_p:+.2f} (rms {best_rms:.1f} K); plotted p = "
+          f"{alpha_exponent:+.2f} (rms {rms.get(round(float(alpha_exponent), 3), np.nan):.1f} K)")
+
+    if s_vals is not None:   # a few well-separated instellation bands stay legible
+        avail = sorted(sub['instellation'].unique())
+        sub = sub[sub['instellation'].isin([min(avail, key=lambda v: abs(v - t)) for t in s_vals])]
+    sub['combined'] = sub['outgassing'] / sub['alpha'] ** alpha_exponent
+    s_vals = sorted(sub['instellation'].unique())
+    norm = mcolors.Normalize(vmin=min(s_vals), vmax=max(s_vals))
+
+    fig, ax = plt.subplots(1, 1, figsize=figure_size('single', height=2.6))
+    alphas = sorted(sub['alpha'].unique())
+    for a, marker in zip(alphas, ALPHA_MARKERS):
+        grp = sub[np.isclose(sub['alpha'], a)]
+        ax.scatter(grp['combined'], grp['T'], marker=marker, c=grp['instellation'],
+                   cmap=INSTELLATION_CMAP, norm=norm, s=20, alpha=0.9, zorder=4,
+                   linewidths=0.4, edgecolors='0.25')
+    _temperature_bands(ax, zorder=0)
+    ax.set_xscale('log')
+    ax.set_ylabel('Temperature (K)')
+    ax.set_xlabel(_alpha_combination_label(alpha_exponent))
+    ax.grid(True, linestyle='--', alpha=0.4)
+    _add_colorbar(fig, ax, INSTELLATION_CMAP, norm, 'Instellation (S/S₀)',
+                  ticks=_colorbar_ticks(s_vals)[0])
+    _add_figure_legend(fig, [ax], [Line2D([0], [0], marker=m, color='0.25', linestyle='none',
+                                          markersize=4, markerfacecolor='0.6',
+                                          label=rf'$\alpha$ = {a:g}')
+                                   for a, m in zip(alphas, ALPHA_MARKERS)])
+    tag = '' if np.isclose(alpha_exponent, 1.0) else f'_p{alpha_exponent:g}'
+    _save_fig(fig, figure_path(output_path, f'alpha_outgassing{tag}.png'))
+
+
+def _temperature_plane(sub, xcol, ycol, xlabel, ylabel, title, path, what):
+    """Filled T contours over (log10 xcol, log10 ycol) from steady states; other runs are marked."""
+    # Keep values shared across the plane, dropping neighbours from other sweeps' grids.
     x_cover = sub.groupby(xcol)[ycol].nunique()
     xs = sorted(x_cover[x_cover >= 0.5 * sub[ycol].nunique()].index)
     sub = sub[sub[xcol].isin(xs)]
@@ -3600,7 +2149,6 @@ def _temperature_plane(sub, xcol, ycol, xlabel, ylabel, title, path, what):
         return
     x, y = np.log10(xs), np.log10(ys)
     Zm = np.ma.masked_invalid(Z.to_numpy(dtype=float))
-
     t_lo, t_hi = float(np.nanmin(Z.to_numpy())), float(np.nanmax(Z.to_numpy()))
     levels = np.arange(np.floor(t_lo / 10) * 10, np.ceil(t_hi / 10) * 10 + 10, 10)
     if len(levels) < 3:
@@ -3610,21 +2158,17 @@ def _temperature_plane(sub, xcol, ycol, xlabel, ylabel, title, path, what):
     cf = ax.contourf(x, y, Zm, levels=levels, cmap=TEMPERATURE_CMAP)
     cs = ax.contour(x, y, Zm, levels=levels, colors='k', linewidths=0.4, alpha=0.5)
     ax.clabel(cs, levels=levels[::2], fmt='%d K', fontsize=6, inline=True)
-
     unsteady = sub.drop(steady.index)
     if not unsteady.empty:
         ax.plot(np.log10(unsteady[xcol]), np.log10(unsteady[ycol]), linestyle='none',
                 marker='x', color='0.45', markersize=3.5, mew=0.9, zorder=4)
-
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
     ax.set_title(title, fontsize=8)
-    # Small margin so markers on the edge rows and columns are not cut by the frame.
-    dx, dy = 0.03 * (x[-1] - x[0]), 0.03 * (y[-1] - y[0])
+    dx, dy = 0.03 * (x[-1] - x[0]), 0.03 * (y[-1] - y[0])   # keep edge markers inside the frame
     ax.set_xlim(x[0] - dx, x[-1] + dx)
     ax.set_ylim(y[0] - dy, y[-1] + dy)
-    cbar = fig.colorbar(cf, ax=ax, pad=0.02, aspect=22)
-    cbar.set_label('Surface temperature (K)')
+    fig.colorbar(cf, ax=ax, pad=0.02, aspect=22).set_label('Surface temperature (K)')
     if not unsteady.empty:
         _add_figure_legend(fig, [ax], [Line2D([0], [0], linestyle='none', marker='x', color='0.45',
                                               markersize=3.5, mew=0.9, label='No steady state')])
@@ -3636,81 +2180,135 @@ def _temperature_plane(sub, xcol, ycol, xlabel, ylabel, title, path, what):
 def plot_alpha_outgassing_plane(df, output_path, instellation=0.8, mg_si=REF_MG_SI,
                                 crust_production=1.0, ocean_depth=3000):
     """Surface temperature over the (log alpha, log outgassing) plane at one instellation."""
-    sub = df[
-        df['reverse_weathering'] &
-        _ref_redox(df) &
-        np.isclose(df['instellation'], instellation) &
-        np.isclose(df['mg_si'], mg_si) &
-        np.isclose(df['delta_iw'], REF_DIW) &
-        (df['ocean_depth'] == ocean_depth) &
-        (df['land_fraction'] == 0.0) &
-        (df['outgassing'] > 0) &
-        np.isclose(df['crust_production'], crust_production) &
-        np.isclose(df['kd_mg'], _chem_reference(df, 'kd_mg')) &
-        np.isclose(df['k_na'], _chem_reference(df, 'k_na'))
-    ]
-    _temperature_plane(sub, 'alpha', 'outgassing',
-                       r'$\log_{10}\,\alpha$ (reactive area scaling)',
+    sub = df[_sweep_mask(df, depth=ocean_depth, crust=False, chem=False, instellation=instellation,
+                         mg_si=mg_si, delta_iw=REF_DIW, crust_production=crust_production,
+                         kd_mg=_chem_reference(df, 'kd_mg'), k_na=_chem_reference(df, 'k_na'))
+             & (df['outgassing'] > 0)]
+    _temperature_plane(sub, 'alpha', 'outgassing', r'$\log_{10}\,\alpha$ (reactive area scaling)',
                        r'$\log_{10}$ outgassing (×Earth)', f'S = {instellation:g}',
                        figure_path(output_path, 'alpha_outgassing_plane.png'),
                        f'Alpha-outgassing plane at S = {instellation:g}')
 
 
 def plot_outgassing_crust_plane(df, output_path, instellation=0.8):
-    """Surface temperature over the (log outgassing, log crust production) plane at one instellation.
-
-    Lines of constant outgassing / crust production ratio are diagonals of slope 1 here, so this
-    shows directly whether temperature follows the ratio or the two rates separately.
-    """
+    """Surface temperature over the (log outgassing, log crust production) plane; constant ratio is a diagonal."""
     sub = _base(df)
-    sub = sub[np.isclose(sub['instellation'], instellation)]
-    _temperature_plane(sub, 'outgassing', 'crust_production',
-                       r'$\log_{10}$ outgassing (×Earth)',
+    _temperature_plane(sub[np.isclose(sub['instellation'], instellation)], 'outgassing',
+                       'crust_production', r'$\log_{10}$ outgassing (×Earth)',
                        r'$\log_{10}$ crust production (×Earth)', f'S = {instellation:g}',
                        figure_path(output_path, 'outgassing_crust_plane.png'),
                        f'Outgassing-crust plane at S = {instellation:g}')
 
 
-# ---------------------------------------------------------------------------
-# The kinetic -> thermodynamic transition in phase space
-# ---------------------------------------------------------------------------
-# Axis labels for the two tectonic axes, so neither arrangement of plot_da_transition
-# hardcodes them. The colours come from PARAM_CMAPS, like every other faceted figure.
+RW_RATIO_NEUTRAL = 5e-4   # |T_RW / T_noRW - 1| below this (~0.15 K) is drawn as no change
+
+
+def plot_reverse_weathering_ratio(df, output_path, crust_values=(0.01, 0.1, 1.0, 10.0)):
+    """T(reverse weathering) / T(none) over instellation x outgassing, one panel per crust production.
+
+    Only cells steady in both arms are contoured; runs on a domain wall would give a ratio of exactly 1.
+    """
+    arms = {rw: df[_sweep_mask(df, rw=rw) & (df['outgassing'] > 0)] for rw in (True, False)}
+    if arms[False].empty:
+        print("No runs without reverse weathering — skipping reverse weathering ratio plot.")
+        return
+    keys = ['instellation', 'outgassing', 'crust_production']
+    for rw, arm in arms.items():
+        n_dup = int(arm.duplicated(keys).sum())
+        if n_dup:   # e.g. the alpha-outgassing plane writes out_1.0 beside the basic sweep's out_1
+            print(f"  RW ratio: {n_dup} duplicate {'RW' if rw else 'no-RW'} run(s); using the first.")
+            arms[rw] = arm.drop_duplicates(keys)
+    pairs = arms[True].merge(arms[False], on=keys, suffixes=('_rw', '_norw'))
+    pairs = pairs[pairs['crust_production'].apply(lambda c: any(np.isclose(c, v) for v in crust_values))]
+    if pairs.empty:
+        print("No paired runs at the requested crust production rates — skipping.")
+        return
+    steady = {arm: pairs[f'termination_{arm}'].isin(HABITABLE) & np.isfinite(pairs[f'T_{arm}'])
+              for arm in ('rw', 'norw')}
+    pairs['ratio'] = np.where(steady['rw'] & steady['norw'], pairs['T_rw'] / pairs['T_norw'], np.nan)
+    one_arm = steady['rw'] ^ steady['norw']   # reverse weathering changes whether a steady state exists
+
+    s_vals = sorted(pairs['instellation'].unique())
+    out_vals = sorted(pairs['outgassing'].unique())
+    dev = np.nanmax(np.abs(pairs['ratio'] - 1.0))
+    if not np.isfinite(dev):
+        print("No cell is steady in both arms — skipping reverse weathering ratio plot.")
+        return
+    # Bands log-spaced in |ratio - 1| (1-2-5), symmetric about 1, so 0.1% and 10% effects share one
+    # scale; the middle band spans 1 so no-change cells (ratio 1 +- float noise) are neutral.
+    edges = [m * 10.0 ** e for e in range(-4, 1) for m in (1, 2, 5)]
+    edges = [x for x in edges if x >= RW_RATIO_NEUTRAL]
+    edges = edges[:next((i for i, x in enumerate(edges) if x >= dev), len(edges) - 1) + 1]
+    levels = 1.0 + np.array([-x for x in reversed(edges)] + edges)
+    norm = mcolors.BoundaryNorm(levels, ncolors=RELATIVE_CMAP.N, extend='both')
+    cbar_ticks = levels
+
+    fig, axes = plt.subplots(1, len(crust_values), sharex=True, sharey=True, squeeze=False,
+                             figsize=figure_size('double', height=2.4))
+    cf = None
+    for ax, crust in zip(axes[0], crust_values):
+        sel = pairs[np.isclose(pairs['crust_production'], crust)]
+        Z = (sel.pivot_table(index='outgassing', columns='instellation', values='ratio', aggfunc='first')
+                .reindex(index=out_vals, columns=s_vals))
+        Zm = np.ma.masked_invalid(Z.to_numpy(dtype=float))
+        ax.set_facecolor('0.88')   # masked cells grey, so they differ from the white ratio-1 band
+        if Zm.count() >= 4:
+            cf = ax.contourf(s_vals, out_vals, Zm, levels=levels, cmap=RELATIVE_CMAP, norm=norm,
+                             extend='both')
+        for mask, marker in ((~(steady['rw'] | steady['norw']), 'x'), (one_arm, 'o')):
+            m = sel[mask.loc[sel.index]]
+            if marker == 'x':
+                ax.plot(m['instellation'], m['outgassing'], linestyle='none', marker='x', color='0.45',
+                        markersize=3, mew=0.8, zorder=4)
+            else:
+                ax.plot(m['instellation'], m['outgassing'], linestyle='none', marker='o',
+                        markerfacecolor='none', markeredgecolor='0.25', markersize=4, mew=0.9, zorder=4)
+        ax.set_yscale('log')
+        ax.set_title(f'Crust prod. = {crust:g}×', fontsize=8)
+        ax.grid(True, linestyle='--', alpha=0.3)
+        ax.set_xlabel('Instellation (S/S₀)')
+        n_ratio = int(np.isfinite(sel['ratio']).sum())
+        print(f"  RW ratio, crust {crust:g}: {n_ratio} steady pairs, "
+              f"{int(one_arm.loc[sel.index].sum())} steady in one arm only, "
+              f"ratio {np.nanmin(sel['ratio']):.4f}-{np.nanmax(sel['ratio']):.4f}" if n_ratio else
+              f"  RW ratio, crust {crust:g}: no steady pairs")
+    axes[0, 0].set_ylabel('Outgassing (×Earth)')
+    if cf is not None:
+        cbar = fig.colorbar(cf, ax=list(axes[0]), pad=0.02, aspect=25, ticks=cbar_ticks,
+                            spacing='uniform')
+        cbar.set_label(r'$T_\mathrm{RW}\,/\,T_\mathrm{no\;RW}$')
+        cbar.ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f'{round(v, 6):g}'))
+        cbar.ax.tick_params(labelsize=6)
+    _add_figure_legend(fig, list(axes[0]), [
+        Line2D([0], [0], linestyle='none', marker='x', color='0.45', markersize=3, mew=0.8,
+               label='No steady state in either'),
+        Line2D([0], [0], linestyle='none', marker='o', markerfacecolor='none', markeredgecolor='0.25',
+               markersize=4, mew=0.9, label='Steady in one only'),
+    ])
+    _save_fig(fig, figure_path(output_path, 'reverse_weathering_ratio.png'))
+
+
 DA_TRANSITION_LABELS = {
     'crust_production': 'Crust production (×Earth)',
     'outgassing':       'Outgassing (×Earth)',
 }
-
-# Mg/Si planes shown as the three panels, left to right. These are the values
-# parameter_sweep.sweep_basic_low_mgsi / sweep_basic / sweep_basic_high_mgsi cover; a value with
-# no basic sweep behind it would draw an empty panel, so the caller's list is intersected with
-# basic_plane_mg_si(df).
-DA_TRANSITION_MG_SI = (0.8, 1.25, 1.8)
+DA_TRANSITION_MG_SI = (0.8, 1.25, 1.8)   # panels, intersected with the basic sweeps on disk
 
 
 def _da_transition_instellation(group):
-    """Instellation at which one (Mg/Si, outgassing, crust) line crosses Da = 1.
+    """(S where Da first rises through 1, interpolated in log Da, whether a bracketing run is wall-clamped).
 
-    The crossing is interpolated linearly in log10(Da), which is the quantity that is actually
-    smooth in instellation -- Da spans ~6 decades along a single line, so interpolating Da
-    itself would put the root almost on top of the first supra-unity point.
-
-    Returns (S_crit, clamped): `clamped` flags a crossing whose two bracketing runs include a
-    state pinned to a temperature wall. Da there was evaluated on a sentinel state rather than
-    on a temperature the climate solver actually found, so the crossing is drawn hollow.
-    Returns (nan, False) when the line never crosses -- entirely kinetic or entirely
-    thermodynamic over the swept instellation range.
+    Returns (nan, False) when the line never goes from kinetic to thermodynamic.
     """
     g = group.sort_values('instellation')
     da = g['da'].to_numpy(dtype=float)
     ok = np.isfinite(da) & (da > 0)
     if ok.sum() < 2:
         return np.nan, False
-    s   = g['instellation'].to_numpy(dtype=float)[ok]
-    T   = g['T'].to_numpy(dtype=float)[ok]
-    ld  = np.log10(da[ok])
-
-    # Kinetic -> thermodynamic only; a frozen, CO2-starved state can sit at Da > 1 at low S.
+    s = g['instellation'].to_numpy(dtype=float)[ok]
+    T = g['T'].to_numpy(dtype=float)[ok]
+    ld = np.log10(da[ok])
+    # Upward crossings only: a frozen, CO2-starved state can sit at Da > 1 at low S.
     idx = np.flatnonzero((ld[:-1] < 0) & (ld[1:] >= 0))
     if idx.size == 0:
         return np.nan, False
@@ -3723,40 +2321,23 @@ def _da_transition_instellation(group):
 
 def plot_da_transition(df, output_path, mg_si_values=DA_TRANSITION_MG_SI,
                        line_by='crust_production', cmap=None, show_hz=None, max_outgassing=3.0):
-    """Where the ocean world stops being kinetically limited, in (instellation x outgassing).
+    """Instellation of the kinetic-to-thermodynamic transition, one panel per Mg/Si.
 
-    THE summary figure for the transition. Each instellation sweep -- one fixed (Mg/Si,
-    outgassing, crust production) -- runs from a kinetically limited seafloor at low
-    instellation to a thermodynamically limited one at high instellation; the Da = 1 crossing is
-    reduced to a single instellation by _da_transition_instellation. Joining those crossings
-    across outgassing gives one line per crust-production rate: the boundary of the kinetic
-    regime. Everything LEFT of a line is kinetic (the weathering sink can still respond to
-    warming, so the carbon cycle stabilises); everything RIGHT is thermodynamic (the sink is
-    saturated, cannot respond, and the planet runs away).
-
-    One panel per mantle Mg/Si. `line_by` picks which of the two tectonic axes carries the
-    lines and the colourbar; the other one becomes the y-axis. Both arrangements show the same
-    147 crossings -- which axis reads as the stronger control is exactly what they compare.
+    line_by picks which tectonic axis carries the lines and colour bar; the other is the y-axis.
     """
     if line_by not in DA_TRANSITION_LABELS:
         raise ValueError(f"line_by must be one of {sorted(DA_TRANSITION_LABELS)}, not {line_by!r}")
     y_by = 'outgassing' if line_by == 'crust_production' else 'crust_production'
-    if cmap is None:
-        cmap = PARAM_CMAPS[line_by]
+    cmap = PARAM_CMAPS[line_by] if cmap is None else cmap
     available = basic_plane_mg_si(df)
-    mg_vals = [m for m in mg_si_values
-               if any(np.isclose(m, a) for a in available)]
+    mg_vals = [m for m in mg_si_values if any(np.isclose(m, a) for a in available)]
     if not mg_vals:
         print("No basic Mg/Si plane with a full sweep — skipping Da transition figure.")
         return
 
-    frames = []
-    for mg in mg_vals:
-        sel = _base(df, mg_si=(None if np.isclose(mg, REF_MG_SI) else mg))
-        if not sel.empty:
-            frames.append(_add_diag_columns(sel, output_path))
-    subset = pd.concat(frames)
-    # Main-sweep outgassing only: other sweeps' grids (3.2, 5.6, ...) exist at crust 1x alone.
+    subset = pd.concat([_add_diag_columns(sel, output_path) for mg in mg_vals
+                        if not (sel := _base(df, mg_si=None if np.isclose(mg, REF_MG_SI) else mg)).empty])
+    # Main-sweep outgassing values only; other sweeps' grids exist at crust 1x alone.
     main_out = [o for o in cb.ps.outgassing if o <= max_outgassing]
     subset = subset[subset['outgassing'].apply(lambda v: any(np.isclose(v, o) for o in main_out))]
 
@@ -3769,68 +2350,45 @@ def plot_da_transition(df, output_path, mg_si_values=DA_TRANSITION_MG_SI,
     if trans.empty:
         print("No Da = 1 crossings found — skipping Da transition figure.")
         return
-
-    # Not drawn any more, but a crossing bracketed by a temperature-wall sentinel is a weaker
-    # measurement than the rest -- report the count rather than losing it silently.
     n_clamped = int(trans['clamped'].sum())
     if n_clamped:
         print(f"  Da transition: {n_clamped} of {len(trans)} crossings bracketed by a T-wall state.")
 
-    hz_on = SHOW_HZ_EDGES if show_hz is None else show_hz
     line_vals = sorted(trans[line_by].unique())
-    norm   = _value_norm(line_vals, pad=0.0)
-    colours = {c: cmap(norm(c)) for c in line_vals}
+    norm = _value_norm(line_vals, pad=0.0)
     ticks, ticklabels = _colorbar_ticks(line_vals)
-
-    n_cols = len(mg_vals)
-    fig, axes = plt.subplots(1, n_cols, sharex=True, sharey=True, squeeze=False,
+    fig, axes = plt.subplots(1, len(mg_vals), sharex=True, sharey=True, squeeze=False,
                              figsize=figure_size('double', height=2.6))
     axes = axes[0]
-
     for ax, mg in zip(axes, mg_vals):
         panel = trans[np.isclose(trans['mg_si'], mg)]
         for c in line_vals:
             line = panel[np.isclose(panel[line_by], c)].sort_values(y_by)
-            if line.empty:
-                continue
-            ax.plot(line['s_crit'], line[y_by], color=colours[c],
-                    linestyle='-', linewidth=1.4, zorder=3)
+            if not line.empty:
+                ax.plot(line['s_crit'], line[y_by], color=cmap(norm(c)), linewidth=1.4, zorder=3)
         ax.set_yscale('log')
         ax.set_title(f'Mg/Si = {mg:g}')
         ax.grid(True, linestyle='--', alpha=0.3)
         _draw_hz_edges(ax, show_hz)
-
     axes[0].set_ylabel(DA_TRANSITION_LABELS[y_by])
     axes[len(axes) // 2].set_xlabel('Instellation (S/S$_0$)')
-    # Limits from the crossings themselves, not from the swept instellation range: the sweep
-    # runs out to 1.45 but no line transitions past ~1.15, which left a third of the axis empty.
-    # The HZ edges are included when drawn, since the outer one sits well left of every crossing
-    # and would otherwise fall outside the axis.
+
     marks = list(trans['s_crit'])
-    if hz_on:
+    if SHOW_HZ_EDGES if show_hz is None else show_hz:
         marks += [CONTINENTAL_HZ_OUTER, CONTINENTAL_HZ_INNER]
     lo, hi = min(marks), max(marks)
     pad = 0.08 * (hi - lo) if hi > lo else 0.1
-    # Wide margins so the lines are not crowded; each side's margin holds its regime label.
-    x_kinetic, x_thermo = lo - 2 * pad, hi + 2 * pad
-    axes[0].set_xlim(lo - 4 * pad, hi + 4 * pad)
-
-    label_kw = dict(rotation=90, ha='center', va='center', fontsize=7, color='0.15', zorder=5)
-    kinetic_box = dict(boxstyle='round,pad=0.35', facecolor='#d4eddb', edgecolor='#3f8f55',
-                       linewidth=0.6)
-    thermo_box = dict(boxstyle='round,pad=0.35', facecolor='#f8d6d1', edgecolor='#b8483a',
-                      linewidth=0.6)
+    axes[0].set_xlim(lo - 4 * pad, hi + 4 * pad)   # each margin holds a regime label
     for ax in axes:
         trans_ax = ax.get_xaxis_transform()
-        # Below mid-height so the boxes clear the HZ edge labels hanging from the top.
-        ax.text(x_kinetic, 0.35, 'Kinetic\n(stable) regime', transform=trans_ax,
-                bbox=kinetic_box, **label_kw)
-        ax.text(x_thermo, 0.35, 'Thermodynamic\n(unstable) regime', transform=trans_ax,
-                bbox=thermo_box, **label_kw)
-
-    _add_colorbar(fig, list(axes), cmap, norm, DA_TRANSITION_LABELS[line_by],
-                  ticks=ticks, ticklabels=ticklabels)
-
+        # Below mid-height so the boxes clear the HZ edge labels.
+        for x, text, face, edge in ((lo - 2 * pad, 'Kinetic\n(stable) regime', '#d4eddb', '#3f8f55'),
+                                    (hi + 2 * pad, 'Thermodynamic\n(unstable) regime', '#f8d6d1', '#b8483a')):
+            ax.text(x, 0.35, text, transform=trans_ax, rotation=90, ha='center', va='center',
+                    fontsize=7, color='0.15', zorder=5,
+                    bbox=dict(boxstyle='round,pad=0.35', facecolor=face, edgecolor=edge, linewidth=0.6))
+    _add_colorbar(fig, list(axes), cmap, norm, DA_TRANSITION_LABELS[line_by], ticks=ticks,
+                  ticklabels=ticklabels)
     stem = 'da_transition' if line_by == 'crust_production' else 'da_transition_by_outgassing'
     _save_fig(fig, figure_path(output_path, f'{stem}.png'))
 
@@ -3853,10 +2411,9 @@ def _largest_rectangle(mask):
 
 
 def plot_habitability_phase_space(df, output_path, s_max=1.2):
-    """Region map of climate state over outgassing / crust production ratio and instellation.
+    """Map of climate state over outgassing / crust production and instellation, labelled by region.
 
-    Each (ratio, instellation) cell takes the majority state of its runs, drawn as a filled block
-    with a per-state hatch, outlined where the state changes and labelled inside each region.
+    Each cell takes the majority state of its runs, drawn as a hatched block outlined where the state changes.
     """
     from matplotlib.collections import LineCollection, PatchCollection
     from matplotlib.patches import Rectangle
@@ -3866,29 +2423,22 @@ def plot_habitability_phase_space(df, output_path, s_max=1.2):
         print("No runs found — skipping phase space plot.")
         return
     base['ratio'] = base['outgassing'] / base['crust_production']
+    # Only a run stopped at a CO2 wall has an unknown fate; the final T decides the rest.
+    wall = base['domain_wall']
+    unknown = base['termination'].isin(OUT_OF_DOMAIN) & wall.isin(['co2_high', 'co2_low'])
+    snow = ((base['T'] <= T_SNOWBALL) | (wall == 'cold')) & ~unknown
+    hot = ((base['T'] >= T_RUNAWAY) | (wall == 'hot')) & ~unknown & ~snow
+    base['state'] = np.select([unknown, snow, hot], [3, 0, 2], 1)   # 0 snowball, 1 habitable, 2 hothouse, 3 unknown
 
-    # Final state decides snowball/hothouse; only a run stopped at a CO2 wall has an unknown fate.
-    wall = base.get('domain_wall')
-    if wall is None:
-        wall = pd.Series([None] * len(base), index=base.index)
-    cond_unknown = base['termination'].isin(OUT_OF_DOMAIN) & wall.isin(['co2_high', 'co2_low'])
-    cond_snow = ((base['T'] <= T_SNOWBALL) | (wall == 'cold')) & ~cond_unknown
-    cond_hot = ((base['T'] >= T_RUNAWAY) | (wall == 'hot')) & ~cond_unknown & ~cond_snow
-    states = ['Snowball', 'Habitable', 'Hothouse', 'Unknown']
-    base['state'] = np.select([cond_unknown, cond_snow, cond_hot], [3, 0, 2], 1)
-
-    # Merge near-duplicate ratios from different sweep grids (e.g. 0.03, 0.032, 0.0333) into one column.
+    # Merge near-identical ratios from different sweep grids (e.g. 0.03, 0.032, 0.0333) into one column.
     logr = np.log10(np.sort(base['ratio'].unique()))
     groups = np.concatenate([[0], np.cumsum(np.diff(logr) > 0.05)])
     centres = np.array([logr[groups == g].mean() for g in range(groups[-1] + 1)])
     base['col'] = groups[np.searchsorted(logr, np.log10(base['ratio']).clip(logr[0], logr[-1]))]
-
     s_vals = np.sort(base['instellation'].unique())
-    # Keep columns covering at least half the instellation range, or thin columns leave holes.
-    cover = base.groupby('col')['instellation'].nunique()
+    cover = base.groupby('col')['instellation'].nunique()   # thin columns would leave holes
     cols = [c for c in range(len(centres)) if cover.get(c, 0) >= 0.5 * len(s_vals)]
     base = base[base['col'].isin(cols)]
-    x_c = centres[cols]
 
     grid = np.full((len(s_vals), len(cols)), -1)
     n_mixed = 0
@@ -3900,32 +2450,29 @@ def plot_habitability_phase_space(df, output_path, s_max=1.2):
     def _edges(c):
         mid = 0.5 * (c[1:] + c[:-1])
         return np.concatenate([[c[0] - (mid[0] - c[0])], mid, [c[-1] + (c[-1] - mid[-1])]])
-    xe, ye = 10 ** _edges(x_c), _edges(s_vals)
+    xe, ye = 10 ** _edges(centres[cols]), _edges(s_vals)
 
     style = {0: ('#9cc5ea', '#3a78b5', '\\\\\\\\\\\\'),
              1: ('#a8dbb4', '#3f8f55', None),
              2: ('#f2a99f', '#b8483a', '//////'),
              3: ('#d9d9d9', '#8a8a8a', '...')}
-
     fig, ax = plt.subplots(1, 1, figsize=figure_size('single', height=3.0))
     for k, (face, edge, hatch) in style.items():
         cells = [Rectangle((xe[i], ye[j]), xe[i + 1] - xe[i], ye[j + 1] - ye[j])
                  for j, i in zip(*np.nonzero(grid == k))]
-        if not cells:
-            continue
-        ax.add_collection(PatchCollection(cells, facecolor=face, edgecolor=edge, hatch=hatch,
-                                          linewidth=0, zorder=2))
+        if cells:
+            ax.add_collection(PatchCollection(cells, facecolor=face, edgecolor=edge, hatch=hatch,
+                                              linewidth=0, zorder=2))
 
-    # Outline every cell edge where the state changes, including against empty cells.
-    padded = np.pad(grid, 1, constant_values=-1)
+    padded = np.pad(grid, 1, constant_values=-1)   # outline state changes, including against empty cells
     segs = []
-    for j in range(padded.shape[0]):
+    for j in range(1, padded.shape[0] - 1):
         for i in range(padded.shape[1] - 1):
-            if padded[j, i] != padded[j, i + 1] and 0 < j < padded.shape[0] - 1:
+            if padded[j, i] != padded[j, i + 1]:
                 segs.append([(xe[i], ye[j - 1]), (xe[i], ye[j])])
     for j in range(padded.shape[0] - 1):
-        for i in range(padded.shape[1]):
-            if padded[j, i] != padded[j + 1, i] and 0 < i < padded.shape[1] - 1:
+        for i in range(1, padded.shape[1] - 1):
+            if padded[j, i] != padded[j + 1, i]:
                 segs.append([(xe[i - 1], ye[j]), (xe[i], ye[j])])
     ax.add_collection(LineCollection(segs, colors='0.15', linewidths=0.9, zorder=3))
 
@@ -3934,17 +2481,16 @@ def plot_habitability_phase_space(df, output_path, s_max=1.2):
     ax.set_ylim(ye[0], min(ye[-1], s_max))
     ax.set_xlabel('Outgassing / Crust production rate')
     ax.set_ylabel('Instellation (S/S₀)')
-    # Label each state at the centre of its largest visible block of cells, so the text sits inside it.
-    names = ['Snowball', 'Habitable', 'Hothouse', 'Unknown\n(CO₂ wall)']
+    # Label each state at the centre of its largest visible block of cells.
     visible = ye[:-1] < s_max
-    for k, name in enumerate(names):
+    for k, name in enumerate(['Snowball', 'Habitable', 'Hothouse', 'Unknown\n(CO₂ wall)']):
         rect = _largest_rectangle((grid == k) & visible[:, None])
         if rect is None:
             continue
         j0, j1, i0, i1 = rect
-        x_mid = 10 ** (0.5 * (np.log10(xe[i0]) + np.log10(xe[i1 + 1])))
-        y_mid = 0.5 * (ye[j0] + min(ye[j1 + 1], s_max))
-        ax.text(x_mid, y_mid, name, ha='center', va='center', fontsize=7, zorder=5,
+        ax.text(10 ** (0.5 * (np.log10(xe[i0]) + np.log10(xe[i1 + 1]))),
+                0.5 * (ye[j0] + min(ye[j1 + 1], s_max)), name, ha='center', va='center',
+                fontsize=7, zorder=5,
                 bbox=dict(boxstyle='round,pad=0.25', facecolor='white', edgecolor='none', alpha=0.85))
     print(f"Ratio phase space: {len(cols)} ratio columns x {len(s_vals)} instellations, "
           f"{n_mixed} cell(s) where runs disagree (majority shown).")
@@ -3969,77 +2515,62 @@ if __name__ == '__main__':
                         help='Pin ocean pe to this value in the main plots '
                              '(default: the model reference, planet.PE_DEFAULT).')
     args = parser.parse_args()
-
     for _knob in CHEM_KNOBS:
-        _v = getattr(args, _knob)
-        if _v is not None:
-            CHEM_OVERRIDE[_knob] = _v
+        if getattr(args, _knob) is not None:
+            CHEM_OVERRIDE[_knob] = getattr(args, _knob)
     if args.pe is not None:
         REF_PE = args.pe
 
     df = load_data(args.path)
-
     if args.legacy:
         import plot_legacy
         df = plot_legacy.upgrade(df)
         plot_legacy.plot_named_compositions(df, args.path, split_panels=True)
-
     if df.empty:
         print("No data found. Check --path.")
         raise SystemExit(1)
 
-    # Depths that actually carry a composition sweep. The composition figures were previously
-    # hardcoded to 3000 m, so a deep composition sweep produced no plot at all.
-    comp_depths = sorted(
+    # Depths carrying a composition sweep, and depths with a resolved redox sweep (more than two pe values).
+    comp_depths = [args.depth] if args.depth is not None else (sorted(
         d for d in df['ocean_depth'].unique()
-        if df[(df['ocean_depth'] == d)][['mg_si', 'delta_iw']].nunique().max() > 1
-    ) or [3000.0]
-    if args.depth is not None:
-        comp_depths = [args.depth]
+        if df[df['ocean_depth'] == d][['mg_si', 'delta_iw']].nunique().max() > 1) or [3000.0])
+    redox_depths = sorted(d for d in df['ocean_depth'].unique()
+                          if df[df['ocean_depth'] == d]['pe'].nunique() > 2) or [3000.0]
     print(f"Composition figures for depth(s): {[f'{d:g}' for d in comp_depths]}")
-
-    # Depths that carry a resolved redox (pe) sweep -- more than the bracketing reducing/
-    # oxidising pair every other sweep runs (parameter_sweep.sweep_pe / sweep_pe_deep).
-    redox_depths = sorted(
-        d for d in df['ocean_depth'].unique()
-        if df[df['ocean_depth'] == d]['pe'].nunique() > 2
-    ) or [3000.0]
     print(f"Redox figures for depth(s): {[f'{d:g}' for d in redox_depths]}")
-
-    # Mg/Si values with a full basic sweep. The reference (Earth) plane is drawn untagged, as
-    # before; each end-member gets the same pair of figures with the value in the filename.
     basic_mg = basic_plane_mg_si(df)
     end_members = [m for m in basic_mg if not np.isclose(m, REF_MG_SI)]
     if end_members:
         print(f"Basic sweep Mg/Si planes: {[f'{m:g}' for m in basic_mg]}")
 
-    plot_basic(df, args.path, split_panels=True)
-    plot_basic(df, args.path, all_results=False, split_panels=True)
-    plot_basic_ph(df, args.path)
-    for _mg in end_members:
-        plot_basic(df, args.path, split_panels=True, mg_si=_mg)
-        plot_basic(df, args.path, all_results=False, split_panels=True, mg_si=_mg)
-    plot_basic_mgsi_grid(df, args.path, split_panels=True)
-    # plot_basic(df, args.path, split_panels=True, all_results=False, sequence=True)
-    plot_depth(df, args.path, split_panels=False)
-    plot_chemistry(df, args.path, split_panels=True)
+    path = args.path
+    # Basic sweep, at Earth's Mg/Si and each end-member.
+    for _mg in [None] + end_members:
+        plot_basic(df, path, split_panels=True, mg_si=_mg)
+        plot_basic(df, path, all_results=False, split_panels=True, mg_si=_mg)
+    plot_basic_ph(df, path)
+    plot_basic_mgsi_grid(df, path, split_panels=True)
+    # One-axis sweeps.
+    plot_depth(df, path, split_panels=False)
+    plot_chemistry(df, path, split_panels=True)
     for _d in redox_depths:
-        plot_pe(df, args.path, split_panels=True, ocean_depth=_d)
-    plot_ratio_scatter(df, args.path)
+        plot_pe(df, path, split_panels=True, ocean_depth=_d)
+    # Crust composition.
     for _d in comp_depths:
-        plot_cross(df, args.path, show_markers=False, split_panels=True,
-                               ocean_depth=_d)
-        plot_composition(df, args.path, show_markers=False, split_panels=True,
-                              ocean_depth=_d)
+        plot_cross(df, path, split_panels=True, ocean_depth=_d)
+        plot_composition(df, path, split_panels=True, ocean_depth=_d)
     for _q in ('T', 'P_CO2'):
-        plot_composition_map(df, args.path, ocean_depth=comp_depths[0], quantity=_q)
-    plot_damkohler_contour(df, args.path)
-    plot_habitability_phase_space(df, args.path)
-    plot_outgassing_crust_plane(df, args.path)
-    plot_da_transition(df, args.path)
-    plot_da_transition(df, args.path, line_by='outgassing')
-    plot_alpha_outgassing(df, args.path)
-    plot_alpha_outgassing(df, args.path, alpha_exponent=-1.0)
-    plot_alpha_outgassing_plane(df, args.path)
-    plot_continental(df, args.path)
+        plot_composition_map(df, path, ocean_depth=comp_depths[0], quantity=_q)
+    # Tectonics, alpha and the Da transition.
+    plot_damkohler_contour(df, path)
+    plot_habitability_phase_space(df, path)
+    plot_outgassing_crust_plane(df, path)
+    plot_reverse_weathering_ratio(df, path)
+    plot_da_transition(df, path)
+    plot_da_transition(df, path, line_by='outgassing')
+    plot_alpha_outgassing(df, path)
+    plot_alpha_outgassing(df, path, alpha_exponent=-1.0)
+    plot_alpha_outgassing_plane(df, path)
+    # Continental figures.
+    plot_continental(df, path)
     print("Done.")
