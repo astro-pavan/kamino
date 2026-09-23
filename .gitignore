@@ -13,6 +13,7 @@ tests/*.csv
 error.inp
 .claude
 output/
+sweep_output
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
