@@ -58,8 +58,8 @@ What changed, and how it is mapped
 
 5. T_p / mg_si_ratio. The oldest runs stored `mantle_potential_temperature` and a `mg_si_ratio`
    that was a multiplier on 1.23 rather than a Mg/Si. Their mineralogy cannot be reconstructed by
-   the current pipeline; `plot_results._crust_composition_of` raises on them rather than
-   substituting Earth, and that guard stays there because it protects a per-run lookup.
+   the current pipeline. plot_results no longer reconstructs diagnostics at all: a run without a
+   stored "diagnostics" block (anything written before 2026-08-27) gets NaN Da, SI and fluxes.
 """
 
 import numpy as np
