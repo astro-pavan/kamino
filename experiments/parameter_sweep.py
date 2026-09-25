@@ -11,7 +11,7 @@ from kamino.planet import Planet, KD_MG_HT, K_NA_CONT_REMOVAL, PE_DEFAULT
 from kamino.chemistry import seawater_seed
 from kamino.weathering import ALPHA_REF
 from kamino.crust_composition import mineral_composition
-from kamino.constants import M_EARTH, R_EARTH, EARTH_MANTLE_MG_SI, EARTH_DELTA_IW
+from kamino.constants import M_EARTH, R_EARTH, YR, EARTH_MANTLE_MG_SI, EARTH_DELTA_IW, EARTH_CL_OUTGASSING_RATIO
 from kamino.mineral_info import *
 
 # Set KAMINO_RERUN=1 to recompute runs that already have output on disk.
@@ -24,16 +24,22 @@ from kamino.mineral_info import *
 RERUN = os.environ.get('KAMINO_RERUN', '0').lower() in ('1', 'true', 'yes')
 MAX_CHEMISTRY_FALLBACKS = 5000
 
+# Initial ocean. Blank by default: an Earth-seawater seed hard-codes Earth's Cl/SO4 inventory into
+# every exoplanet, and that inventory never relaxes (Cl tau ~5.6 Gyr, SO4 pinned), so it is an input
+# not a result. Set KAMINO_SEED_OCEAN=1 for chemistry.seawater_seed (read from the environment for
+# the same spawn reason as RERUN). Every run on disk before 2026-09-23 is seeded.
+SEED_OCEAN = os.environ.get('KAMINO_SEED_OCEAN', '0').lower() in ('1', 'true', 'yes')
+
+# No Cl in the sweeps: a planet's Cl inventory is inherited, so Cl is used for the Earth calibration only.
+CL_OUTGASSING_RATIO = 0.0
+
+T_END_GYR = 2.0   # default integration limit; basic_cl runs to 4.5 Gyr (Cl relaxes on ~3.9 Gyr)
+T_END_CL_GYR = 4.5
+
 # ── Calibrated constants ──────────────────────────────────────────────────────────────────────
-# From experiments/calibrate_earth.py, 2026-08-26, re-run after the hedenbergite adoption (§27)
-# invalidated the §22 fit. 25 evaluations, converged on its own tolerance, best cost 0.1077:
-#   Earth: converged, T = 294.4 K, pH 7.76, pCO2 694 ppm
-#          Na -8.3%, Ca +3.0%, Mg +37.0%, Alk +33.1%, C +32.1%
-# The Mg residual is a consequence of §27, not a solver failure: the deleted Fe->fayalite
-# exchange had been manufacturing diopside (a Ca source) out of forsterite, so removing it cut
-# the rate-weighted Ca supply 9.5% and raised Mg supply 12.3%.
-KD_MG_CALIB = 1.969604e-02
-K_NA_CALIB  = 6.099720e-03
+# Taken from kamino.constants (the single source), so the sweep and the module defaults cannot drift.
+KD_MG_CALIB = KD_MG_HT
+K_NA_CALIB  = K_NA_CONT_REMOVAL
 
 # alpha is STILL NOT identified by the Earth fit, even though it is now the same number the
 # fit reports. Measured, ocean concentrations move <6% across a 41x change in alpha -- because
@@ -59,7 +65,7 @@ K_NA_CALIB  = 6.099720e-03
 # cooling), so nothing that stayed in-domain at alpha=2 falls out at ALPHA_REF; the S=1.2 wall is
 # unrelated to alpha entirely. This move relaxes the cold-end constraint, it does not tighten it.
 ALPHA_CALIB = ALPHA_REF
-alpha = [ALPHA_REF, 10, 50]   # the sensitivity arm; all three stay in the kinetic limit (Da <= 0.13)
+alpha = [0.1 * ALPHA_REF, ALPHA_REF, ALPHA_REF * 10]   # the sensitivity arm; all three stay in the kinetic limit (Da <= 0.13)
 
 # ── Ocean redox ───────────────────────────────────────────────────────────────────────────────
 # Every sweep is run under BOTH redox states, because the model has no basis for preferring one
@@ -161,7 +167,8 @@ def _tag(value, reference, prefix):
     return '' if value == reference else f'_{prefix}{value:g}'
 
 
-def _run_name(s, o, c, d, rw, mgsi, diw, alpha, kd_mg, k_na, pe=PE_DEFAULT_SWEEP, land=0.0):
+def _run_name(s, o, c, d, rw, mgsi, diw, alpha, kd_mg, k_na, pe=PE_DEFAULT_SWEEP, land=0.0,
+              cl=CL_OUTGASSING_RATIO, t_end_gyr=T_END_GYR):
     """Run name. Every parameter that differs from the Planet default MUST appear, or two configs
     would share a filename and RERUN=False would silently return the first one's result.
 
@@ -187,14 +194,18 @@ def _run_name(s, o, c, d, rw, mgsi, diw, alpha, kd_mg, k_na, pe=PE_DEFAULT_SWEEP
     run_name += _tag(k_na, K_NA_CONT_REMOVAL, 'kna')
     run_name += _tag(pe, PE_DEFAULT, 'pe')
     run_name += _tag(land, 0.0, 'land')
+    run_name += _tag(cl, EARTH_CL_OUTGASSING_RATIO, 'cl')
+    run_name += _tag(t_end_gyr, T_END_GYR, 'tend')
 
     return run_name
 
 
-def run_simulation(s, o, c, d, rw, mgsi, diw, alpha, kd_mg, k_na, pe, output_path, land=0.0):
+def run_simulation(s, o, c, d, rw, mgsi, diw, alpha, kd_mg, k_na, pe, output_path, land=0.0,
+                   cl=CL_OUTGASSING_RATIO, t_end_gyr=T_END_GYR, seed=None):
     p2.output_path = output_path  # each subprocess imports a fresh module; set path here
+    seed = SEED_OCEAN if seed is None else seed   # seawater initial ocean; not in the name (see the resume guard)
 
-    run_name = _run_name(s, o, c, d, rw, mgsi, diw, alpha, kd_mg, k_na, pe, land)
+    run_name = _run_name(s, o, c, d, rw, mgsi, diw, alpha, kd_mg, k_na, pe, land, cl, t_end_gyr)
 
     if not RERUN:
         json_path = os.path.join(output_path, f'{run_name}.json')
@@ -212,9 +223,15 @@ def run_simulation(s, o, c, d, rw, mgsi, diw, alpha, kd_mg, k_na, pe, output_pat
                     stale = pe is not None      # pre-pe output: only valid if pe was unset
                 else:
                     stale = not (stored_pe is None and pe is None) and stored_pe != pe
+                # Same trap for the initial ocean: names do not encode it, and a file without the
+                # key predates this flag, when every run was seeded.
+                stored_seed = existing.get('seeded_ocean', True)
                 if stale:
                     print(f"  re-running {run_name}: stored pe={stored_pe!r} != requested "
                           f"pe={pe!r} (output predates the pe parameter?)", flush=True)
+                elif stored_seed != seed:
+                    print(f"  re-running {run_name}: stored seeded_ocean={stored_seed} != "
+                          f"requested {seed}", flush=True)
                 elif 'termination' in existing:
                     return run_name, None, existing.get('T'), existing['termination']
             except Exception:
@@ -237,20 +254,19 @@ def run_simulation(s, o, c, d, rw, mgsi, diw, alpha, kd_mg, k_na, pe, output_pat
             kd_mg_ht=kd_mg,
             k_na_cont_removal=k_na,
             pe=pe,
+            cl_outgassing_ratio=cl,
             name=run_name
         )
-        # Seed the ocean with charge-balanced modern seawater rather than starting blank.
-        # Not optional: SO4 has no source term (it is pinned), and Cl relaxes on 5571 Myr against
-        # a 2 Gyr integration, so a blank start leaves Cl at 30% of steady state and the missing
-        # anion charge shows up as carbonate alkalinity. See chemistry.seawater_seed and
-        # development_history.md section 35. Every constant in this file was calibrated against
-        # a seeded ocean, so running unseeded would not merely be slower -- it would be a
-        # different model from the one the constants belong to.
-        p.time_evolve(b0=seawater_seed(),
+        # Blank unless SEED_OCEAN. The constants here were calibrated against a seeded Earth ocean,
+        # so blank runs use them outside that anchor (see SEED_OCEAN above).
+        p.time_evolve(t_end=t_end_gyr * 1e9 * YR, b0=seawater_seed() if seed else None,
                       max_chemistry_fallbacks=MAX_CHEMISTRY_FALLBACKS,
                       max_wall_seconds=wall_budget(d))
         with open(p._output_filename) as fh:  # time_evolve records T and termination here
             result = json.load(fh)
+        result['seeded_ocean'] = seed
+        with open(p._output_filename, 'w') as fh:
+            json.dump(result, fh, indent=0)
         return run_name, None, result.get('T'), result.get('termination')
     except Exception as e:
         return run_name, str(e), None, None
@@ -306,7 +322,8 @@ def _cost_rank(combo):
 
 def run_sweep(instellation, outgassing, crust_production_rate, ocean_depth, reverse_weathering,
               mantle_mg_si, delta_iw, alpha=(ALPHA_REF,), kd_mg=(KD_MG_HT,),
-              k_na=(K_NA_CONT_REMOVAL,), pe=(PE_DEFAULT_SWEEP,), output_path=OUTPUT_PATH):
+              k_na=(K_NA_CONT_REMOVAL,), pe=(PE_DEFAULT_SWEEP,), output_path=OUTPUT_PATH,
+              cl=CL_OUTGASSING_RATIO, t_end_gyr=T_END_GYR):
 
     if not output_path.endswith('/'):
         output_path += '/'
@@ -318,10 +335,10 @@ def run_sweep(instellation, outgassing, crust_production_rate, ocean_depth, reve
     combos = list(itertools.product(instellation, outgassing, crust_production_rate, ocean_depth,
                                    reverse_weathering, mantle_mg_si, delta_iw, alpha, kd_mg,
                                    k_na, pe))
-    return run_combos(combos, output_path=output_path)
+    return run_combos(combos, output_path=output_path, cl=cl, t_end_gyr=t_end_gyr)
 
 
-def run_combos(combos, output_path=OUTPUT_PATH):
+def run_combos(combos, output_path=OUTPUT_PATH, cl=CL_OUTGASSING_RATIO, t_end_gyr=T_END_GYR):
     """Execute an explicit list of combos (run_simulation argument order, minus output_path).
 
     Shared by run_sweep (full factorial) and the cross design, so both get the same collision
@@ -340,7 +357,7 @@ def run_combos(combos, output_path=OUTPUT_PATH):
 
     # Distinct configs must map to distinct filenames, or one silently overwrites the other and
     # RERUN=False then returns the survivor's result for both (the fast_13 resume trap).
-    names = [_run_name(*combo) for combo in combos]
+    names = [_run_name(*combo, cl=cl, t_end_gyr=t_end_gyr) for combo in combos]
     if len(set(names)) != len(names):
         duplicated = sorted({n for n in names if names.count(n) > 1})
         raise ValueError(
@@ -352,6 +369,7 @@ def run_combos(combos, output_path=OUTPUT_PATH):
     print(f"Running {total} simulations with {workers} worker processes "
           f"(fallback cap: {cap_str})...")
     print(f"Output: {output_path}")
+    print(f"  Cl outgassing ratio: {cl:g}, t_end: {t_end_gyr:g} Gyr")
     for label, values in (('alpha', alpha), ('kd_mg_ht', kd_mg), ('k_na_cont_removal', k_na),
                           ('pe', [f'{v:g} ({_pe_label(v)})' for v in pe])):
         print(f"  {label}: {list(values)}")
@@ -359,7 +377,7 @@ def run_combos(combos, output_path=OUTPUT_PATH):
     with ProcessPoolExecutor(max_workers=workers, mp_context=mp.get_context('spawn')) as executor:
         futures = {
             executor.submit(run_simulation, s, o, c, d, rw, mgsi, diw, a, kmg, kna, pe_,
-                            output_path): (s, o, c, d, rw, mgsi, diw, a, kmg, kna, pe_)
+                            output_path, cl=cl, t_end_gyr=t_end_gyr): (s, o, c, d, rw, mgsi, diw, a, kmg, kna, pe_)
             for s, o, c, d, rw, mgsi, diw, a, kmg, kna, pe_ in combos
         }
 
@@ -409,7 +427,7 @@ k_mg = [KD_MG_CALIB, 0]   # 0 disables the Mg->Ca exchange entirely
 k_na = [K_NA_CALIB, 0]    # 0 disables the Na sink entirely
 
 crust_production_rate_default = [1]
-outgassing_default = [0.1]
+outgassing_default = [1]
 ocean_depth_default = [3000]
 # The water-world counterpart of ocean_depth_default, used by the *_deep sweeps. 20 km matches
 # CROSS_DEPTHS so deep results from either design are directly comparable.
@@ -433,12 +451,12 @@ delta_iw_default = [EARTH_DELTA_IW]
 # than extending it. Above ~50 the seafloor sink approaches Da = 1 and the trade-off stops
 # existing -- a thermodynamically limited sink does not respond to alpha at all -- and the
 # figure discards those runs anyway; below ALPHA_REF nothing is calibrated.
-ALPHA_PLANE = [ALPHA_REF, 2, 3.5, 6, 10, 18, 30, 50]
+ALPHA_PLANE = [0.03 * ALPHA_REF, 0.1 * ALPHA_REF, 0.3 * ALPHA_REF, ALPHA_REF, 3 * ALPHA_REF, 10 * ALPHA_REF, 30 * ALPHA_REF]
 
 # Quarter-decade outgassing, against the half-decade `outgassing` grid. The iso-T level is found
 # by interpolating along THIS axis, so its spacing sets the error on every point of every line.
 OUTGASSING_PLANE = [0.01, 0.018, 0.032, 0.056, 0.1, 0.18, 0.32, 0.56,
-                    1.0, 1.8, 3.2, 5.6, 10.0]
+                    1, 1.8, 3.2, 5.6, 10]   # ints, so names match the basic sweep's out_1 / out_10
 
 # One line per instellation. Coarser than `instellation` because the lines are drawn at distinct
 # colours on one axis -- more than ~7 is unreadable, and each one costs a full alpha x outgassing
@@ -478,7 +496,7 @@ CROSS_DELTA_IW = [-5.0, -4.0, -3.0, EARTH_DELTA_IW, -1.0]
 CROSS_DEPTHS = [3000, 20000]
 
 
-def run_cross(depths=CROSS_DEPTHS, output_path=OUTPUT_PATH, pe=PE_STATES):
+def run_cross(depths=CROSS_DEPTHS, output_path=OUTPUT_PATH, pe=(PE_DEFAULT_SWEEP,)):
     """The cross sweep. Cheapest runs first, so an interrupted run still covers the most ground."""
     combos = []
     for pe_ in ([pe] if isinstance(pe, (int, float)) else pe):
@@ -496,14 +514,27 @@ def run_cross(depths=CROSS_DEPTHS, output_path=OUTPUT_PATH, pe=PE_STATES):
 # edited to run anything, only one sweep was ever active, and which one had run was recoverable
 # only from the git history of this file.
 
-def sweep_basic(output_path=OUTPUT_PATH, pe=PE_STATES):
+def sweep_basic(output_path=OUTPUT_PATH, pe=[PE_DEFAULT]):
     """Instellation x outgassing x crust production, at the Earth-reference crust."""
     return run_sweep(instellation, outgassing, crust_production_rate, ocean_depth_default,
                      reverse_weathering_default, mantle_mg_si_default, delta_iw_default,
                      alpha_default, k_mg_default, k_na_default, pe=pe, output_path=output_path)
 
 
-def sweep_basic_no_rw(output_path=OUTPUT_PATH, pe=PE_STATES):
+def sweep_basic_cl(output_path=OUTPUT_PATH, pe=[PE_DEFAULT]):
+    """sweep_basic at 1x crust production with Earth's Cl/C outgassing ratio, run for 4.5 Gyr.
+
+    The paired Cl arm (paper_issues.md section 10): its runs match sweep_basic's crust = 1 slice one-to-one.
+    Cl relaxes on ~3.9 Gyr x (d / 3 km) / crust production (dev history section 37.9), so a blank ocean
+    holds ~69 % of its equilibrium Cl at 4.5 Gyr: the inventory of a planet of Earth's age.
+    """
+    return run_sweep(instellation, outgassing, crust_production_rate_default, ocean_depth_default,
+                     reverse_weathering_default, mantle_mg_si_default, delta_iw_default,
+                     alpha_default, k_mg_default, k_na_default, pe=pe, output_path=output_path,
+                     cl=EARTH_CL_OUTGASSING_RATIO, t_end_gyr=T_END_CL_GYR)
+
+
+def sweep_basic_no_rw(output_path=OUTPUT_PATH, pe=[PE_DEFAULT]):
     """sweep_basic with reverse weathering OFF -- the paired control for the RW arm.
 
     Every axis is identical to sweep_basic, so the two grids match one-to-one and the difference
@@ -519,7 +550,7 @@ def sweep_basic_no_rw(output_path=OUTPUT_PATH, pe=PE_STATES):
                      alpha_default, k_mg_default, k_na_default, pe=pe, output_path=output_path)
 
 
-def sweep_basic_deep(output_path=OUTPUT_PATH, pe=PE_STATES):
+def sweep_basic_deep(output_path=OUTPUT_PATH, pe=[PE_DEFAULT]):
     """As sweep_basic, on the 20 km water world.
 
     This is the expensive one. Deep runs cost ~5.7x shallow (pilot: 154.6 min for 10 deep against
@@ -533,14 +564,14 @@ def sweep_basic_deep(output_path=OUTPUT_PATH, pe=PE_STATES):
                      alpha_default, k_mg_default, k_na_default, pe=pe, output_path=output_path)
 
 
-def sweep_basic_low_mgsi(output_path=OUTPUT_PATH, pe=PE_STATES):
+def sweep_basic_low_mgsi(output_path=OUTPUT_PATH, pe=[PE_DEFAULT]):
     """As sweep_basic, on the low-Mg/Si (0.8) crust -- the olivine-free, silica-rich end-member."""
     return run_sweep(instellation, outgassing, crust_production_rate, ocean_depth_default,
                      reverse_weathering_default, mantle_mg_si_low, delta_iw_default,
                      alpha_default, k_mg_default, k_na_default, pe=pe, output_path=output_path)
 
 
-def sweep_basic_high_mgsi(output_path=OUTPUT_PATH, pe=PE_STATES):
+def sweep_basic_high_mgsi(output_path=OUTPUT_PATH, pe=[PE_DEFAULT]):
     """As sweep_basic, on the high-Mg/Si (1.8) crust -- the orthopyroxene-free, olivine-rich end.
 
     Paired with sweep_basic_low_mgsi, this is the outgassing x crust-production plane repeated at
@@ -552,14 +583,14 @@ def sweep_basic_high_mgsi(output_path=OUTPUT_PATH, pe=PE_STATES):
                      alpha_default, k_mg_default, k_na_default, pe=pe, output_path=output_path)
 
 
-def sweep_depth(output_path=OUTPUT_PATH, pe=PE_STATES):
+def sweep_depth(output_path=OUTPUT_PATH, pe=[PE_DEFAULT]):
     """Instellation x ocean depth."""
     return run_sweep(instellation, outgassing_default, crust_production_rate_default, ocean_depth,
                      reverse_weathering_default, mantle_mg_si_default, delta_iw_default,
                      alpha_default, k_mg_default, k_na_default, pe=pe, output_path=output_path)
 
 
-def sweep_composition(output_path=OUTPUT_PATH, pe=PE_STATES):
+def sweep_composition(output_path=OUTPUT_PATH, pe=[PE_DEFAULT]):
     """Instellation x Mg/Si x dIW -- the full composition factorial at 3 km.
 
     This is the factorial the CROSS design deliberately avoids (see cross_combos). Use it when
@@ -571,7 +602,7 @@ def sweep_composition(output_path=OUTPUT_PATH, pe=PE_STATES):
                      alpha_default, k_mg_default, k_na_default, pe=pe, output_path=output_path)
 
 
-def sweep_composition_deep(output_path=OUTPUT_PATH, pe=PE_STATES):
+def sweep_composition_deep(output_path=OUTPUT_PATH, pe=[PE_DEFAULT]):
     """As sweep_composition, on the 20 km water world."""
     return run_sweep(instellation, outgassing_default, crust_production_rate_default,
                      ocean_depth_deep_default, reverse_weathering_default, mantle_mg_si, delta_iw,
@@ -598,7 +629,7 @@ def sweep_depth_oxidised(output_path=OUTPUT_PATH):
     return sweep_depth(output_path=output_path, pe=(PE_OXIDISING,))
 
 
-def sweep_alpha(output_path=OUTPUT_PATH, pe=PE_STATES):
+def sweep_alpha(output_path=OUTPUT_PATH, pe=[PE_DEFAULT]):
     """The alpha sensitivity arm at the Earth-reference crust. alpha is a CHOICE (see
     ALPHA_CALIB), so any result sensitive to the absolute CO2 level needs this reported."""
     return run_sweep(instellation, outgassing_default, crust_production_rate_default,
@@ -606,7 +637,7 @@ def sweep_alpha(output_path=OUTPUT_PATH, pe=PE_STATES):
                      delta_iw_default, alpha, k_mg_default, k_na_default, pe=pe, output_path=output_path)
 
 
-def sweep_alpha_composition(output_path=OUTPUT_PATH, pe=PE_STATES):
+def sweep_alpha_composition(output_path=OUTPUT_PATH, pe=[PE_DEFAULT]):
     """alpha x Mg/Si and alpha x dIW: does the composition signal survive the alpha choice?
 
     This is the sweep that answers the referee question directly -- if the Mg/Si and dIW
@@ -621,7 +652,7 @@ def sweep_alpha_composition(output_path=OUTPUT_PATH, pe=PE_STATES):
     return run_combos(combos, output_path=output_path)
 
 
-def sweep_alpha_outgassing(output_path=OUTPUT_PATH, pe=PE_STATES):
+def sweep_alpha_outgassing(output_path=OUTPUT_PATH, pe=[PE_DEFAULT]):
     """The dense alpha x outgassing plane at the Earth-reference crust, 3 km, crust production 1.
 
     Populates plot_results.plot_alpha_outgassing_plane: everything except alpha, outgassing and
@@ -634,7 +665,7 @@ def sweep_alpha_outgassing(output_path=OUTPUT_PATH, pe=PE_STATES):
                      pe=pe, output_path=output_path)
 
 
-def sweep_chemistry(output_path=OUTPUT_PATH, pe=PE_STATES):
+def sweep_chemistry(output_path=OUTPUT_PATH, pe=[PE_DEFAULT]):
     """kd_mg_ht and k_na on/off, to isolate what each sink contributes."""
     return run_sweep(instellation, outgassing_default, crust_production_rate_default,
                      ocean_depth_default, reverse_weathering_default, mantle_mg_si_default,
@@ -687,7 +718,7 @@ def sweep_pe_composition(output_path=OUTPUT_PATH, pe=None):
     return run_combos(combos, output_path=output_path)
 
 
-def sweep_cross(output_path=OUTPUT_PATH, pe=PE_STATES):
+def sweep_cross(output_path=OUTPUT_PATH, pe=[PE_DEFAULT]):
     """The cross design at 3 km: one composition axis at a time through the Earth centre.
 
     Split from the deep half deliberately. The two halves cost very differently (126 runs at
@@ -698,7 +729,7 @@ def sweep_cross(output_path=OUTPUT_PATH, pe=PE_STATES):
     return run_cross(depths=ocean_depth_default, output_path=output_path, pe=pe)
 
 
-def sweep_cross_deep(output_path=OUTPUT_PATH, pe=PE_STATES):
+def sweep_cross_deep(output_path=OUTPUT_PATH, pe=[PE_DEFAULT]):
     """The cross design on the 20 km water world. See sweep_cross."""
     return run_cross(depths=ocean_depth_deep_default, output_path=output_path, pe=pe)
 
@@ -706,6 +737,7 @@ def sweep_cross_deep(output_path=OUTPUT_PATH, pe=PE_STATES):
 SWEEPS = {
     'basic':             ('instellation x outgassing x crust production, 3 km', sweep_basic),
     'basic_no_rw':       ('basic with reverse weathering off -- paired control', sweep_basic_no_rw),
+    'basic_cl':          ("basic at 1x crust, Earth's Cl outgassing ratio, 4.5 Gyr -- paired Cl arm", sweep_basic_cl),
     'basic_deep':        ('instellation x outgassing x crust production, 20 km', sweep_basic_deep),
     'basic_low_mgsi':    ('basic at Mg/Si = 0.8, 3 km', sweep_basic_low_mgsi),
     'basic_high_mgsi':   ('basic at Mg/Si = 1.8, 3 km', sweep_basic_high_mgsi),
@@ -726,7 +758,7 @@ SWEEPS = {
     'chemistry':         ('kd_mg_ht / k_na on-off', sweep_chemistry),
 }
 
-DEFAULT_SWEEPS = 'basic,composition,depth,alpha_outgassing,basic_high_mgsi,basic_low_mgsi,pe'
+DEFAULT_SWEEPS = 'basic,composition,depth,alpha_outgassing,basic_no_rw,basic_low_mgsi,basic_high_mgsi,basic_cl'
 
 
 # Measured per-run wall cost, from the 20-run pilot (2026-08-25): 27.2 min for 10 shallow runs,
@@ -744,7 +776,7 @@ def _sweep_shape(name):
     if name in ('depth', 'depth_oxidised'):
         deep = sum(1 for d in ocean_depth if d >= DEEP_OCEAN_M)
         per_state = len(instellation)
-        states = 1 if name == 'depth_oxidised' else len(PE_STATES)
+        states = 1
         return (per_state * (len(ocean_depth) - deep) * states,
                 per_state * deep * states)
     return n, 0
@@ -758,14 +790,14 @@ def _sweep_cost_hours(name):
 
 def _sweep_size(name):
     """Run count without executing anything, so a sweep can be costed before it is launched."""
-    n_redox, n_pe = len(PE_STATES), len(pe_arm)
+    n_redox, n_pe = 1, len(pe_arm)   # sweeps run reducing only; the *_oxidised sweeps are separate
     n_cross = len(cross_combos(CROSS_INSTELLATION, CROSS_MG_SI, CROSS_DELTA_IW,
                                ocean_depth_default))
-    # Every sweep except the pe arms runs under BOTH redox states, so it doubles. The pe sweeps
-    # resolve that axis themselves and are NOT doubled.
+    # Every sweep except the pe arms runs at pe = -3 only; the pe sweeps resolve that axis themselves.
     sizers = {
         'basic':            len(instellation)*len(outgassing)*len(crust_production_rate)*n_redox,
         'basic_no_rw':      len(instellation)*len(outgassing)*len(crust_production_rate)*n_redox,
+        'basic_cl':         len(instellation)*len(outgassing)*len(crust_production_rate_default)*n_redox,
         'basic_deep':       len(instellation)*len(outgassing)*len(crust_production_rate)*n_redox,
         'basic_low_mgsi':   len(instellation)*len(outgassing)*len(crust_production_rate)*n_redox,
         'basic_high_mgsi':  len(instellation)*len(outgassing)*len(crust_production_rate)*n_redox,
@@ -801,6 +833,7 @@ if __name__ == "__main__":
 
     print(f"Sweeps requested: {requested}   (set KAMINO_SWEEPS to change)")
     print(f"  alpha={ALPHA_CALIB:g}  kd_mg_ht={KD_MG_CALIB:g}  k_na={K_NA_CALIB:g}")
+    print(f"  initial ocean: {'seawater seed' if SEED_OCEAN else 'blank'}   (set KAMINO_SEED_OCEAN to change)")
     _warn_constant_drift()
     total = sum(_sweep_size(n) for n in requested)
     total_h = sum(_sweep_cost_hours(n) for n in requested)

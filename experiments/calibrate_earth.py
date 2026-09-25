@@ -46,9 +46,10 @@ Planet constructor and stored as `self.f_HT`, but nothing in the model reads it
 scanning it did nothing.  The Ca budget is now set by the LT seafloor source and
 the carbonate sink alone.
 
-Three constants are iterated: K_na (Na balance), alpha (total Ca+Mg supply) and
-KD_MG_HT (the Ca:Mg split).  They are close to orthogonal on those three targets
--- see calibrate().  tau_prec / tau_rw are held at their literature values.
+Four constants are fitted: K_na (Na) and KD_MG_HT (the Ca:Mg split) by least squares against
+Na, Ca and Mg at fixed alpha and tau_rw, alternating with alpha rescaled to the net seafloor
+alkalinity flux and tau_rw rescaled to the reverse-weathering Mg sink -- see calibrate().
+tau_prec is held at its reference value.
 
 Usage:
     /data/pt426/big-venv/bin/python experiments/calibrate_earth.py
@@ -63,14 +64,16 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../src'))
 
 import kamino.planet as planet_module
 from kamino.planet import Planet, WATER_ROCK_RATIO_LT
-from kamino.chemistry import elements, ION_CHARGE, alk_idx, c_idx, si_idx, ca_idx, mg_idx, na_idx, cl_idx, so4_idx
+from kamino.chemistry import elements, ION_CHARGE, alk_idx, c_idx, si_idx, ca_idx, mg_idx, na_idx, cl_idx, so4_idx, k_idx
+from kamino.chemistry import SEAWATER_SO4, SEAWATER_K
 from kamino.weathering import get_weathering_flux, ALPHA_REF as ALPHA_REF_CODE
+from kamino.mineral_info import clay_minerals
 from kamino.constants import (
     EARTH_HYDROTHERMAL_FLUX_PER_AREA as J_ref_normalised,
     EARTH_CRUST_PRODUCTION_RATE_PER_AREA as rate_ref,
     A_SEAFLOOR_EARTH as A_seafloor,
 )
-from kamino.constants import M_EARTH, R_EARTH, YR, EARTH_OUTGASSING, EARTH_ATM, G
+from kamino.constants import M_EARTH, R_EARTH, YR, EARTH_OUTGASSING, EARTH_ATM, G, SEAFLOOR_T_FLOOR
 
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), '../output')
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -139,9 +142,10 @@ K_CL_ANALYTIC = ((EARTH_OUTGASSING / YR * CL_OUTGASSING_RATIO)
                  / (T_Cl * J_ref_normalised)) * _AREA_RATIO_CL
 
 # ---------------------------------------------------------------------------
-# ALPHA_REF diagnostic: the seafloor reactive-area scaling that would make the
-# primary-dissolution alkalinity flux equal 1 Tmol/yr at Earth pore conditions
-# with modern seawater as input.
+# ALPHA_REF diagnostic: the seafloor reactive-area scaling that would make the NET seafloor
+# alkalinity flux (after pore kaolinite/goethite, at the model's pe) equal FLUX_TARGET_NET at Earth
+# pore conditions with modern seawater as input. Before 2026-09-24 this used the primary flux at
+# PHREEQC's default pe = 4, where ~90% of the "alkalinity" was Fe that the model never releases.
 #
 # This is a SEPARATE anchor from the alpha the loop below calibrates, and the two
 # answer different questions. This one asks "what alpha reproduces a 1 Tmol/yr
@@ -161,7 +165,8 @@ K_CL_ANALYTIC = ((EARTH_OUTGASSING / YR * CL_OUTGASSING_RATIO)
 _alpha_T_pore    = 286.0
 _alpha_P_pore    = 1000.0 * 10.0 * 3000.0
 _alpha_P_CO2     = EARTH_ATM * 280e-6
-_alpha_flux_norm = (1e12 / YR) / A_seafloor   # 1 Tmol/yr normalised per m²
+FLUX_TARGET_NET  = 0.9    # Teq/yr, net low-T seafloor alkalinity flux (Coogan & Dosso 2022, GCA 329, 22)
+_alpha_flux_norm = (FLUX_TARGET_NET * 1e12 / YR) / A_seafloor   # per m² of seafloor
 
 _alpha_b = np.zeros(len(elements))
 _alpha_b[alk_idx]  = 2.3e-3
@@ -169,19 +174,20 @@ _alpha_b[ca_idx]   = 10.3e-3
 _alpha_b[mg_idx]   = 52.8e-3
 _alpha_b[na_idx]   = 480e-3
 _alpha_b[cl_idx]   = 550e-3
-_alpha_b[so4_idx]  = 28e-3
+_alpha_b[so4_idx]  = SEAWATER_SO4
+_alpha_b[k_idx]    = SEAWATER_K
 _alpha_b[si_idx]   = 0.1e-3
 _alpha_b[c_idx]    = 2.0e-3
 
 def _alpha_residual(a):
     flux, _ = get_weathering_flux(
         _alpha_P_pore, _alpha_T_pore, _alpha_P_CO2,
-        _alpha_b, alpha=float(a[0]), rate=rate_ref, precipitating_minerals=[],
-        water_rock_ratio=WATER_ROCK_RATIO_LT,
+        _alpha_b, alpha=float(a[0]), rate=rate_ref, precipitating_minerals=clay_minerals,
+        water_rock_ratio=WATER_ROCK_RATIO_LT, pe=planet_module.PE_DEFAULT,
     )
     return (flux[alk_idx] - _alpha_flux_norm) / _alpha_flux_norm
 
-ALPHA_REF_FITTED = float(least_squares(_alpha_residual, [1.43]).x[0])
+ALPHA_REF_FITTED = float(least_squares(_alpha_residual, [100.0]).x[0])
 
 # Starting points for iterated constants
 K_NA_INIT     = planet_module.K_NA_CONT_REMOVAL
@@ -193,29 +199,29 @@ ALPHA_INIT    = ALPHA_REF_CODE   # start from the value the model ships with
 # the value Planet would resolve at OCEAN_DEPTH -- otherwise the Earth anchor is fitted at a
 # timescale the model never uses here. At 3700 m that is 123 kyr rather than the 100 kyr reference.
 TAU_PREC_INIT = planet_module.TAU_PREC_REF * (OCEAN_DEPTH / planet_module.OCEAN_DEPTH_REF)
-TAU_RW_INIT   = 5e6 * YR     # reverse weathering timescale (secondary Mg control)
+TAU_RW_INIT   = planet_module.TAU_RW_REF   # start from the value the model ships with
 
 # Starting point OVERRIDES (2026-09-09). The module defaults put x0 on the calcite-COLLAPSED
 # branch (Ca ~ 0.36 mM, cost ~11) now that Cl is correct at 546 mM, and the first 3-parameter
 # attempt escaped it by running alpha away 1330x. These are the 2-parameter fit's converged
 # values, which sit on the Ca-alive branch; alpha starts where the flux is ~1 Tmol/yr at that
 # ocean (0.32 measured at 1.57, and the flux is ~linear in alpha, so 1.57/0.32 ~ 4.9).
-# Set to None to fall back to whatever planet.py ships.
-K_NA_START, KD_MG_START, ALPHA_START = 6.099720e-03, 1.969604e-02, 4.9
+# Set to None to fall back to whatever constants.py ships (the latest fit).
+K_NA_START, KD_MG_START, ALPHA_START = None, None, None
 
 print(f"K_CL (analytic)         = {K_CL_ANALYTIC:.4e}  "
-      f"(current in planet.py: {planet_module.K_CL_SUBDUCTION:.4e})")
+      f"(current in constants.py: {planet_module.K_CL_SUBDUCTION:.4e})")
 print(f"K_NA (starting)         = {K_NA_INIT:.4e}")
-print(f"KD_MG_HT (fixed)        = {KD_MG_INIT:.4e}  (Mg-Ca exchange; not iterated)")
+print(f"KD_MG_HT (starting)     = {KD_MG_INIT:.4e}  (Mg-Ca exchange)")
 print(f"tau_prec                = {TAU_PREC_INIT/YR/1e6:.2f} Myr")
-print(f"tau_rw                  = {TAU_RW_INIT/YR/1e6:.1f} Myr  (reverse weathering)")
+print(f"tau_rw (starting)        = {TAU_RW_INIT/YR/1e6:.1f} Myr  (reverse weathering)")
 print(f"water/rock ratio        = {WATER_ROCK_RATIO_LT}")
 print(f"t_end                   = {T_END/YR/1e9:.1f} Gyr")
 print()
 print(f"ALPHA_REF in code       = {ALPHA_REF_CODE:.6f}   (used by the runs below)")
 print(f"ALPHA_REF refitted      = {ALPHA_REF_FITTED:.6f}   (diagnostic only, w/r={WATER_ROCK_RATIO_LT})")
 if ALPHA_REF_CODE > 0 and abs(ALPHA_REF_FITTED / ALPHA_REF_CODE - 1) > 0.10:
-    print(f"  ** these differ by {100*(ALPHA_REF_FITTED/ALPHA_REF_CODE - 1):+.0f}% -- the 1 Tmol/yr")
+    print(f"  ** these differ by {100*(ALPHA_REF_FITTED/ALPHA_REF_CODE - 1):+.0f}% -- the {FLUX_TARGET_NET:g} Teq/yr")
     print(f"     seafloor anchor no longer holds at the current w/r and mineral lists.")
 print()
 
@@ -224,15 +230,8 @@ print()
 # Core simulation wrapper
 # ---------------------------------------------------------------------------
 
-# SO4 background: computed from charge balance at target concentrations.
-# SO4 is pinned (F_net[so4_idx]=0) so it must be set in the initial condition.
-# Real seawater SO4 is ~28 mM, but the model omits K+ (~10.2 mEq/kg cation),
-# so the effective background is lower to give the correct alkalinity:
-#   SO4_bg = (2[Ca]_t + 2[Mg]_t + [Na]_t - [Cl]_t - [Alk]_t) / 2
-SO4_BG = (2*T_Ca + 2*T_Mg + T_Na - T_Cl - T_Alk) / 2   # ≈ 23.45 mM
-
-print(f"SO4 background (computed) = {SO4_BG*1e3:.2f} mM  "
-      f"(real seawater ~28 mM; lower because K+ is absent from model)")
+# SO4 and K are pinned (F_net = 0 in planet.py), so they are set once here at modern seawater values.
+print(f"Pinned backgrounds: SO4 = {SEAWATER_SO4*1e3:.1f} mM, K = {SEAWATER_K*1e3:.1f} mM (Millero et al. 2008)")
 print()
 
 
@@ -262,7 +261,8 @@ def make_b0():
     """
     b = np.zeros(N_ELEM)
     b[cl_idx]  = T_Cl
-    b[so4_idx] = SO4_BG
+    b[so4_idx] = SEAWATER_SO4
+    b[k_idx]   = SEAWATER_K
     b[na_idx]  = T_Na
     b[ca_idx]  = T_Ca
     b[mg_idx]  = T_Mg
@@ -305,7 +305,7 @@ def run_planet(K_na, KD_mg, alpha, tau_prec, tau_rw, name='calib'):
         data = json.load(fh)
 
     # data['data']['y'][i] = time series of state variable i
-    # Layout: Y[0]=P_CO2, Y[1]=P_H2O, Y[2..N_ELEM+1]=b_ocean, Y[-1]=r_avg
+    # Layout: Y[0]=P_CO2, Y[1]=P_H2O, Y[2..N_ELEM+1]=b_ocean (older outputs add Y[-1]=r_avg)
     y = data['data']['y']
 
     def final(idx):
@@ -332,6 +332,8 @@ def run_planet(K_na, KD_mg, alpha, tau_prec, tau_rw, name='calib'):
         'term': data.get('termination', '?'),
         'fab': float(data.get('fabricated_fraction', 0.0)),
         'slope': slope,
+        'alk_flux': (data.get('diagnostics') or {}).get('alk_flux'),   # net seafloor Alk, Teq/yr
+        'rw_mg_flux': (data.get('diagnostics') or {}).get('rw_mg_flux'),   # RW Mg sink, Tmol/yr
     }
 
 
@@ -339,53 +341,29 @@ def run_planet(K_na, KD_mg, alpha, tau_prec, tau_rw, name='calib'):
 # Diagnostics
 # ---------------------------------------------------------------------------
 
-def seafloor_alk_flux_tmol(result, alpha=None):
-    """Primary seafloor alkalinity flux (Tmol/yr) at the run's final conditions.
+def seafloor_alk_flux_tmol(result):
+    """Net seafloor alkalinity flux (Teq/yr) that dY_dt applied at the run's final state.
 
-    Uses the run's own alpha and the model's water/rock ratio so the number is
-    comparable to what dY_dt actually saw (it previously used alpha=1.0 and
-    w/r=None, which matched no configuration the model runs in).
+    Read from the run's own diagnostics, so the pore clays, redox state and ocean composition are
+    exactly the model's. It replaced a separate primary-only re-evaluation at PHREEQC's default pe
+    (2026-09-24; development_history.md section 37.16).
     """
-    if alpha is None:
-        alpha = ALPHA_REF_CODE
-    b = np.zeros(N_ELEM)
-    b[alk_idx] = result['Alk']
-    b[c_idx]   = result['C']
-    b[si_idx]  = 0.1e-3
-    b[ca_idx]  = result['Ca']
-    b[mg_idx]  = result['Mg']
-    b[na_idx]  = result['Na']
-    b[cl_idx]  = result['Cl']
-    b[so4_idx] = SO4_BG   # the background the run actually carries, not 28e-3: SO4 is pinned
-                          # (planet.py F_net[so4_idx]=0) so this must match make_b0 or the flux
-                          # is evaluated at a charge balance the run never had. Matters now that
-                          # this feeds the fit (FLUX_TARGET) rather than only the report.
-
-    T_sf   = max(1.02 * result['T'] - 16.7, 274.0)
-    T_pore = T_sf + 9.0
-    P_CO2_Pa = result['pCO2_ppm'] * 1e-6 * 1e5
-    P_pore = 1e5 + P_CO2_Pa + 1000.0 * GRAVITY * OCEAN_DEPTH
-
-    flux, _ = get_weathering_flux(
-        P_pore, T_pore, P_CO2_Pa, b,
-        alpha=alpha,
-        rate=rate_ref,
-        precipitating_minerals=[],  # primary dissolution only
-        water_rock_ratio=WATER_ROCK_RATIO_LT,
-    )
-    return flux[alk_idx] * A_seafloor * YR / 1e12   # Tmol/yr
+    f = result.get('alk_flux')
+    return float('nan') if f is None else float(f)
 
 
 def print_state(label, result, K_na, KD_mg, alpha, tau_prec, tau_rw):
     try:
-        sf_alk = f"{seafloor_alk_flux_tmol(result, alpha):.2f}"
+        sf_alk = f"{seafloor_alk_flux_tmol(result):.3f}"
     except Exception as e:
         sf_alk = f"n/a ({type(e).__name__})"
     bar = '─' * 70
     print(f"\n{bar}")
     print(f"  {label}")
     print(f"  term={result['term']}  T={result['T']:.1f} K  pH={result['pH']:.2f}  "
-          f"seafloor Alk={sf_alk} Tmol/yr  (target ~1)")
+          f"net seafloor Alk={sf_alk} Teq/yr  (target {FLUX_TARGET:g})")
+    print(f"  reverse-weathering Mg sink={result.get('rw_mg_flux') or float('nan'):.4f} Tmol/yr  "
+          f"(target {RW_MG_TARGET:g})")
     print(f"  settling: |dlnP/dlnt|={abs(result['slope']):.3f} "
           f"({'AT STEADY STATE' if abs(result['slope']) < 0.05 else 'STILL DRIFTING'})"
           f"   fabricated={result['fab']:.3f}")
@@ -418,7 +396,7 @@ def print_state(label, result, K_na, KD_mg, alpha, tau_prec, tau_rw):
     print(f"  ALPHA     = {alpha:.4e}  (init: {ALPHA_INIT:.4e})")
     print(f"  K_CL      = {K_CL_ANALYTIC:.4e}  (analytic, fixed)")
     print(f"  tau_prec  = {tau_prec/YR/1e6:.3f} Myr")
-    print(f"  tau_rw    = {tau_rw/YR/1e6:.1f} Myr")
+    print(f"  tau_rw    = {tau_rw/YR/1e6:.2f} Myr  (init: {TAU_RW_INIT/YR/1e6:.2f} Myr)")
 
 
 def calibrated(result, tol=0.07):
@@ -440,176 +418,138 @@ _KD_LO, _KD_HI       = 1e-6, 10.0
 _ALPHA_LO, _ALPHA_HI = 1e-3, 1e4
 
 
-MAX_RUNS = 60   # hard cap on planet integrations spent by the solver
+MAX_RUNS_PER_ROUND = 30   # cap on solver steps per ion fit (scipy excludes Jacobian probes from max_nfev)
+ALPHA_ROUNDS = 6           # cap on alpha / tau_rw rescalings
+FLUX_TOL = 0.03            # accept |ln(flux / FLUX_TARGET)| below this (3 %)
+RW_TOL = 0.05              # accept |ln(rw / RW_MG_TARGET)| below this (5 %)
+_TAU_RW_LO, _TAU_RW_HI = 1e4 * YR, 1e10 * YR
+DIFF_STEP_LN = 0.05        # finite-difference step in ln(parameter), ~5 %; scipy scales diff_step by max(1, |x|)
+X_SHIFT = 20.0             # x = ln(p) + X_SHIFT > 0, so scipy's probes step UP in K_na and KD_mg, away from Ca collapse
 
 # ---------------------------------------------------------------------------
-# ALPHA_PINNED: fit only (K_na, KD_mg), holding alpha fixed. None = fit all three.
-#
-# WHY THIS EXISTS (2026-09-09, development_history.md section 36). The three-parameter fit is
-# ill-posed and demonstrably fails. Measured over a 100x scan at Earth: alpha moves the seafloor
-# alkalinity flux 94x while moving every ocean concentration <25% and T by 0.7 K. So the Na/Ca/Mg
-# residuals carry almost no information about alpha, and least_squares -- starting on the
-# Ca-collapsed branch of the calcite bistability -- escaped it by driving alpha 1.100 -> 1488 in a
-# single trust-region step and never came back. It "converged" at alpha = 1462.75, giving a
-# seafloor flux of 30.68 Tmol/yr against the ~1 Tmol/yr Coogan anchor, and a cost (0.593) WORSE
-# than an unvisited point at alpha = 3 (0.390).
-#
-# The honest factorisation is two well-conditioned problems rather than one ill-conditioned one:
-#   alpha   <- pinned by the seafloor flux anchor (what it actually controls)
-#   K_na    <- Na, first-order sink
-#   KD_mg   <- the Ca:Mg split, HT exchange trading Mg for Ca mole-for-mole
-#
-# 1.57 is MEASURED, not extrapolated: a direct run at alpha = 1.570 gives 1.000 Tmol/yr at the
-# model's own converged Earth ocean. Note this is the SELF-CONSISTENT anchor; the static
-# ALPHA_REF_FITTED diagnostic above answers the same question at hand-written modern seawater and
-# gets 10.42, because that is a composition the model never actually produces (section 22.3).
-# If the ocean chemistry changes materially, re-measure this before trusting it.
+# Alternating fit (2026-09-24, development_history.md section 37.20).
+#   inner: least_squares on (K_na, KD_mg) against (Na, Ca, Mg) at fixed alpha;
+#   outer: alpha <- alpha * FLUX_TARGET / flux, since the flux is ~linear in alpha (exponent 0.99)
+#          and alpha moves the ions by ~1 % over a 1.7x step;
+#          tau_rw <- tau_rw * rw / RW_MG_TARGET, since Sepiolite stays far supersaturated, so the
+#          reverse-weathering flux is ~ excess / tau_rw (section 26.3).
+# The joint 3-parameter fit failed: diff_step=0.2 on ln(x) gave x0.36 / x0.47 trial steps in K_na
+# and KD_mg that crossed onto the Ca-collapsed branch, and the flux residual dominated the cost, so
+# it traded Mg (26 mM) for flux and returned a finite-difference probe (alpha 55.4, 0.40 Teq/yr).
+# ALPHA_PINNED: skip the outer loop and fit the ions at this alpha. None = rescale alpha to the flux.
 # ---------------------------------------------------------------------------
 ALPHA_PINNED = None
-
-# ---------------------------------------------------------------------------
-# FLUX_TARGET: give alpha its OWN residual, so all three parameters are fitted jointly against
-# four targets -- Na, Ca, Mg AND the seafloor alkalinity flux. None disables it (Na/Ca/Mg only).
-#
-# WHY (2026-09-09, development_history.md section 36). Two failed factorisations preceded this:
-#
-#   1. Fit all three against Na/Ca/Mg alone. ILL-POSED: alpha moves the ocean <25% over a 100x
-#      range, so the residuals carry almost no gradient in alpha, and the solver used it as a
-#      free escape from the calcite-collapsed branch -- alpha 1.100 -> 1488 in one step, ending
-#      at 30.68 Tmol/yr and a WORSE cost than points it never visited.
-#
-#   2. Pin alpha at the flux anchor, fit K_na/KD_mg against the ocean. Better (cost 0.1186), but
-#      NOT separable: alpha barely moves the ocean, yet the ocean strongly moves the flux. The fit
-#      pulled Ca 4.47 -> 10.04 mM, which brought the pore fluid closer to saturation with the
-#      Ca-bearing primary phases, and the flux fell 1.00 -> 0.32 Tmol/yr at unchanged alpha. The
-#      anchor alpha was pinned FOR no longer held once the fit had moved.
-#
-# Fitting jointly is the honest form: alpha gets a residual that responds strongly to it (flux is
-# ~linear in alpha, measured exponent 0.9866 over 3-300), while K_na and KD_mg keep the ones that
-# respond to them. No outer loop, no separability assumption, and the coupling is handled by the
-# solver rather than asserted away.
-#
-# The four residuals are equally weighted in log space. That is a choice: the concentration
-# targets are known to ~1% and the 1 Tmol/yr figure is a literature estimate with real spread
-# (Coogan & Dosso), so if the flux ends up fighting the ocean, DOWN-weight the flux rather than
-# assuming the ocean is wrong.
-# ---------------------------------------------------------------------------
-FLUX_TARGET = 1.0   # Tmol/yr, seafloor primary alkalinity flux
+FLUX_TARGET = FLUX_TARGET_NET   # Teq/yr, NET seafloor alkalinity flux
+# Tmol Mg/yr into authigenic clays in typical deep-sea sediment (Dunlea et al. 2017, Nat. Commun. 8, 844);
+# 0.4-0.8 if Si-rich sedimentation covered 50-100 % of the seafloor. None = hold tau_rw at TAU_RW_INIT.
+RW_MG_TARGET = 0.02
 
 _history = []   # (cost, K_na, KD_mg, alpha, result) for every successful evaluation
+_alpha_now = None   # alpha held fixed during the current ion fit
+_tau_rw_now = TAU_RW_INIT   # tau_rw held fixed during the current ion fit
 
 
 def _residuals(x):
-    """Log-space residuals in (Na, Ca, Mg) for log-parameters x.
-
-    x is [ln K_na, ln alpha, ln KD_mg], or [ln K_na, ln KD_mg] when ALPHA_PINNED is set.
-
-    Logs on both sides. The parameters span decades, and the targets differ by a factor
-    of 50 (Ca 10.3 mM vs Na 469 mM), so a linear residual would let Na dominate the fit
-    entirely; log residuals weight all three by relative error, which is what we want.
-    """
-    if ALPHA_PINNED is None:
-        K_na, alpha, KD_mg = (float(v) for v in np.exp(x))
-    else:
-        K_na, KD_mg = (float(v) for v in np.exp(x))
-        alpha = ALPHA_PINNED
+    """Log-space residuals in (Na, Ca, Mg) for x = [ln K_na, ln KD_mg] + X_SHIFT at alpha = _alpha_now."""
+    K_na, KD_mg = (float(v) for v in np.exp(np.asarray(x) - X_SHIFT))
+    alpha = _alpha_now
     name = f'calib_ls_{len(_history):03d}'
     try:
-        r = run_planet(K_na, KD_mg, alpha, TAU_PREC_INIT, TAU_RW_INIT, name=name)
+        r = run_planet(K_na, KD_mg, alpha, TAU_PREC_INIT, _tau_rw_now, name=name)
     except Exception as e:
         print(f"    [eval {len(_history):03d}] FAILED {type(e).__name__}: {str(e)[:60]}")
-        n_res = 3 + (FLUX_TARGET is not None)
-        return np.full(n_res, 5.0)   # finite penalty; keeps the solver moving
+        return np.full(3, 5.0)   # finite penalty; keeps the solver moving
 
     res = np.array([np.log(max(r[s], 1e-12) / TARGETS[s]) for s in ('Na', 'Ca', 'Mg')])
-
-    flux_txt = ""
-    if FLUX_TARGET is not None:
-        try:
-            f_sf = seafloor_alk_flux_tmol(r, alpha)
-        except Exception:
-            f_sf = float('nan')
-        # A failed or non-positive flux must not silently read as "on target": penalise it the
-        # same way a failed run is penalised, so the solver walks away from that region.
-        f_res = np.log(f_sf / FLUX_TARGET) if np.isfinite(f_sf) and f_sf > 0 else 5.0
-        res = np.append(res, f_res)
-        flux_txt = f" sfAlk={f_sf:6.3f}"
+    try:
+        f_sf = seafloor_alk_flux_tmol(r)
+    except Exception:
+        f_sf = float('nan')
 
     cost = float(np.sum(res**2))
     _history.append((cost, K_na, KD_mg, alpha, r))
     print(f"    [eval {len(_history)-1:03d}] K_na={K_na:.3e} alpha={alpha:.3e} kd={KD_mg:.3e}"
+          f" tau_rw={_tau_rw_now/YR/1e6:.3g}Myr"
           f"  ->  Na={r['Na']*1e3:7.1f} Ca={r['Ca']*1e3:7.2f} Mg={r['Mg']*1e3:7.2f}"
-          f"  Alk={r['Alk']*1e3:6.2f}{flux_txt}  cost={cost:.4f}")
+          f"  Alk={r['Alk']*1e3:6.2f} sfAlk={f_sf:6.3f} rwMg={r.get('rw_mg_flux') or float('nan'):.4f}"
+          f"  cost={cost:.4f}")
     return res
 
 
-def calibrate(K_na, KD_mg, alpha):
-    """Bounded least-squares solve for (K_na, alpha, KD_mg) against (Na, Ca, Mg).
+def fit_ions(K_na, KD_mg, alpha):
+    """least_squares on (K_na, KD_mg) against (Na, Ca, Mg) at fixed alpha; returns the best point.
 
-    Replaces the previous hand-rolled ratio-scaling loop, which OSCILLATED rather than
-    converged. Measured 2-cycle: kd 2.65e-2 -> 1.62e-2 -> 6.95e-2 -> 1.62e-2, with the
-    Ca:Mg ratio swinging 2.7 -> 0.054 -> 18.4 -> 0.048. A 4x change in kd moves the
-    ratio by 380x (log-log sensitivity ~4.1), so any damping exponent above ~0.24
-    amplifies the error instead of shrinking it.
-
-    That sensitivity is physical, not numerical: Ca is buffered by calcite saturation.
-    Ca and alkalinity trade off along Ca.CO3 = Ksp (measured Ca=0.55 mM at Alk=13.5 mM
-    versus Ca=55 mM at Alk=1.8 mM), so the system snaps between "calcite precipitates,
-    Ca -> 0" and "calcite undersaturated, Ca accumulates". A gradient method with a
-    proper trust region handles that; independent per-species ratio updates cannot,
-    because each knob's correct step depends on where the others sit relative to the
-    saturation boundary.
-
-    Knob roles remain as before -- K_na sets Na (first-order sink), alpha sets the total
-    Ca+Mg supply (seafloor reactive area), KD_mg sets the Ca:Mg split (HT exchange moves
-    Mg to Ca mole-for-mole) -- but they are solved jointly rather than one-at-a-time.
-
-    HISTORY: KD_mg used to be pinned here, on the measurement that HT exchange was 1.5%
-    of Mg removal and 0.6% of the Ca source at the Earth steady state. That was measured
-    when make_b0 violated Alk = ION_CHARGE.b by 592.9 mEq/kg, which pinned Ca near
-    0.20 mM by calcite supersaturation and made every knob look inert. With the seed
-    fixed, Ca responds and the pin no longer applies.
+    Ca is buffered by calcite saturation, so the ocean snaps between a Ca-alive and a Ca-collapsed
+    branch (Ca ~0.7 mM, Na ~1500 mM). The ~5 % finite-difference steps keep the Jacobian probes on
+    the branch the iterate is on; the old 0.2 x |ln x| steps did not. Even so, a 5 % DROP in K_na tips
+    Earth onto the collapsed branch, so X_SHIFT makes every probe step upwards.
     """
-    print(f"\n{'#'*70}")
-    if ALPHA_PINNED is None:
-        tgts = "(Na, Ca, Mg)" if FLUX_TARGET is None else \
-               f"(Na, Ca, Mg, seafloor Alk -> {FLUX_TARGET:g} Tmol/yr)"
-        print(f"  Abiotic calibration — least_squares on (K_na, alpha, KD_mg) vs {tgts}")
-    else:
-        print(f"  Abiotic calibration — least_squares on (K_na, KD_mg); "
-              f"alpha PINNED at {ALPHA_PINNED:g} (1 Tmol/yr seafloor anchor)")
-    print(f"  targets: Na={T_Na*1e3:.0f} Ca={T_Ca*1e3:.1f} Mg={T_Mg*1e3:.1f} mM   "
-          f"max {MAX_RUNS} runs")
-    print(f"{'#'*70}")
-
-    if ALPHA_PINNED is None:
-        x0 = np.log([K_na, alpha, KD_mg])
-        lo = np.log([1e-8, _ALPHA_LO, _KD_LO])
-        hi = np.log([1e2,  _ALPHA_HI, _KD_HI])
-    else:
-        x0 = np.log([K_na, KD_mg])
-        lo = np.log([1e-8, _KD_LO])
-        hi = np.log([1e2,  _KD_HI])
-
+    global _alpha_now
+    _alpha_now = alpha
+    n0 = len(_history)
+    x0 = np.log([K_na, KD_mg]) + X_SHIFT
+    lo, hi = np.log([1e-8, _KD_LO]) + X_SHIFT, np.log([1e2, _KD_HI]) + X_SHIFT
     try:
-        least_squares(_residuals, x0, bounds=(lo, hi), diff_step=0.2,
-                      max_nfev=MAX_RUNS, xtol=1e-3, ftol=1e-3, gtol=1e-3)
+        least_squares(_residuals, x0, bounds=(lo, hi), diff_step=DIFF_STEP_LN / x0,
+                      max_nfev=MAX_RUNS_PER_ROUND, xtol=1e-3, ftol=1e-3, gtol=1e-3)
     except Exception as e:
         print(f"\n  least_squares aborted ({type(e).__name__}: {e}); using best seen.")
-
-    if not _history:
-        raise RuntimeError("no successful evaluations")
-
+    this_round = _history[n0:]
+    if not this_round:
+        raise RuntimeError(f"no successful evaluations at alpha = {alpha:g}")
     # least_squares can finish at a point worse than one it visited, so report the best.
-    cost, K_na_b, KD_mg_b, alpha_b, res_b = min(_history, key=lambda h: h[0])
-    print(f"\n  Best of {len(_history)} evaluations: cost={cost:.4f}")
-    return K_na_b, KD_mg_b, alpha_b, res_b
+    cost, K_na_b, KD_mg_b, _, res_b = min(this_round, key=lambda h: h[0])
+    return K_na_b, KD_mg_b, res_b
 
 
-K_na, KD_mg, alpha, result1 = calibrate(K_NA_START or K_NA_INIT,
-                                        KD_MG_START or KD_MG_INIT,
-                                        ALPHA_START or ALPHA_INIT)
-tau_prec, tau_rw = TAU_PREC_INIT, TAU_RW_INIT
+def calibrate(K_na, KD_mg, alpha, tau_rw):
+    """Alternate the ion fit with alpha and tau_rw rescaled to their flux targets until both hold."""
+    global _tau_rw_now
+    _tau_rw_now = tau_rw
+    print(f"\n{'#'*70}")
+    if ALPHA_PINNED is None:
+        print(f"  Abiotic calibration: (K_na, KD_mg) vs (Na, Ca, Mg); alpha vs net seafloor Alk "
+              f"-> {FLUX_TARGET:g} Teq/yr")
+    else:
+        print(f"  Abiotic calibration: (K_na, KD_mg) vs (Na, Ca, Mg), alpha PINNED at {ALPHA_PINNED:g}")
+    if RW_MG_TARGET is not None:
+        print(f"  tau_rw vs reverse-weathering Mg sink -> {RW_MG_TARGET:g} Tmol/yr")
+    print(f"  targets: Na={T_Na*1e3:.0f} Ca={T_Ca*1e3:.1f} Mg={T_Mg*1e3:.1f} mM")
+    print(f"{'#'*70}")
+
+    if ALPHA_PINNED is not None:
+        alpha = ALPHA_PINNED
+    for k in range(ALPHA_ROUNDS):
+        print(f"\n  -- round {k + 1}: alpha = {alpha:.4g}, tau_rw = {_tau_rw_now/YR/1e6:.4g} Myr")
+        tau_fit = _tau_rw_now
+        K_na, KD_mg, res = fit_ions(K_na, KD_mg, alpha)
+        flux = seafloor_alk_flux_tmol(res)
+        rw = res.get('rw_mg_flux')
+        rw = float('nan') if rw is None else float(rw)
+        print(f"  round {k + 1}: best K_na={K_na:.4e} KD_mg={KD_mg:.4e}  "
+              f"net seafloor Alk={flux:.3f} Teq/yr  RW Mg sink={rw:.4f} Tmol/yr")
+        flux_ok = ALPHA_PINNED is not None or abs(np.log(flux / FLUX_TARGET)) < FLUX_TOL
+        rw_ok = RW_MG_TARGET is None or abs(np.log(rw / RW_MG_TARGET)) < RW_TOL
+        if flux_ok and rw_ok:
+            return K_na, KD_mg, alpha, tau_fit, res
+        if ALPHA_PINNED is None:
+            if not (np.isfinite(flux) and flux > 0):
+                raise RuntimeError(f"non-positive seafloor flux at alpha = {alpha:g}")
+            alpha = float(np.clip(alpha * FLUX_TARGET / flux, _ALPHA_LO, _ALPHA_HI))
+        if RW_MG_TARGET is not None:
+            if not (np.isfinite(rw) and rw > 0):
+                raise RuntimeError(f"no reverse-weathering Mg sink at tau_rw = {_tau_rw_now/YR/1e6:g} Myr")
+            _tau_rw_now = float(np.clip(_tau_rw_now * rw / RW_MG_TARGET, _TAU_RW_LO, _TAU_RW_HI))
+    print(f"\n  *** alpha / tau_rw did not converge in {ALPHA_ROUNDS} rounds; the ions below are fitted at "
+          f"the last alpha and tau_rw, whose fluxes are off target ***")
+    return K_na, KD_mg, _alpha_now, tau_fit, res
+
+
+K_na, KD_mg, alpha, tau_rw, result1 = calibrate(K_NA_START or K_NA_INIT,
+                                                KD_MG_START or KD_MG_INIT,
+                                                ALPHA_START or ALPHA_INIT,
+                                                TAU_RW_INIT)
+tau_prec = TAU_PREC_INIT
 
 if not calibrated(result1):
     print("\n  *** Did not reach all three targets within tolerance ***")
@@ -628,16 +568,13 @@ print("="*70)
 print_state("Best result", result1, K_na, KD_mg, alpha, tau_prec, tau_rw)
 
 print("""
-  ── Paste into planet.py ──────────────────────────────────────────────""")
-print(f"  K_CL_SUBDUCTION         = {K_CL_ANALYTIC:.6e}")
-print(f"  K_NA_CONT_REMOVAL       = {K_na:.6e}")
-print(f"  KD_MG_HT                = {KD_mg:.6e}")
-print("""
-  ── Paste into weathering.py ──────────────────────────────────────────""")
-print(f"  ALPHA_REF               = {alpha:.6f}")
-print(f"    (was {ALPHA_INIT:.6f}; Planet's `alpha` default mirrors this and must match)")
+  ── Paste into src/kamino/constants.py ────────────────────────────────""")
+print(f"  KD_MG_HT = {KD_mg:.6e}")
+print(f"  K_NA_CONT_REMOVAL = {K_na:.6e}")
+print(f"  K_CL_SUBDUCTION = {K_CL_ANALYTIC:.6e}")
+print(f"  ALPHA_REF = {alpha:.6f}   (was {ALPHA_INIT:.6f})")
+print(f"  TAU_RW_REF = {tau_rw/YR:.6e} * YR   (was {TAU_RW_INIT/YR:.6e} * YR)")
 print("""
   ── Planet constructor defaults ───────────────────────────────────────""")
 print(f"  tau_prec = {tau_prec/YR:.4e} * YR   # {tau_prec/YR/1e6:.3f} Myr")
-print(f"  tau_rw   = {tau_rw/YR:.4e} * YR   # {tau_rw/YR/1e6:.1f} Myr  (reverse weathering)")
 print()

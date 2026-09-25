@@ -94,17 +94,34 @@ EARTH_LAND_FRACTION = 0.3    # dimensionless
 
 A_SEAFLOOR_EARTH = EARTH_OCEAN_FRACTION * 4 * np.pi * R_EARTH ** 2  # m^2
 A_LAND_EARTH = EARTH_LAND_FRACTION * 4 * np.pi * R_EARTH ** 2       # m^2
+EARTH_SHELF_AREA = 2.7e13  # m^2, continental shelves, ~7% of the ocean area (Harris et al. 2014, Mar. Geol. 352, 4)
+EARTH_SHELF_DEPTH = 140.0  # m, mean depth of the shelf break (Harris et al. 2014, Mar. Geol. 352, 4)
 
 EARTH_HYDROTHERMAL_FLUX = 1.4e15 / YR # kg / s
 EARTH_HYDROTHERMAL_FLUX_PER_AREA = EARTH_HYDROTHERMAL_FLUX / A_SEAFLOOR_EARTH # kg / m^2 / s
 
-EARTH_CRUST_PRODUCTION_RATE_PER_AREA = 1 / (50e6 * YR) # 1 / s
+EARTH_CRUST_PRODUCTION_RATE_PER_AREA = 1 / (130e6 * YR) # 1 / s (derived from 2.7 ± 0.2 km^2yr^−1 from Cogne and Humler)
 
 EARTH_CONTINENTAL_WEATHERING_REF = (8e12 / YR) / A_LAND_EARTH  # mol_eq / m² / s
 
 EARTH_SEAFLOOR_WEATHERING_REF = (1e12 / YR) / A_SEAFLOOR_EARTH  # mol_eq / m² / s
 
 EARTH_CL_OUTGASSING_RATIO = 0.02
+
+SEAFLOOR_T_FLOOR = 273.15  # K; lower limit of the thermodynamic data, within ~1.5 K of the model oceans' freezing points
+
+# Sedimentation over the seafloor basalt, which sets the burial timescale in weathering.seafloor_reactive_area.
+EARTH_DUST_FLUX_TO_OCEAN = 450e9 / YR  # kg/s, aeolian dust deposited on Earth's oceans (Jickells et al. 2005, Science 308, 67)
+COSMIC_DUST_FLUX_PER_AREA = 40e6 / YR / (4 * np.pi * R_EARTH ** 2)  # kg/m^2/s, cosmic dust (Love & Brownlee 1993, Science 262, 550)
+SEDIMENT_GRAIN_DENSITY = 2650.0  # kg/m^3, lithogenic (quartz/clay) grains
+SEDIMENT_POROSITY = 0.7  # deep-sea sediment in the upper ~100 m, range ~0.6-0.8 (Hamilton 1976, J. Sediment. Petrol. 46, 280)
+
+# Calibrated constants from experiments/calibrate_earth.py; update all five together after a refit.
+KD_MG_HT = 3.054708e-02           # HT Mg -> Ca exchange efficiency
+K_NA_CONT_REMOVAL = 5.254127e-03  # Na removal efficiency
+K_CL_SUBDUCTION = 1.961786e-04   # Cl subduction efficiency (analytic Cl balance)
+ALPHA_REF = 348.315219            # seafloor reactive-area scaling
+TAU_RW_REF = 3.920050e+07 * YR        # s, reverse-weathering timescale, fitted to Earth's authigenic-clay Mg sink
 
 
 # Mantle potential temperature is no longer a model INPUT: it is solved per composition by
