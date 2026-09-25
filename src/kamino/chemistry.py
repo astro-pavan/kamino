@@ -70,7 +70,7 @@ elements = np.array([
     'Na',
     'Cl',
     'S',    # sulfate — fixed background for charge balance; not a dynamic ODE variable
-    #'K',
+    'K',    # potassium — fixed background like S; appended last so the existing indices are unchanged
     #'N',
     #'F',
 ])
@@ -85,6 +85,7 @@ fe_idx  = int(np.where(elements == 'Fe')[0][0])
 na_idx  = int(np.where(elements == 'Na')[0][0])
 cl_idx  = int(np.where(elements == 'Cl')[0][0])
 so4_idx = int(np.where(elements == 'S')[0][0])
+k_idx   = int(np.where(elements == 'K')[0][0])
 
 # Conservative-ion charge per element (signed), for deriving alkalinity as the charge
 # balance of the tracked ions: Alk = sum(ION_CHARGE * concentration). Fe is +2 (Fe2+,
@@ -99,6 +100,7 @@ ION_CHARGE[fe_idx] = 2.0
 ION_CHARGE[al_idx] = 3.0
 ION_CHARGE[cl_idx] = -1.0
 ION_CHARGE[so4_idx] = -2.0
+ION_CHARGE[k_idx] = 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -129,14 +131,12 @@ SEAWATER_TARGETS = {          # mol/kgw, modern seawater; the calibration's fit 
     'Cl': 546e-3, 'Na': 469e-3, 'Ca': 10.3e-3, 'Mg': 52.8e-3, 'C': 2.1e-3, 'Si': 0.1e-3,
 }
 
-# SO4 background. Charge-derived rather than seawater's ~28 mM, because the model does not track
-# K+ (~10.2 mEq/kg of cation), so the sulfate that closes the balance at the target alkalinity is
-# lower. SO4 is pinned, so this is effectively a PARAMETER, not an initial condition.
-SO4_BACKGROUND = (2 * SEAWATER_TARGETS['Ca'] + 2 * SEAWATER_TARGETS['Mg']
-                  + SEAWATER_TARGETS['Na'] - SEAWATER_TARGETS['Cl'] - 2.3e-3) / 2
+# Pinned backgrounds (no ODE evolution): modern seawater SO4 and K, Millero et al. (2008), same basis as the targets.
+SEAWATER_SO4 = 28.2e-3
+SEAWATER_K = 10.2e-3
 
 
-def seawater_seed(so4=SO4_BACKGROUND):
+def seawater_seed(so4=SEAWATER_SO4, k=SEAWATER_K):
     """Charge-balanced modern-seawater initial ocean, as a b vector (mol/kgw).
 
     Fixed CONCENTRATION, so the salt inventory scales with ocean mass. That is the right
@@ -155,7 +155,8 @@ def seawater_seed(so4=SO4_BACKGROUND):
     for el, val in SEAWATER_TARGETS.items():
         b[int(np.where(elements == ('Alkalinity' if el == 'Alk' else el))[0][0])] = val
     b[so4_idx] = so4
-    b[alk_idx] = float(np.dot(ION_CHARGE, b))   # derived, never assigned
+    b[k_idx] = k
+    b[alk_idx] = float(np.dot(ION_CHARGE, b))   # derived, never assigned; ~3.0 meq/kg, as Br-, F- and Sr2+ are untracked
     return b
 
 # PHREEQC reports Alkalinity under its own key, not as a -totals element.
@@ -169,7 +170,7 @@ species_to_element = {
     'Mg+2': 'Mg',
     'Na+': 'Na',
     'Cl-': 'Cl',
-    # 'K+': 'K',
+    'K+': 'K',
     'Fe+2': 'Fe',
     'Fe+3': 'Fe',
     'Al+3': 'Al',
@@ -201,7 +202,6 @@ IGNORED_SPECIES = {
     'SO4-2',                                      # sulfur chemistry intentionally decoupled:
                                                   # S is pinned as a charge-balance background
                                                   # (Planet.dY_dt sets F_net[so4_idx] = 0)
-    'K+',                                         # K not in `elements`
     'B(OH)3', 'Ba+2', 'Sr+2',                     # B/Ba/Sr not in `elements`
     'CO2', 'Oxg', 'Hdg', 'Ntg', 'Mtg', 'HSg-',    # gas phases, not aqueous buckets
     'Al(OH)4-',                                   # aluminate. Only in the LT Anorthite reaction,
@@ -657,9 +657,9 @@ def get_b_eq(P: float, T: float, P_CO2: float, composition: dict[str, float], b_
 
     return b_eq, pH
 
-def get_gas_partial_pressure(P: float, T: float, b: npt.NDArray[np.float64], gases: list[str], pH: float | None=None) -> list[float]:
+def get_gas_partial_pressure(P: float, T: float, b: npt.NDArray[np.float64], gases: list[str], pH: float | None=None, pe: float | None=None) -> list[float]:
 
-    output = solve_solution(P, T, b, pH=pH)
+    output = solve_solution(P, T, b, pH=pH, pe=pe)
 
     P_gases = []
 
@@ -669,14 +669,14 @@ def get_gas_partial_pressure(P: float, T: float, b: npt.NDArray[np.float64], gas
 
     return P_gases
 
-def get_ocean_state(P: float, T: float, b: npt.NDArray[np.float64]) -> tuple[float, float]:
-    output = solve_solution(P, T, b)
+def get_ocean_state(P: float, T: float, b: npt.NDArray[np.float64], pe: float | None=None) -> tuple[float, float]:
+    output = solve_solution(P, T, b, pe=pe)
     P_CO2 = EARTH_ATM * 10 ** float(output['si_CO2(g)'][-1])
     pH = float(output['pH'][-1])
     return P_CO2, pH
 
-def get_P_CO2(P: float, T: float, b: npt.NDArray[np.float64]) -> float:
-    return get_gas_partial_pressure(P, T, b, ['CO2'])[0]
+def get_P_CO2(P: float, T: float, b: npt.NDArray[np.float64], pe: float | None=None) -> float:
+    return get_gas_partial_pressure(P, T, b, ['CO2'], pe=pe)[0]
 
 def get_pH(P: float, T: float, b: npt.NDArray[np.float64]) -> float:
     output = solve_solution(P, T, b)

@@ -15,11 +15,18 @@ to the ones `sweep_basic` already wrote (the `_land` tag is suppressed at 0, see
 `parameter_sweep._run_name`), so those runs are reused for free and only the missing ones -- the
 extension past S = 1.2 -- cost anything.
 
+The ocean starts blank, as in `parameter_sweep` (set KAMINO_SEED_OCEAN=1 for the seawater seed);
+runs on disk from the other initial condition are re-run, not reused.
+
     # run the sweep, then draw the figures (resumes; runs already on disk are reused)
     /data/pt426/big-venv/bin/python experiments/continental_baseline.py
 
     # re-draw the figures from runs already on disk
     /data/pt426/big-venv/bin/python experiments/continental_baseline.py --plot-only
+
+The 'earth' sweep is the exception: it reproduces the calibration setup (experiments/calibrate_earth.py),
+a seawater-seeded ocean with Earth's Cl outgassing ratio run for 4 Gyr, so its S = 1 run is the
+calibrated Earth. The continental_baseline_{tp,chem,ions} figures are drawn from it.
 """
 
 import argparse
@@ -33,12 +40,11 @@ os.environ.setdefault('JAX_PLATFORMS', 'cpu')
 import parameter_sweep as ps
 from parameter_sweep import (ALPHA_CALIB, KD_MG_CALIB, K_NA_CALIB, OUTPUT_PATH, WORKERS,
                              PE_REDUCING, PE_OXIDISING, _pe_label, _run_name, run_simulation)
-from kamino.constants import EARTH_MANTLE_MG_SI, EARTH_DELTA_IW
+from kamino.constants import EARTH_MANTLE_MG_SI, EARTH_DELTA_IW, EARTH_CL_OUTGASSING_RATIO
 
 # ── The baseline planet: Earth, on every axis ─────────────────────────────────────────────────
-# Earth's land fraction. `Planet` scales the continental flux linearly off this
-# (`_s_terr = _S_TERR_EARTH * land_fraction / 0.3`), so 0.3 is the value the terrestrial
-# denudation rate was calibrated at, not an arbitrary point on a continuum.
+# Earth's land fraction. `Planet` scales the continental weathering and the aeolian dust flux
+# (Jickells et al. 2005) with land area relative to Earth's, so 0.3 is Earth's reference point.
 LAND_FRACTION = 0.3
 
 # Earth's mantle molar Mg/Si (1.25). Named apart from the GRID_MG_SI axis below so the two
@@ -110,21 +116,27 @@ GRID_MG_SI = [MG_SI_EARTH, 1.8]
 #
 # Same three values as parameter_sweep.alpha, so these runs sit in the same family as the
 # land-free alpha arm; all three stay in the kinetic limit (Da <= 0.13).
-GRID_ALPHA = [0.5, 1, ALPHA_CALIB, 10, 50]
+GRID_ALPHA = [ALPHA_CALIB * 0.1, ALPHA_CALIB, ALPHA_CALIB * 10]
 
 # Which sweep __main__ runs -- edit this rather than passing a flag.
 #   'baseline' : the two-arm instellation line (land 0.3 and 0), Earth on every other axis
 #   'land'     : the land-fraction series at Earth outgassing and crust production
 #   'grid'     : the coarse instellation x land x outgassing x crust x Mg/Si factorial
 #   'alpha'    : instellation x land x outgassing x alpha, at Earth crust production and Mg/Si
+#   'earth'    : the instellation line at land 0.3 in the calibration setup (seeded, Earth Cl, 4 Gyr)
 SWEEP = 'all'
+
+# The 'earth' sweep: the conditions calibrate_earth.py fits the constants in, so S = 1 is the calibrated Earth.
+EARTH_CL_RATIO = EARTH_CL_OUTGASSING_RATIO   # Cl/C outgassing ratio (the sweeps run with none)
+EARTH_T_END_GYR = 4.0                        # calibrate_earth.T_END
+EARTH_SEED = True                            # seawater initial ocean: Cl 546, SO4 28.2, K 10.2 mM
 
 # These are ints on purpose. `_run_name` interpolates them with plain str(), so 1 and 1.0 give
 # 'crust_1' and 'crust_1.0' -- two names for one config, and the ocean arm would stop matching
 # the runs `sweep_basic` already wrote. Match the types parameter_sweep uses.
 OUTGASSING = 1                # x Earth
 CRUST_PRODUCTION = 1          # x Earth
-OCEAN_DEPTH = 3000            # m
+OCEAN_DEPTH = 3700            # m
 
 REVERSE_WEATHERING = True
 DELTA_IW = float(EARTH_DELTA_IW)       # core-formation oxygen fugacity, Earth's -2
@@ -190,8 +202,12 @@ def _grid_combos(instellation=None, lands=None, outgassing=None, crust=None,
     return combos
 
 
-def run(combos, output_path=OUTPUT_PATH):
-    """Execute a combo list. Mirrors `parameter_sweep.run_combos`, carrying land fraction through."""
+def run(combos, output_path=OUTPUT_PATH, cl=ps.CL_OUTGASSING_RATIO, t_end_gyr=ps.T_END_GYR, seed=None):
+    """Execute a combo list. Mirrors `parameter_sweep.run_combos`, carrying land fraction through.
+
+    `cl`, `t_end_gyr` and `seed` apply to every combo; the defaults are the sweep's (no Cl, 2 Gyr,
+    ps.SEED_OCEAN).
+    """
     if not output_path.endswith('/'):
         output_path += '/'
     ps.p2.output_path = output_path
@@ -199,7 +215,7 @@ def run(combos, output_path=OUTPUT_PATH):
 
     # Distinct configs must map to distinct filenames or one silently overwrites the other, and
     # the resume path then hands back the survivor's result for both (the fast_13 resume trap).
-    names = [_run_name(*combo) for combo in combos]
+    names = [_run_name(*combo, cl=cl, t_end_gyr=t_end_gyr) for combo in combos]
     if len(set(names)) != len(names):
         duplicated = sorted({n for n in names if names.count(n) > 1})
         raise ValueError(f"{len(names) - len(set(names))} run name collision(s), e.g. "
@@ -226,11 +242,14 @@ def run(combos, output_path=OUTPUT_PATH):
     print(f"  pe: {[f'{v:g} ({_pe_label(v)})' for v in sorted({c[10] for c in combos})]}")
     print(f"  alpha:          {_axis(7)}")
     print(f"  kd_mg_ht={KD_MG_CALIB:g}  k_na={K_NA_CALIB:g}")
+    print(f"  Cl ratio: {cl:g}   t_end: {t_end_gyr:g} Gyr   initial ocean: "
+          f"{'seawater seed' if (ps.SEED_OCEAN if seed is None else seed) else 'blank'}")
     ps._warn_constant_drift()
 
     completed = aborted = 0
     with ProcessPoolExecutor(max_workers=WORKERS, mp_context=mp.get_context('spawn')) as executor:
-        futures = [executor.submit(run_simulation, *combo[:11], output_path, combo[11])
+        futures = [executor.submit(run_simulation, *combo[:11], output_path, combo[11],
+                                   cl=cl, t_end_gyr=t_end_gyr, seed=seed)
                    for combo in combos]
         for future in as_completed(futures):
             completed += 1
@@ -292,10 +311,13 @@ if __name__ == '__main__':
             combos = _combos(land_arms=LAND_FRACTIONS, pe_states=pe_states)
         elif SWEEP == 'baseline':
             combos = _combos(land_arms=LAND_ARMS, pe_states=pe_states)
+        elif SWEEP == 'earth':
+            combos = _combos(land_arms=[LAND_FRACTION], pe_states=pe_states)
         elif SWEEP == 'all':
             combos = _grid_combos(crust=[CRUST_PRODUCTION], mg_si=[MG_SI_EARTH], alpha=GRID_ALPHA, pe_states=pe_states)
         else:
-            raise SystemExit(f"SWEEP must be 'baseline', 'land' or 'grid', not {SWEEP!r}")
+            raise SystemExit(f"SWEEP must be 'baseline', 'land', 'grid', 'alpha', 'earth' or 'all', "
+                             f"not {SWEEP!r}")
         print(f"sweep: {SWEEP}")
 
         if SWEEP == 'all':
@@ -305,6 +327,12 @@ if __name__ == '__main__':
             run(combos, output_path=args.path)
             combos = _combos(land_arms=LAND_ARMS, pe_states=pe_states)
             run(combos, output_path=args.path)
+            combos = _combos(land_arms=[LAND_FRACTION], pe_states=pe_states)
+            run(combos, output_path=args.path, cl=EARTH_CL_RATIO, t_end_gyr=EARTH_T_END_GYR,
+                seed=EARTH_SEED)
+        elif SWEEP == 'earth':
+            run(combos, output_path=args.path, cl=EARTH_CL_RATIO, t_end_gyr=EARTH_T_END_GYR,
+                seed=EARTH_SEED)
         else:
             run(combos, output_path=args.path)
 

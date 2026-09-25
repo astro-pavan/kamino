@@ -1,5 +1,6 @@
 """Figures for kamino parameter sweeps: python experiments/plot_results.py --path <sweep dir>."""
 import os
+import re
 import sys
 import glob
 import json
@@ -15,10 +16,12 @@ from matplotlib.lines import Line2D
 import cmasher as cmr
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../src'))
-from kamino.constants import SOLAR_CONSTANT, STEFAN_BOLTZMANN, EARTH_MANTLE_MG_SI, EARTH_DELTA_IW
+from kamino.constants import SOLAR_CONSTANT, STEFAN_BOLTZMANN, EARTH_MANTLE_MG_SI, EARTH_DELTA_IW, SEAFLOOR_T_FLOOR
 from kamino.chemistry import elements
 from kamino.planet import KD_MG_HT, K_NA_CONT_REMOVAL, PE_DEFAULT
 from kamino.weathering import ALPHA_REF
+from kamino.planet import OCEAN_ALBEDO
+from kamino.climate.analytic import get_T_surface_analytic
 
 import continental_baseline as cb
 
@@ -127,7 +130,7 @@ DA_LEGEND = [
     Line2D([0], [0], color='k', linestyle='--', linewidth=1.4, label='Da ≥ 1 (thermodynamic)'),
     Line2D([0], [0], color='k', linestyle='none', marker='o', markerfacecolor='none',
            markersize=5.5, markeredgewidth=1.2, label='Da = 1 transition'),
-    Line2D([0], [0], color='k', linestyle=':',  linewidth=1.4, label='$T_\\mathrm{seafloor}$ at floor (274 K)'),
+    Line2D([0], [0], color='k', linestyle=':',  linewidth=1.4, label=f'$T_\\mathrm{{seafloor}}$ at floor ({SEAFLOOR_T_FLOOR:g} K)'),
 ]
 
 PANEL_COLS = ['T', 'P_CO2', 'pH', 'salinity']
@@ -144,7 +147,8 @@ MG_SI_HIDDEN = (1.75,)
 # Modern Earth; salinity sums the tracked seawater ions (g/kg), comparable with the model's column.
 EARTH = {'S': 1.0, 'T': 288.0, 'P_CO2': 280e-6, 'pH': 8.1,
          'salinity': (2.0e-3 * 61.0 + 0.1e-3 * 60.1 + 10.3e-3 * 40.1 +
-                      52.8e-3 * 24.3 + 480e-3 * 23.0 + 550e-3 * 35.45)}
+                      52.8e-3 * 24.3 + 480e-3 * 23.0 + 550e-3 * 35.45 +
+                      28.2e-3 * 96.06 + 10.2e-3 * 39.10)}
 
 # --- Continental habitable zone ---
 # Edges of the Earth-like continental baseline (land 0.3, all else Earth), from continental_baseline.py.
@@ -159,8 +163,8 @@ def _draw_hz_edges(ax, show_hz=None):
     if not (SHOW_HZ_EDGES if show_hz is None else show_hz):
         return
     trans = ax.get_xaxis_transform()
-    for s, label, offset, ha in ((CONTINENTAL_HZ_OUTER, 'HZ outer edge', -3, 'right'),
-                                 (CONTINENTAL_HZ_INNER, 'HZ inner edge', 3, 'left')):
+    for s, label, offset, ha in ((CONTINENTAL_HZ_OUTER, 'CWHZ outer edge', -3, 'right'),
+                                 (CONTINENTAL_HZ_INNER, 'CWHZ inner edge', 3, 'left')):
         ax.axvline(s, color='0.35', linestyle=(0, (6, 3)), linewidth=1.0, alpha=0.85, zorder=1)
         ax.annotate(label, xy=(s, 0.97), xycoords=trans, xytext=(offset, 0),
                     textcoords='offset points', rotation=90, ha=ha, va='top',
@@ -176,9 +180,9 @@ def equilibrium_temperature(instellation, albedo=0.3, greenhouse=0.5):
 
 
 # --- Loading and diagnostics ---
-# Molar masses (g/mol) for salinity; C as HCO3-, S as SO4 2-. y = [P_CO2, P_H2O, *elements, r_avg].
+# Molar masses (g/mol) for salinity; C as HCO3-, S as SO4 2-. y = [P_CO2, P_H2O, *elements] (older outputs add r_avg).
 _ELEMENT_MASSES = {'C': 61.0, 'Si': 60.1, 'Al': 27.0, 'Fe': 55.8, 'Ca': 40.1,
-                   'Mg': 24.3, 'Na': 23.0, 'Cl': 35.45, 'S': 96.06}
+                   'Mg': 24.3, 'Na': 23.0, 'Cl': 35.45, 'S': 96.06, 'K': 39.10}
 _SAL_INDICES = [2 + i for i, e in enumerate(elements) if e in _ELEMENT_MASSES]
 _SAL_MASSES  = [_ELEMENT_MASSES[e] for e in elements if e in _ELEMENT_MASSES]
 
@@ -193,6 +197,36 @@ def _salinity_from_y(y_list):
         )
     except Exception:
         return np.nan
+
+
+# How runs whose pCO2 is still cycling at their end enter the figures (--oscillating):
+#   'final' the last state, as before; 'mean' the time average over the tail (T, pCO2, salinity; pH and
+#   Da stay final); 'exclude' dropped from every figure.
+OSC_MODES = ('final', 'mean', 'exclude')
+OSCILLATION_MODE = 'final'
+OSC_TAIL = 0.4           # fraction of the run examined
+OSC_MIN_TURNS = 3        # turning points in log pCO2 over the tail
+OSC_MIN_RANGE = 0.2      # and a ln-range above this (~20 %)
+
+
+def _oscillation(d, y_list):
+    """(oscillating, mean T, mean pCO2 in bar, mean salinity) over the last OSC_TAIL of a run's time."""
+    t = np.asarray((d.get('data') or {}).get('time') or [], dtype=float)
+    if t.size < 10 or not y_list:
+        return False, np.nan, np.nan, np.nan
+    tq = np.linspace(t[-1] * (1 - OSC_TAIL), t[-1], 60)
+    p = np.maximum(np.interp(tq, t, np.asarray(y_list[0], dtype=float)), 1.0)   # 1 Pa climate floor
+    lp = np.log(p)
+    dl = np.diff(lp)
+    sgn = np.sign(dl[np.abs(dl) > 0.02])
+    turns = int(np.sum(sgn[1:] != sgn[:-1])) if sgn.size > 1 else 0
+    osc = turns >= OSC_MIN_TURNS and (lp.max() - lp.min()) > OSC_MIN_RANGE
+    if not osc:
+        return False, np.nan, np.nan, np.nan
+    S = float(d['instellation']) * SOLAR_CONSTANT
+    T_mean = float(np.mean([get_T_surface_analytic(S, pi, OCEAN_ALBEDO) for pi in p]))
+    y_mean = [[float(np.mean(np.interp(tq, t, np.asarray(row, dtype=float))))] for row in y_list]
+    return True, T_mean, float(np.mean(p)) / 1e5, _salinity_from_y(y_mean)
 
 
 _DIAG_NAN = {'da': np.nan, 'calcite_si': np.nan, 'ocean_si': np.nan, 'alk_flux': np.nan, 'pH': np.nan}
@@ -306,14 +340,26 @@ def _add_diag_columns(df, output_path=None):
     return df
 
 
+def _t_end_gyr(d):
+    """Integration limit in Gyr: recorded by time_evolve, else the run-name `_tend` tag, else 2."""
+    if d.get('t_end_yr') is not None:
+        return round(float(d['t_end_yr']) / 1e9, 6)
+    m = re.search(r'_tend([0-9.]+)', d.get('name', ''))
+    return float(m.group(1)) if m else 2.0
+
+
 def load_data(output_path):
     """One row per finished run in `output_path`, with its sweep axes and final state."""
     global RUN_PATH
     RUN_PATH = output_path
     rows = []
     for f in sorted(glob.glob(os.path.join(output_path, 'planet_*.json'))):
-        with open(f) as fh:
-            d = json.load(fh)
+        try:
+            with open(f) as fh:
+                d = json.load(fh)
+        except (json.JSONDecodeError, OSError):
+            print(f"  Skipping (unreadable, probably mid-write): {os.path.basename(f)}")
+            continue
         if 'termination' not in d:
             print(f"  Skipping (no termination): {os.path.basename(f)}")
             continue
@@ -340,9 +386,31 @@ def load_data(output_path):
             'P_CO2':              d.get('P_CO2', np.nan),
             'pH':                 d.get('pH', np.nan),   # replaced by the recorded seafloor pH in _add_diag_columns
             'salinity':           _salinity_from_y(y_list) if y_list else np.nan,
+            'cl_ratio':           float(d.get('cl_outgassing_ratio') or 0.0),
+            'oscillating':        False,
+            't_end_gyr':          _t_end_gyr(d),
         })
+        if d['termination'] == 'timeout':   # a cycling run never converges, so it ends at t_end
+            osc, T_m, p_m, sal_m = _oscillation(d, y_list)
+            if osc:
+                if OSCILLATION_MODE == 'exclude':
+                    rows.pop()
+                    continue
+                rows[-1]['oscillating'] = True
+                if OSCILLATION_MODE == 'mean':
+                    rows[-1].update(T=T_m, P_CO2=p_m, salinity=sal_m)
     df = pd.DataFrame(rows)
-    print(f"Loaded {len(df)} simulations.")
+    # The alpha-outgassing plane once wrote out_1.0 beside the basic sweep's out_1: the same config twice.
+    n0 = len(df)
+    config = [c for c in df.columns if c not in ('name', 'termination', 'domain_wall', 'end_time_yr',
+                                                   'T', 'P_CO2', 'pH', 'salinity', 'oscillating')]
+    df = df.drop_duplicates(config).reset_index(drop=True)
+    print(f"Loaded {len(df)} simulations" + (f" ({n0 - len(df)} duplicate configs dropped)."
+                                             if len(df) < n0 else "."))
+    n_osc = int(df['oscillating'].sum()) if 'oscillating' in df else 0
+    if n_osc or OSCILLATION_MODE == 'exclude':
+        print(f"  Oscillating runs: {n_osc} shown as their {'tail mean' if OSCILLATION_MODE == 'mean' else 'final state'}"
+              if OSCILLATION_MODE != 'exclude' else "  Oscillating runs excluded (--oscillating exclude).")
     return df
 
 
@@ -392,12 +460,36 @@ def _ref_chem(df):
     return mask
 
 
+_setup_pinned = set()   # (column, value) already reported
+
+
+def _ref_setup(df):
+    """Mask pinning the Cl outgassing ratio and the integration limit to their most-run values.
+
+    The paired Cl sweep (basic_cl: Cl on, 4.5 Gyr) shares every other axis with basic, so without
+    this its runs land on the same lines and every crust = 1 figure zigzags between the two.
+    """
+    mask = pd.Series(True, index=df.index)
+    for col in ('cl_ratio', 't_end_gyr'):
+        if col not in df.columns or df[col].nunique() <= 1:
+            continue
+        ref = df[col].value_counts().idxmax()
+        mask &= np.isclose(df[col], ref)
+        if (col, ref) not in _setup_pinned:
+            _setup_pinned.add((col, ref))
+            others = sorted(v for v in df[col].unique() if not np.isclose(v, ref))
+            print(f"  Pinning {col} = {ref:g} for the main plots "
+                  f"(also present: {', '.join(f'{v:g}' for v in others)}).")
+    return mask
+
+
 def _sweep_mask(df, depth=3000, land=0.0, crust=True, chem=True, redox=True, f_ht=False, rw=True,
-                **pins):
+                setup=True, **pins):
     """Standard selection: reverse weathering on, one depth and land fraction, reference crust/chem/redox.
 
     Pass None or False to skip a filter (rw=False selects the no-reverse-weathering control, rw=None
-    both arms); `pins` are further column values matched with np.isclose.
+    both arms, setup=False keeps every Cl ratio and run length); `pins` are further column values
+    matched with np.isclose.
     """
     mask = (pd.Series(True, index=df.index) if rw is None
             else df['reverse_weathering'].astype(bool) == rw)
@@ -413,6 +505,8 @@ def _sweep_mask(df, depth=3000, land=0.0, crust=True, chem=True, redox=True, f_h
         mask &= _ref_redox(df)
     if f_ht:
         mask &= df['f_HT'] == 0.0
+    if setup:
+        mask &= _ref_setup(df)
     for col, value in pins.items():
         mask &= np.isclose(df[col], value)
     return mask
@@ -503,11 +597,11 @@ def _style_axes(axes, cols, x_lims=(0.25, 1.45), show_hz=None, show_eq_temp=Fals
             ax.set_ylim(1e-5, 20)
         elif col == 'pH':
             ax.set_ylabel('Ocean pH')
-            ax.set_ylim(5, 9)
+            ax.set_ylim(3, 12)   # blank oceans span pH 3.5-11.8
         elif col == 'salinity':
             ax.set_ylabel('Salinity (g/kg)')
             ax.set_yscale('log')
-            ax.set_ylim(1e-1, 1e2)
+            ax.set_ylim(5e-2, 1e2)   # blank oceans reach 0.07 g/kg
         elif col == 'calcite_si':
             ax.set_ylabel('Calcite SI')
             ax.axhline(0, color='k', linestyle='--', linewidth=0.8, alpha=0.5)
@@ -586,8 +680,8 @@ def _add_figure_legend(fig, axes, handles, loc='outside lower center', **kw):
 
 
 def _at_seafloor_floor(T):
-    """True where the seafloor temperature implied by surface T sits at its 274 K floor."""
-    return 1.02 * np.asarray(T, dtype=float) - 16.7 <= 274.001
+    """True where the seafloor temperature implied by surface T sits at its floor (SEAFLOOR_T_FLOOR)."""
+    return 1.02 * np.asarray(T, dtype=float) - 16.7 <= SEAFLOOR_T_FLOOR + 0.001
 
 
 def _da_trustworthy(group):
@@ -719,7 +813,9 @@ def _best_operating_point(pool, col, what):
     if counts.empty or counts.max() < 2:
         print(f"No {what} variation at a fixed (outgassing, crust) -- skipping.")
         return None
-    best_o, best_c = counts.idxmax()
+    # Ties (e.g. the alpha x outgassing plane) go to the pair nearest Earth's (1x, 1x), not the first one.
+    tied = [k for k, n in counts.items() if n == counts.max()]
+    best_o, best_c = min(tied, key=lambda k: abs(np.log10(k[0])) + abs(np.log10(k[1])))
     subset = pool[(pool['outgassing'] == best_o) & (pool['crust_production'] == best_c)]
     print(f"{what} plot: using outgassing={best_o:g}, crust={best_c:g} "
           f"({subset[col].nunique()} values).")
@@ -933,6 +1029,9 @@ def _one_axis_sweep(pool, col, what, cmap, label, stem, output_path, select=None
                    aspect_per_row=7.5, **kw)
 
 
+DEPTHS_SHOWN = (300, 1000, 3000, 10000, 30000)   # m, the depth figure's lines when available
+
+
 def plot_depth(df, output_path, show_markers=False, split_panels=True, width='single',
                height=None, show_hz=None):
     """Depth sweep: one line per ocean depth."""
@@ -942,9 +1041,13 @@ def plot_depth(df, output_path, show_markers=False, split_panels=True, width='si
         return
 
     def thin(sub):
-        # Drop 50 km (least reliable) and keep about five evenly spaced depths.
+        # About five depths: the shown set if present (so a stray depth such as the continental
+        # baseline's 3.7 km arm cannot displace the 3 km reference), else evenly spaced.
         depths = sorted(d for d in sub['ocean_depth'].unique() if d < 100000)
-        if len(depths) > 5:
+        shown = [d for d in DEPTHS_SHOWN if d in depths]
+        if len(shown) >= 3:
+            depths = shown
+        elif len(depths) > 5:
             depths = sorted({depths[i] for i in np.linspace(0, len(depths) - 1, 5).round().astype(int)})
         print(f"  Ocean-depth plot: showing {[f'{d:g}' for d in depths]} m.")
         return sub[sub['ocean_depth'].isin(depths)]
@@ -1309,17 +1412,27 @@ ION_SPEC = [(0, 'Alk', 2.3), (1, 'C', 2.1), (2, 'Si', 0.1), (5, 'Ca', 10.3),
             (6, 'Mg', 52.8), (7, 'Na', 469.0), (8, 'Cl', 546.0)]
 
 
-def _arm(df, land):
-    """Runs at one land fraction with every other axis at the Earth reference."""
+def _arm(df, land, setup=None):
+    """Runs at one land fraction with every other axis at the Earth reference.
+
+    `setup` pins the Cl ratio and run length (e.g. the 'earth' sweep's); None takes the most-run values.
+    """
+    pins = setup or {}
     return df[_sweep_mask(df, depth=cb.OCEAN_DEPTH, land=land, f_ht=True, outgassing=cb.OUTGASSING,
-                          crust_production=cb.CRUST_PRODUCTION)].sort_values('instellation')
+                          crust_production=cb.CRUST_PRODUCTION, setup=not pins,
+                          **pins)].sort_values('instellation')
 
 
 def plot_continental_baseline(df, output_path, show_hz=None):
-    """Earth-like continental baseline: T/pCO2 and pH/salinity against instellation, and ions against seawater."""
-    group_all = _arm(df, cb.LAND_FRACTION)
+    """Earth-like continental baseline: T/pCO2 and pH/salinity against instellation, and ions against seawater.
+
+    Drawn from continental_baseline's 'earth' sweep (seawater seed, Earth Cl ratio, 4 Gyr), the setup the
+    constants are calibrated in, so the S = 1 run is the calibrated Earth.
+    """
+    group_all = _arm(df, cb.LAND_FRACTION, {'cl_ratio': cb.EARTH_CL_RATIO, 't_end_gyr': cb.EARTH_T_END_GYR})
     if group_all.empty:
-        print("No continental baseline data found — skipping.")
+        print("No 'earth' sweep runs (continental_baseline.py, SWEEP = 'earth') -- "
+              "skipping the continental baseline figures.")
         return
     group_hab = group_all[(group_all['T'] > T_SNOWBALL) & (group_all['T'] < T_RUNAWAY)]
 
@@ -1350,7 +1463,7 @@ def plot_continental_baseline(df, output_path, show_hz=None):
         try:
             with open(os.path.join(RUN_PATH or output_path, f"{row['name']}.json")) as fh:
                 y = json.load(fh)['data']['y']
-            b = [max(float(y[2 + i][-1]), 1e-15) for i in range(len(y) - 3)]
+            b = [max(float(y[2 + i][-1]), 1e-15) for i in range(len(elements))]
             ion_rows.append((row['instellation'], (b + [1e-15] * 10)[:10]))
         except Exception:
             pass
@@ -2511,6 +2624,9 @@ if __name__ == '__main__':
     parser.add_argument('--depth', type=float, default=None,
                         help='Ocean depth (m) for the composition figures '
                              '(default: every depth that has a composition sweep).')
+    parser.add_argument('--oscillating', choices=OSC_MODES, default=OSCILLATION_MODE,
+                        help="How runs still cycling at their end are shown: their final state, the mean over "
+                             "the last 40%% of the run, or not at all (default: %(default)s).")
     parser.add_argument('--pe', type=float, default=None,
                         help='Pin ocean pe to this value in the main plots '
                              '(default: the model reference, planet.PE_DEFAULT).')
@@ -2521,6 +2637,7 @@ if __name__ == '__main__':
     if args.pe is not None:
         REF_PE = args.pe
 
+    OSCILLATION_MODE = args.oscillating
     df = load_data(args.path)
     if args.legacy:
         import plot_legacy

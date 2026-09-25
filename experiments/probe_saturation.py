@@ -24,7 +24,7 @@ from kamino.precipitation import get_precipitation_by_mineral
 from kamino.chemistry import elements
 from kamino.mineral_info import (carbonate_minerals, clay_minerals, silica_minerals,
                                  reverse_weathering_minerals)
-from kamino.constants import YR
+from kamino.constants import YR, SEAFLOOR_T_FLOOR
 
 FAST = carbonate_minerals + clay_minerals + silica_minerals
 RW = reverse_weathering_minerals
@@ -36,8 +36,8 @@ for f in sorted(glob.glob(os.environ['PROBE_GLOB'])):
     y = np.array(d['data']['y'])
     P_CO2, P_H2O = y[0][-1], y[1][-1]
     b = y[2:2 + len(elements), -1]
-    # planet.py: T_seafloor = max(1.02*T_surface - 16.7, 274); P_pore adds the water column
-    T_sf = max(1.02 * d['T'] - 16.7, 274.0)
+    # planet.py: T_seafloor = max(1.02*T_surface - 16.7, SEAFLOOR_T_FLOOR); P_pore adds the water column
+    T_sf = max(1.02 * d['T'] - 16.7, SEAFLOOR_T_FLOOR)
     P_pore = (d['background_pressure'] + P_CO2 + P_H2O) + 1000 * G * d['ocean_depth']
 
     fast, _, si_f, _ = get_precipitation_by_mineral(

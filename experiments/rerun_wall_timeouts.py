@@ -67,7 +67,7 @@ def wall_timeout_combos(path, filter_expr=None):
     every trajectory to derive salinity -- unnecessary here and slow over thousands of files.
     The termination is grepped first so only the matching files are actually parsed.
     """
-    combos, skipped = [], []
+    combos, sources, skipped = [], [], []
     for f in sorted(glob.glob(os.path.join(path, '*.json'))):
         # Cheap pre-filter: avoid json.load on files that cannot match.
         with open(f) as fh:
@@ -81,6 +81,9 @@ def wall_timeout_combos(path, filter_expr=None):
             continue
         if d.get('termination') != 'wall_timeout':
             continue          # 'wall_timeout' appeared in termination_raw or a message, not here
+        if (d.get('cl_outgassing_ratio') or 0.0) != ps.CL_OUTGASSING_RATIO or '_tend' in os.path.basename(f):
+            skipped.append((os.path.basename(f), 'Cl / t_end run: rerun it through parameter_sweep instead'))
+            continue
         try:
             combo = (
                 float(d['instellation']),
@@ -105,7 +108,8 @@ def wall_timeout_combos(path, filter_expr=None):
                 pe=combo[10], land=combo[11])):
             continue
         combos.append(combo)
-    return combos, skipped
+        sources.append(os.path.basename(f)[:-5])
+    return combos, sources, skipped
 
 
 def main():
@@ -128,7 +132,7 @@ def main():
 
     assert ps.RERUN, "KAMINO_RERUN did not reach parameter_sweep -- existing output would be reused"
     print(f"scanning {path}")
-    combos, skipped = wall_timeout_combos(path, args.filter)
+    combos, sources, skipped = wall_timeout_combos(path, args.filter)
     for name, why in skipped:
         print(f"  SKIPPED {name}: {why}")
     if not combos:
@@ -137,13 +141,16 @@ def main():
 
     # Names must round-trip, or the re-run writes new files beside the originals and every
     # wall_timeout stays exactly where it was.
+    # Each rebuilt name must be its OWN source file: matching some other file (e.g. a Cl or `_tend`
+    # run rebuilt without those tags lands on the plain basic run) would overwrite a finished run.
     names = [cb._run_name(*c) for c in combos]
-    missing = [n for n in names if not os.path.exists(os.path.join(path, f'{n}.json'))]
+    missing = [(n, src) for n, src in zip(names, sources) if n != src]
     if missing:
-        print(f"\n{len(missing)} of {len(names)} rebuilt names do not match a file on disk, e.g.:")
-        for n in missing[:5]:
-            print("   ", n)
-        sys.exit("aborting: run names do not round-trip, fix _int() first")
+        print(f"\n{len(missing)} of {len(names)} rebuilt names do not match their source file, e.g.:")
+        for n, src in missing[:5]:
+            print(f"    {src}  ->  {n}")
+        sys.exit("aborting: run names do not round-trip (Cl / t_end runs are not supported here); "
+                 "exclude them with --filter or fix _int()")
 
     if len(set(names)) != len(names):
         dup = sorted({n for n in names if names.count(n) > 1})

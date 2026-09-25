@@ -11,12 +11,13 @@ from kamino.constants import (
     EARTH_CRUST_PRODUCTION_RATE_PER_AREA,
     EARTH_HYDROTHERMAL_FLUX_PER_AREA,
     EARTH_CONTINENTAL_WEATHERING_REF,
+    ALPHA_REF,
+    A_SEAFLOOR_EARTH,
+    EARTH_DUST_FLUX_TO_OCEAN,
+    COSMIC_DUST_FLUX_PER_AREA,
+    SEDIMENT_GRAIN_DENSITY,
+    SEDIMENT_POROSITY,
 )
-
-# Seafloor reactive-surface-area scaling. Fitted jointly with KD_MG_HT and K_NA_CONT_REMOVAL by
-# experiments/calibrate_earth.py's least-squares calibration against modern Na/Ca/Mg seawater
-# (2026-09-01, refit after the crust_composition.py rewrite invalidated the prior fit).
-ALPHA_REF = 4.900000
 
 def seafloor_reactive_area(T: float, pH: float, rate: float, alpha: float, clog: bool=True, cover: bool=True, sedimentation_rate: float | None = None) -> float:
 
@@ -26,8 +27,8 @@ def seafloor_reactive_area(T: float, pH: float, rate: float, alpha: float, clog:
     t_clog_ref = 20e6 * YR # Coogan & Gillis (2018), Fig 6
     beta = 0 # no pH dependence
     h_cover = 100 # m
-    S_ref = 5 / (1e6 * YR) # 5 m / Myr
-    S_min = 0.3 / (1e6 * YR) # 0.3 m / Myr background (dust)
+    S_ref = EARTH_DUST_FLUX_TO_OCEAN / A_SEAFLOOR_EARTH / SEDIMENT_GRAIN_DENSITY / (1 - SEDIMENT_POROSITY)  # Earth's dust alone, bulk; only if no rate is passed
+    S_min = COSMIC_DUST_FLUX_PER_AREA / SEDIMENT_GRAIN_DENSITY / (1 - SEDIMENT_POROSITY)  # floor: cosmic dust, bulk
 
     t_clog = t_clog_ref * np.exp(- (T - T_ref) / T_c) * (pH / pH_ref) ** beta
     S = max(sedimentation_rate, S_min) if sedimentation_rate is not None else S_ref

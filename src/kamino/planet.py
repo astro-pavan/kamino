@@ -1,6 +1,9 @@
 import numpy as np
 np.set_printoptions(precision=1)
-from scipy.integrate import solve_ivp
+from scipy.integrate import LSODA
+from scipy.optimize import brentq
+from bisect import bisect_left
+from types import SimpleNamespace
 import matplotlib.pyplot as plt
 import time
 import json
@@ -10,9 +13,11 @@ from kamino.constants import (
     G, YR, SOLAR_CONSTANT, M_EARTH, R_EARTH,
     EARTH_OUTGASSING, EARTH_CRUST_PRODUCTION_RATE_PER_AREA,
     EARTH_HYDROTHERMAL_FLUX_PER_AREA, EARTH_MANTLE_MG_SI, EARTH_DELTA_IW,
-    A_SEAFLOOR_EARTH, EARTH_CL_OUTGASSING_RATIO
+    A_SEAFLOOR_EARTH, A_LAND_EARTH, EARTH_SHELF_AREA, EARTH_SHELF_DEPTH, EARTH_CL_OUTGASSING_RATIO,
+    KD_MG_HT, K_CL_SUBDUCTION, K_NA_CONT_REMOVAL, TAU_RW_REF, SEAFLOOR_T_FLOOR,
+    EARTH_DUST_FLUX_TO_OCEAN, SEDIMENT_GRAIN_DENSITY, SEDIMENT_POROSITY,
 )
-from kamino.chemistry import elements, get_ocean_state, c_idx, alk_idx, ca_idx, mg_idx, na_idx, cl_idx, so4_idx, ChemistryError
+from kamino.chemistry import elements, get_ocean_state, c_idx, alk_idx, ca_idx, mg_idx, na_idx, cl_idx, so4_idx, k_idx, ChemistryError
 from kamino.weathering import get_weathering_flux, get_continental_weathering_flux, ALPHA_REF
 from kamino.precipitation import (get_precipitation, get_precipitation_by_mineral,
                                   sum_precipitation, sediment_volume_rate)
@@ -29,12 +34,6 @@ from kamino.utils import august_roche_magnus_formula
 
 output_path = os.path.join(os.path.dirname(__file__), '../../output/')
 os.makedirs(output_path, exist_ok=True)
-
-KD_MG_HT = 1.969604e-02
-K_CL_SUBDUCTION = 1.961786e-04
-K_NA_CONT_REMOVAL = 6.099720e-03
-
-_S_TERR_EARTH = 5 / (1e6 * YR)   # m/s at land_fraction = 0.3
 
 _EARTH_CA_SOURCES  = 5.731e12 / YR   # continental + seafloor + HT at Earth [mol/s]
 _ABIOTIC_CA_3MYR   = 0.321e12 / YR   # abiotic Ca sink at tau_prec=3 Myr, Earth [mol/s]
@@ -96,12 +95,9 @@ _TAU_PREC_REF_K    = 3e6 * YR
 PE_DEFAULT = -3.0
 
 TAU_PREC_REF = 100e3 * YR
-TAU_RW_REF = 5e6 * YR 
 OCEAN_DEPTH_REF = 3000.0   # m; the depth at which TAU_PREC_REF applies
 
 TAU_ATM = 1e4 * YR
-
-tau_r_avg = 3e7 * YR   # EMA timescale for convergence rate smoothing (~30 Myr)
 
 WATER_ROCK_RATIO_LT = 3
 
@@ -262,9 +258,12 @@ class Planet:
         # Land properties
         self.land_fraction = land_fraction
         self.land_area = land_fraction * self.surface_area
-        self._s_terr = _S_TERR_EARTH * (land_fraction / 0.3)
-        self.shelf_depth = 1000.0  # m — representative continental shelf depth for carbonate burial
+        # Aeolian dust on the seafloor (solid m/s): Earth's flux scaled by land area, spread over this planet's seafloor
+        self._dust_rate = EARTH_DUST_FLUX_TO_OCEAN * (self.land_area / A_LAND_EARTH) / self.seafloor_area / SEDIMENT_GRAIN_DENSITY
+        self.shelf_depth = EARTH_SHELF_DEPTH  # m, carbonate burial depth on the continental shelves
         self.shelf_precipitating_minerals = carbonate_minerals
+        # Fraction of the seafloor that is continental shelf; shelf area scales with land area from Earth's
+        self.shelf_area_fraction = min(EARTH_SHELF_AREA * (self.land_area / A_LAND_EARTH) / self.seafloor_area, 1.0)
         self.na_cont_k = k_na_cont_removal
 
         # Climate calculation parameters
@@ -288,7 +287,7 @@ class Planet:
 
     def dY_dt(self, t, Y):
 
-        # Wall-clock budget. Checked here rather than after solve_ivp returns, for the same
+        # Wall-clock budget. Checked here rather than after the integration returns, for the same
         # reason as the fallback cap: a check on the finished run would save nothing. Jacobian
         # probes are included deliberately -- they cost wall time like any other evaluation.
         _deadline = getattr(self, '_wall_deadline', None)
@@ -302,7 +301,7 @@ class Planet:
         # Extract state vector
         P_CO2 = Y[0]
         P_H2O = Y[1]
-        b_ocean = Y[2:-1]   # Y[-1] is r_avg, excluded from chemistry
+        b_ocean = Y[2:]
 
         # Input safety
         P_CO2 = np.clip(P_CO2, 0, 1e6)
@@ -317,7 +316,7 @@ class Planet:
         # Update seafloor physical properties
         T_seafloor = 1.02 * T_surface - 16.7
         P_pore = (self.P_background + P_CO2 + P_H2O) + 1000 * self.gravity * self.ocean_depth
-        T_seafloor = np.maximum(T_seafloor, 274)
+        T_seafloor = np.maximum(T_seafloor, SEAFLOOR_T_FLOOR)
         T_pore = T_seafloor + 9
         self._T = T_surface
         ocean_water_per_area = self.ocean_depth * 1000.0
@@ -328,12 +327,16 @@ class Planet:
         try:
 
             # Ocean surface conditions
-            P_CO2_new, pH_surface = get_ocean_state(P_surface, T_surface, b_ocean)
+            P_CO2_new, pH_surface = get_ocean_state(P_surface, T_surface, b_ocean, pe=self.pe)
             assert P_CO2_new > 0
             self._pH_surface = pH_surface
 
             # Fast precipitation: carbonates, clays, silica, evaporites (tau_prec ~100 kyr)
             prec_fast, pH_seafloor, SI, moles_prec = get_precipitation_by_mineral(P_pore, T_seafloor, b_ocean, precipitating_minerals=self.fast_ocean_precipitating_minerals, precipitation_timescale=self.tau_prec, pe=self.pe)
+            if self.shelf_area_fraction > 0:  # carbonate settling onto the shelves is buried there instead (F_shelf_prec)
+                for mineral in self.shelf_precipitating_minerals:
+                    if mineral in prec_fast:
+                        prec_fast[mineral] = prec_fast[mineral] * (1.0 - self.shelf_area_fraction)
             F_prec_fast = sum_precipitation(prec_fast)
             F_prec = F_prec_fast
             F_prec_rw = np.zeros(elements.shape)
@@ -355,7 +358,9 @@ class Planet:
             # entirely. The shelf carbonates (F_shelf_prec, below) are deliberately NOT in here:
             # they bury on the continental shelf, not on the ridge flanks whose basalt this
             # sedimentation rate is covering.
-            S_sed = sediment_volume_rate(moles_prec) * ocean_water_per_area + self._s_terr
+            # moles_prec is deliberately unweighted by the shelf split: the deep share lands on the deep share of the seafloor.
+            # Bulk sediment accumulation: solid volume (precipitates + dust) divided by (1 - porosity)
+            S_sed = (sediment_volume_rate(moles_prec) * ocean_water_per_area + self._dust_rate) / (1.0 - SEDIMENT_POROSITY)
 
             # Hydrothermal flux
             J_total = EARTH_HYDROTHERMAL_FLUX_PER_AREA * (self.crust_production_rate / EARTH_CRUST_PRODUCTION_RATE_PER_AREA)
@@ -386,9 +391,10 @@ class Planet:
 
                 F_cont = F_sil_cont * self.land_area / self.ocean_water_mass
 
-                # Shallow carbonate precipitation on continental shelves
+                # Carbonate settling onto the continental shelves, buried at shelf pressure over their share of the seafloor
                 P_shelf = P_surface + 1000 * self.gravity * self.shelf_depth
                 F_shelf_prec, _, _ = get_precipitation(P_shelf, T_seafloor, b_ocean, precipitating_minerals=self.shelf_precipitating_minerals, precipitation_timescale=self.tau_prec, pe=self.pe)
+                F_shelf_prec = self.shelf_area_fraction * F_shelf_prec
 
             # Cl subduction
             F_cl_subduct = np.zeros(elements.shape)
@@ -441,7 +447,7 @@ class Planet:
                 self._chem_fallbacks = getattr(self, '_chem_fallbacks', 0) + 1
 
                 # Abandon the run once the budget is gone. Checked here rather than after
-                # solve_ivp returns, because the whole point is to stop paying: a check on
+                # the integration returns, because the whole point is to stop paying: a check on
                 # the finished run would save nothing. Jacobian probes are outside this
                 # branch, so they can neither spend the budget nor trip the limit.
                 _limit = getattr(self, '_fallback_limit', None)
@@ -460,8 +466,8 @@ class Planet:
             # Nothing has converged yet (failure on the very first evaluation), so there is no
             # previous derivative to hold: fall back to pure outgassing.
             dYdt = np.zeros_like(Y)
-            dYdt[2:-1] = F_vol
-            self._F_net = dYdt[2:-1]
+            dYdt[2:] = F_vol
+            self._F_net = dYdt[2:]
             return dYdt
 
         dYdt = np.zeros_like(Y)
@@ -471,17 +477,10 @@ class Planet:
 
         F_net[b_ocean <= 0.0] = np.maximum(F_net[b_ocean <= 0.0], 0.0)
         F_net[so4_idx] = 0.0  # SO4 pinned to background; no ODE evolution
+        F_net[k_idx] = 0.0    # K pinned to background; no ODE evolution
 
-        dYdt[2:-1] = F_net
+        dYdt[2:] = F_net
         self._F_net = F_net
-
-        # Relaxation equation for smoothed convergence rate (r_avg = Y[-1])
-        significant = b_ocean > 1e-7
-        if np.any(significant):
-            max_frac_rate = np.max(np.abs(F_net[significant]) / np.maximum(b_ocean[significant], 1e-6))
-        else:
-            max_frac_rate = 0.0
-        dYdt[-1] = (max_frac_rate - Y[-1]) / tau_r_avg
 
 
         # Diagnostic output
@@ -523,7 +522,7 @@ class Planet:
 
         Used for both the accepted final state of a normal completion AND the abort state of a
         wall_timeout/fallback_limit run. The abort state is just as real a state as a converged
-        one -- solve_ivp had already reached it, `dY_dt` had already evaluated it once, and this
+        one -- the integrator had already reached it, `dY_dt` had already evaluated it once, and this
         merely re-evaluates that same state a second time under a suspended deadline -- but
         before this method existed, the early `return` in the wall_timeout/fallback_limit except
         branch skipped this step entirely, so every such run recorded da=NaN regardless of how
@@ -536,7 +535,7 @@ class Planet:
         ocean_si (PHREEQC returns a spurious -inf once Ca is exhausted).
         """
         diagnostics = {"da": np.nan, "calcite_si": np.nan, "ocean_si": np.nan,
-                       "alk_flux": np.nan, "pH_seafloor": np.nan}
+                       "alk_flux": np.nan, "pH_seafloor": np.nan, "rw_mg_flux": np.nan}
 
         _saved = (self._fallback_limit, self._wall_deadline, self._chem_fallbacks,
                  self._chem_ok, self._dYdt_last_good)
@@ -558,6 +557,10 @@ class Planet:
             # same fixed normalisation plot_results uses, so the two agree exactly.
             diagnostics["alk_flux"] = (float(_final.get('alk_flux_lt', np.nan))
                                        * A_SEAFLOOR_EARTH * YR / 1e12)
+            # Tmol Mg/yr removed by reverse-weathering clays (positive = sink), for the tau_rw calibration.
+            _rw = (getattr(self, '_flux_terms', None) or {}).get('reverse weathering')
+            if _rw is not None:
+                diagnostics["rw_mg_flux"] = -float(_rw[mg_idx]) * self.ocean_water_mass * YR / 1e12
             # Ocean calcite SI is only meaningful while there is calcium left to saturate with;
             # at the ODE floor PHREEQC returns a spurious -inf.
             _ocean_si = (_final.get('ocean_SI') or {}).get('Calcite', np.nan)
@@ -578,10 +581,17 @@ class Planet:
                 for k, v in diagnostics.items()}
 
     def time_evolve(self, t_end=2e9 * YR, jac_epsilon=0.01, b0=None, initial_pco2=1000,
-                    convergence_threshold=0.05, max_chemistry_fallbacks=None,
-                    void_fraction=0.5, max_wall_seconds=None):
+                    convergence_threshold=0.05, convergence_window=5e7 * YR, max_chemistry_fallbacks=None,
+                    void_fraction=0.5, max_wall_seconds=None, depth_scaled=True):
         """Integrate to steady state, or until the state leaves the model's validity box.
 
+        convergence_threshold, convergence_window: the run is converged once no species above
+            1e-6 mol/kgw has changed by more than convergence_threshold (per Gyr) over the last
+            convergence_window, i.e. 0.25% over 50 Myr by default.
+        depth_scaled: deeper than OCEAN_DEPTH_REF, stretch t_end and convergence_window and divide
+            convergence_threshold by f = ocean_depth / OCEAN_DEPTH_REF. Seafloor fluxes are per
+            area while the ocean's mass grows with depth, so inventories relax f times slower; this
+            holds every depth to the same change per relaxation time. t_end is the 3 km value.
         max_chemistry_fallbacks: abandon the run once this many trajectory derivative
             evaluations have fallen back to a held derivative (see FallbackLimitExceeded).
             None (the default) means no limit, so existing callers are unaffected. Sweeps
@@ -601,13 +611,12 @@ class Planet:
         self._wall_limit = max_wall_seconds
         self._wall_deadline = (time.time() + max_wall_seconds) if max_wall_seconds else None
 
-        Y0 = np.zeros(elements.shape[0] + 3)  # +2 for P_CO2/P_H2O, +1 for r_avg
+        Y0 = np.zeros(elements.shape[0] + 2)  # P_CO2, P_H2O, then b_ocean
 
         Y0[0] = initial_pco2
         Y0[1] = 1000
-        Y0[-1] = 1.0 / (1e6 * YR)  # r_avg starts high (1/Myr) so convergence can't fire immediately
         if b0 is not None:
-            Y0[2:-1] = np.asarray(b0)
+            Y0[2:] = np.asarray(b0)
 
         # pCO2 ceiling: the maximum-greenhouse pCO2 for this planet's instellation, not a flat
         # 10 bar. Beyond this pCO2 more CO2 COOLS the planet (past maximum greenhouse) and the
@@ -623,8 +632,11 @@ class Planet:
         P_CO2_HI, _ = maximum_greenhouse(self.instellation, self.albedo)
         T_LO, T_HI = 181.0, 389.0          # K, one degree inside the analytic scan bracket
 
-        min_time = 2e6 * YR
-        convergence_rate = convergence_threshold / (1e9 * YR)
+        # Deep oceans relax f times slower, so stretch the run and the convergence test with them.
+        depth_factor = max(1.0, self.ocean_depth / OCEAN_DEPTH_REF) if depth_scaled else 1.0
+        t_stop = t_end * depth_factor
+        convergence_window = convergence_window * depth_factor
+        convergence_rate = convergence_threshold / (1e9 * YR) / depth_factor
 
         self._T = np.nan
         self._pH = np.nan
@@ -648,18 +660,21 @@ class Planet:
             if t < min_time_domain:
                 return 1.0  # same side as the real signal, so the crossing is always detectable
             return min(_domain_margins(t, Y).values())
-        event_domain.terminal, event_domain.direction = True, -1 # type: ignore
 
         atol = np.ones_like(Y0) * 1e-6
         atol[0] = 1.0   # P_CO2 in Pa
         atol[1] = 1.0   # P_H2O in Pa
-        atol[-1] = convergence_rate * 0.1  # r_avg: resolve to 10% of the convergence threshold
 
-        def event_converged(t, Y):
-            if t < min_time:
-                return 1.0
-            return Y[-1] - convergence_rate  # r_avg vs threshold; pure function of (t, Y)
-        event_converged.terminal, event_converged.direction = True, -1 # type: ignore
+        def drift(ts, ys):
+            # max fractional change of any significant species over the last window, per unit time
+            t_then = ts[-1] - convergence_window
+            i = max(bisect_left(ts, t_then), 1)
+            w = (t_then - ts[i - 1]) / (ts[i] - ts[i - 1])
+            b_now, b_then = ys[-1][2:], (1 - w) * ys[i - 1][2:] + w * ys[i][2:]
+            sig = b_now > 1e-6  # ignore trace species, whose flicker would otherwise block convergence
+            if not np.any(sig):
+                return np.inf
+            return np.max(np.abs(b_now[sig] - b_then[sig]) / np.maximum(b_now[sig], 1e-6)) / convergence_window
 
         N = len(Y0)
 
@@ -682,6 +697,9 @@ class Planet:
                         jac[1, 1] = -1.0 / TAU_ATM
                         continue
 
+                    if j in (2 + so4_idx, 2 + k_idx):
+                        continue  # pinned species: zero rows, so these columns never enter a Newton update
+
                     y_plus = np.copy(y)
                     y_minus = np.copy(y)
 
@@ -703,17 +721,31 @@ class Planet:
         start = time.time()
 
         try:
-            sol = solve_ivp(
-                self.dY_dt,
-                (0, t_end),
-                Y0,
-                method='LSODA',
-                max_step=2e7 * YR,
-                rtol=1e-3,
-                atol=atol,
-                jac=macro_jacobian,
-                events=[event_domain, event_converged],
-            )
+            # Stepped by hand (as solve_ivp does internally) so the convergence check can see the history.
+            solver = LSODA(self.dY_dt, 0.0, Y0, t_stop, max_step=2e7 * YR, rtol=1e-3, atol=atol,
+                           jac=macro_jacobian)
+            ts, ys = [0.0], [Y0.copy()]
+            termination = "timeout"
+            while solver.status == 'running':
+                solver.step()
+                if solver.status == 'failed':
+                    termination = "solver_failure"
+                    break
+                t, y = solver.t, solver.y.copy()
+                if event_domain(t, y) < 0:
+                    dense = solver.dense_output()  # root-find the wall crossing as solve_ivp's events do
+                    t = brentq(lambda s: event_domain(s, dense(s)), solver.t_old, t,
+                               xtol=4 * np.finfo(float).eps, rtol=4 * np.finfo(float).eps)
+                    ts.append(t)
+                    ys.append(dense(t))
+                    termination = "out_of_domain"
+                    break
+                ts.append(t)
+                ys.append(y)
+                if t >= convergence_window and drift(ts, ys) < convergence_rate:
+                    termination = "converged"
+                    break
+            sol = SimpleNamespace(t=np.array(ts), y=np.array(ys).T)
         except (ChemistryFallbackLimitExceeded, WallClockLimitExceeded) as exc:
 
             _why = ('wall_timeout' if isinstance(exc, WallClockLimitExceeded)
@@ -739,6 +771,8 @@ class Planet:
                 "chemistry_fallbacks": self._chem_fallbacks,
                 "fallback_limit": self._fallback_limit,
                 "end_time_yr": getattr(self, '_abort_t', np.nan) / YR,
+                "t_end_yr": t_end / YR,
+                "depth_time_factor": depth_factor,
                 "T": self._T,
                 "P_CO2": float(np.clip(self._abort_Y[0], 0.0, None)) / 1e5,
                 "pH": self._pH,
@@ -750,18 +784,9 @@ class Planet:
 
         end = time.time()
 
-        event_names = ['out_of_domain', 'converged']
-
         sol.y = np.maximum(sol.y, 0.0)
         time_steps = sol.t.tolist()
         state_variables = sol.y.tolist()
-
-        if sol.t[-1] >= t_end:
-            termination = "timeout"
-        elif sol.status == 1:
-            termination = next(name for name, t_ev in zip(event_names, sol.t_events) if len(t_ev) > 0)
-        else:
-            termination = "solver_failure"
 
         # Void check: what fraction of the trajectory is fabricated?
         _fab_total = self._chem_fallbacks + self._chem_ok
@@ -784,7 +809,7 @@ class Planet:
 
         # Recompute T, pH and the weathering diagnostics from the ACTUAL final accepted state.
         # self._T/self._pH are set as a side effect on EVERY call to dY_dt -- including Jacobian
-        # finite-difference probes and solve_ivp's internal event-root-finding trials -- so
+        # finite-difference probes and LSODA's internal trial evaluations -- so
         # whichever call happened to run LAST is not guaranteed to be the accepted
         # (sol.t[-1], sol.y[:, -1]) state also used for "P_CO2" below. Near a domain wall this
         # matters: the climate response can be a genuine cliff (e.g. approaching the runaway
@@ -816,6 +841,8 @@ class Planet:
             "fabricated_fraction": fabricated_fraction,
             "termination_raw": termination_raw,
             "end_time_yr": sol.t[-1] / YR,
+            "t_end_yr": t_end / YR,
+            "depth_time_factor": depth_factor,
             "T": self._T,
             "P_CO2": sol.y[0, -1] / 1e5,
             "pH": self._pH,

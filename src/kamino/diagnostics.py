@@ -23,8 +23,8 @@ from kamino.mineral_info import (
     reverse_weathering_minerals, evaporite_minerals,
 )
 
-# Element order is fixed by kamino.chemistry.elements; S is pinned background, not evolved.
-PLOT_ELEMENTS = [e for e in elements if e != 'S']
+# Element order is fixed by kamino.chemistry.elements; S and K are pinned backgrounds, not evolved.
+PLOT_ELEMENTS = [e for e in elements if e not in ('S', 'K')]
 
 # Modern seawater, mol/kgw — for the "vs Earth" reference markers.
 EARTH_SEAWATER = {
@@ -98,14 +98,15 @@ def diagnose(planet: Planet, Y: np.ndarray, t: float = 0.0) -> dict:
       scalars       T, P_CO2, pH, Da, salinity, ...
       residence     {element: yr}                   b / |net|, the imbalance timescale
     """
-    dYdt = planet.dY_dt(t, np.asarray(Y, dtype=float))
+    Y = np.asarray(Y, dtype=float)[:2 + len(elements)]  # older outputs carry an extra r_avg row
+    dYdt = planet.dY_dt(t, Y)
     if not hasattr(planet, '_flux_terms'):
         raise ChemistryError('dY_dt did not reach the chemistry block for this state')
 
     # mol/kgw/s -> Tmol/yr over the whole ocean
     to_Tmol_yr = planet.ocean_water_mass * YR / 1e12
 
-    b_ocean = np.maximum(np.asarray(Y, dtype=float)[2:-1], 0.0)
+    b_ocean = np.maximum(Y[2:], 0.0)
     state = planet._state
 
     fluxes = {

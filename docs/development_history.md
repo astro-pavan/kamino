@@ -20,6 +20,8 @@ corrects two stale entries in §11/§15.
 
 **§33 is the most recent work and supersedes §22/§27 on CALIBRATION**: the seafloor-area fix (§33.3) changes the land-bearing physics, so `KD_MG_CALIB` and `K_NA_CALIB` must be re-fitted before any ocean chemistry at `land_fraction > 0` is quoted. Land-free results are unaffected and verified bit-identical.
 
+**§37 (2026-09-24) is the most recent work.** It records the review of the paper draft (issues tracked in `paper_issues.md` at the repo root) and the model changes it led to: area-scaled shelf precipitation, explicit SO₄ and K⁺ backgrounds in the calibration, crust production 1/130 Myr, a recalibration with the constants moved into `constants.py`, and **no Cl in the sweeps** (Cl kept for the Earth calibration only). It supersedes §3's constants table, the shelf term as described in §3/§33, §35's SO₄ background and §35's chlorine seeding for the sweeps, and corrects §33.4's attribution of the OLR fit. §37.19 replaces the `r_avg` convergence check with a windowed drift test (~15× faster sweeps, same results), and §37.18 sets the default outgassing to 1×. §37.20 replaces the failed joint calibration with an alternating fit (α ≈ 356), and §37.21 calibrates τ_rw to the modern authigenic-clay Mg sink. §37.22 reruns the ocean pilot on the refitted constants: the RWR transition moves to S 0.9–0.95. §37.23 sets the shelf depth to 140 m. §37.24 records the full rerun and the plotting fixes it needed, §37.25 the 'earth' sweep for the calibration figures, and §37.26 the comparison with the old seeded sweep.
+
 **§13 is the reference point for results.** The 17 June 2026 seminar
 (`Ocean_Chemistry_Seminar-2.pdf`) is the last time the model produced a complete, self-consistent set
 of results — the target behaviour.
@@ -97,6 +99,8 @@ with LSODA.
 
 | **Sep 17** | **The sink audit** (§36): reverse weathering shown to be a bimodal switch and a CO₂ *source*, negligible at Earth but the only backstop once `kd_mg_ht` is removed; Greenalite shown inert (pore Goethite starves the ocean of Fe); no Mg carbonate can fill the gap; **crustal Albite shown to contribute exactly zero Na** (supersaturated above ~1 mM Na + `dissolve_only`), quantifying §6.2's switch; nahcolite ruled out as a Na sink. `basic_no_rw` added to `parameter_sweep.py`, unrun. |
 
+| **Sep 24** | **Paper review and the changes it forced** (§37): draft checked line by line against the code (`paper_issues.md`), equations corrected in the draft; **shelf precipitation made area-scaled** (it was a second whole-ocean sink burying 56% of Earth's carbonate); **SO₄ 28.2 / K⁺ 10.2 mM explicit** in the calibration (K added as a fixed element); crust production 1/130 Myr; **recalibration** (η_HT 2.361e-2, η_Na 5.775e-3, α 14.57; Mg +15%); constants consolidated in `constants.py`; 30-run Cl test → **sweeps run with no Cl**. |
+
 *Rows Aug 24 – Sep 1 were missing entirely; Sep 3 and Sep 7–8 were inverted. Both fixed 2026-09-09.*
 
 ---
@@ -104,6 +108,9 @@ with LSODA.
 ## 3. Model architecture as it now stands
 
 ### State vector
+
+> **Superseded 2026-09-24 (§37.6, §37.19).** K is now the last element, and `r_avg` is gone: the state is
+> `[P_CO2, P_H2O, *elements]`.
 
 `elements = [Alkalinity, C, Si, Al, Fe, Ca, Mg, Na, Cl, S]`, plus `P_CO2`, `P_H2O` and a
 convergence-metric variable `r_avg` (last element). Alkalinity **is** tracked as its own ODE
@@ -169,6 +176,11 @@ weathering ∝ climate** — that coupling is what carries the thermostat.
 
 ### Current tunable defaults (`planet.py`)
 
+> **Superseded 2026-09-24 (§37.7–37.8).** The fitted constants now live only in
+> `src/kamino/constants.py`: `KD_MG_HT = 2.361032e-02`, `K_NA_CONT_REMOVAL = 5.775040e-03`,
+> `K_CL_SUBDUCTION = 1.961786e-04`, `ALPHA_REF = 14.57`. `parameter_sweep.py` takes them from there, so
+> the sweep and module defaults can no longer drift. The table below is kept as history.
+
 > **Updated 2026-09-09.** This table had drifted three refits behind the code (it recorded
 > `KD_MG_HT = 0.07`, `K_NA = 2.194806e-03`, `alpha = 1.43` — the §18/§22-era values). The values
 > below are read from the working copy. **All three of the fitted constants are stale in a
@@ -186,7 +198,7 @@ weathering ∝ climate** — that coupling is what carries the thermostat.
 | `tau_rw` | 5 Myr | reverse weathering; deliberately **not** depth-scaled, see §26.2 |
 | `TAU_ATM` | 10 kyr | atmosphere relaxation |
 | `P_CO2_CLIMATE_FLOOR` | 1.0 Pa | climate-input clamp (§9.2) |
-| `convergence_threshold` | 0.05 /Gyr | `event_converged` |
+| `convergence_threshold` | 0.05 /Gyr | over a 50 Myr `convergence_window` since §37.19; was `event_converged` |
 
 > ⚠️ **Memory conflict.** `memory/project_calibration_state.md` records `KD_MG_HT=0.233`,
 > `K_NA=3.33e-3`, `f_HT=0.039`, and a convergence threshold of 0.5. **None of these match the
@@ -688,6 +700,21 @@ before every call is actively harmful** (62.2%).
 
 ## 11. Current code state — verified
 
+> **2026-09-24 additions (§37), all uncommitted:** area-scaled shelf precipitation
+> (`Planet.shelf_area_fraction`); K added to `elements` as a fixed background, with SO₄ = 28.2 and
+> K⁺ = 10.2 mM in the calibration seed; `EARTH_CRUST_PRODUCTION_RATE_PER_AREA = 1/(130 Myr)`; calibrated
+> constants moved to `constants.py`; sweeps run with no Cl (`parameter_sweep.CL_OUTGASSING_RATIO = 0`, run
+> names tagged `_cl0`); `get_ocean_state` receives `pe`; sweeps start from a blank ocean by default
+> (`KAMINO_SEED_OCEAN`, 2026-09-23); seafloor temperature floor `SEAFLOOR_T_FLOOR = 273.15` K in
+> `constants.py` (was 274 K); calibration α anchor = net seafloor flux at 0.9 Teq/yr (§37.16, refit pending);
+> sedimentation from cited dust, cosmic-dust floor and porosity 0.7 (§37.17); windowed-drift convergence on a
+> stepped LSODA loop, no `r_avg`, pinned SO₄/K Jacobian columns skipped (§37.19); alternating calibration
+> (ions at fixed α, then α and τ_rw rescaled to their flux targets), `TAU_RW_REF` in `constants.py` and
+> `rw_mg_flux` in the run diagnostics (§37.20–37.21); shelf depth 140 m (§37.23); `t_end_yr` in the output,
+> Cl ratio / run length pinned in `plot_results`, per-run `seed` in `run_simulation`, and the 'earth' sweep
+> in `continental_baseline.py` (§37.24–37.25). Entries below that conflict
+> with these are history.
+
 Present in the working copy (uncommitted, on top of `f46de52`):
 
 - ✅ `ION_CHARGE` + charge-derived alkalinity in `get_weathering_flux`,
@@ -714,7 +741,7 @@ Present in the working copy (uncommitted, on top of `f46de52`):
   self-disables without a w/r (§20.4 guards).
 - ✅ `crust_composition.py` pipeline; `plot_results.py` rewritten for the new model
 - ❌ SI-list trim — **not applied**
-- ❌ Dead Jacobian columns — **not applied**
+- ✅ Dead Jacobian columns — **applied 2026-09-24** (§37.19): SO₄ and K skipped, `r_avg` removed
 - ❌ Equilibrated `b0` / low `initial_pco2` — **not applied**
 - ⚠️ `convergence_threshold` default is **0.05**; `parameter_sweep.py` passes nothing so sweeps use
   it. Note (§20.4) it barely matters — the metric is set by slow Ca/Cl, and most timeout runs are
@@ -4673,6 +4700,13 @@ The OLR fit is Haqq-Misra et al. (2016), ApJ 827, 120 — a polynomial fit *to* 
 radiative-convective columns, valid for 10⁻⁵–10 bar CO₂ and **150–350 K**. That is an
 OLR(T, pCO₂) parameterisation, not the S_eff boundary polynomials.
 
+> ⚠️ **Corrected 2026-09-24 (§37.10).** The fit in `climate/analytic.py` is **Kadoya & Tajika (2019),
+> ApJ 875, 7**, not Haqq-Misra et al.: its form (ξ = 0.01(T − 250), I₀ = −3.1 W m⁻², separate
+> polynomials above and below 1 bar) is theirs, fitted to Kopparapu et al.'s model and valid for 150–350 K
+> and 10⁻⁵–10 bar. Haqq-Misra et al. (2016) write their OLR fit in log₁₀T; Kadoya & Tajika use Haqq-Misra's
+> *albedo* fit, which this code does not (it has its own Rayleigh-scattering albedo). The validity range
+> quoted above is unchanged. The paper cites Kadoya & Tajika correctly.
+
 What differs is the **outer** edge, and it is physics not error. Kopparapu's maximum greenhouse
 asks what the best possible CO₂ can do; the carbon cycle asks what CO₂ you actually get. At
 S = 0.5 the maximum greenhouse would use 4.3 bar (302.9 K) and holding 273 K needs 0.79 bar — the
@@ -5680,3 +5714,951 @@ reports this at launch.
   requires pCO₂ > 1125 ppm; Eocene CO₂.
 - **Jagniecki et al. (2015)**, *Geology* **43**, 1075 — Eocene atmospheric CO₂ from the nahcolite
   proxy, 680–1260 ppm.
+
+---
+
+## 37. The paper review, and the model changes it forced (2026-09-24)
+
+The session started as a line-by-line check of the paper draft, `ocean_chemistry.tex`, against the code. The
+issue list lives in `paper_issues.md` at the repo root and is the authority on what is wrong with the *draft*.
+This section records what the review found about the *model*, and what was changed as a result.
+
+Everything is uncommitted. The sweep running when the session began (`basic_low_mgsi` then
+`basic_high_mgsi`, blank ocean, files dated 23–24 Sep) used the pre-change code and is superseded.
+
+### 37.1 The paper review
+
+The first pass found ~105 issues. At the user's request, the equations were then corrected directly in the
+draft:
+- **τ_cover:** the `V_o/d` factor had the wrong units; it is now `ρ_w d`, with the floor and terrigenous terms
+  added.
+- **f_diss:** `ḃ_prec J` had the wrong units; it is now `J Δb_p`, because pore precipitation is instantaneous.
+- **θ_r:** the notation was made consistent, and it is no longer called a "fraction" (it exceeds 1).
+- **Da:** now the charge-weighted version the code computes.
+- **Eq. (1):** now includes `F_cont` and `F_shelf`.
+- **Eq. (3):** the missing inputs were added.
+- **Eq. (6):** the pCO₂ function label was wrong.
+- **LaTeX:** the pCO₂ double subscript was fixed.
+- **Sedimentation rate:** renamed from `S` to `ḣ_sed`, because `S` is the instellation.
+
+Facts established along the way, now recorded in the issue list:
+- The Fig. 1 caption had the wrong sign: olivine *increases* with ΔIW.
+- 40 ocean masses is 0.9 % of Earth's mass, not 0.5 %.
+- Ice VI forms at ~0.63 GPa at 273 K; 1 GPa applies only near 300 K.
+- The 274 K seafloor floor engages whenever the surface is below 285 K.
+- The blank sweep spans pH 4.75–11.8, not the draft's 5.5–8.
+
+### 37.2 How `k_p` weights minerals: weight fraction is defensible, mole fraction is not
+
+The draft said `k_p` is weighted by mole fraction; the code (`get_k`) uses weight fraction. Physically, the
+weight should be each mineral's share of the reactive surface area. Two standard approximations exist
+(Beckingham et al. 2016):
+- weight fraction, if every mineral has the same surface area per gram;
+- volume fraction, if every mineral has the same grain size.
+
+Mole fraction depends on how the formula unit is written, so it has no physical basis. Measured on the
+alkalinity-weighted `k` at 290 K and pH 8:
+
+| crust Mg/Si (ΔIW −2) | 0.5 | 0.8 | 1.25 | 1.6 | 2.0 |
+|---|---|---|---|---|---|
+| volume / weight | 0.98 | 0.78 | 0.76 | 0.82 | 0.85 |
+| mole / weight | 0.41 | 0.94 | 1.15 | 1.01 | 0.99 |
+
+The code was kept; the draft's wording was fixed. Most of the volume-weighting offset is uniform and would be
+absorbed by α.
+
+### 37.3 Code questions found and left open
+
+- **The weathering law is applied element by element** (`weathering.py`, `F_primary`). In the kinetic limit,
+  each element is scaled by its own affinity factor (1 − b_in/b_eq), not by each mineral's saturation state.
+  At Earth pore conditions (~300 bar, 286 K, 30 Pa CO₂, pe −3):
+
+  | pore-fluid input | Si | Mg | Ca | Na |
+  |---|---|---|---|---|
+  | seawater | 0.973 | 0.121 | 0.001 | 0.000 |
+  | blank | 1 | 1 | 1 | 1 |
+
+  So dissolution is not stoichiometric in seawater-like oceans. `k` also sums over minerals that their own
+  saturation state says shouldn't dissolve. This is probably part of why the seafloor Ca source is ~0
+  (§36.6). The standard alternative is per-mineral transition-state kinetics, r_i = k_i A_i (1 − Ω_i^{1/σ})
+  (Aagaard & Helgeson 1982; Lasaga 1984). The `*_rate(T, pH, omega)` functions already exist, but combining
+  them with the transport limit has no closed form.
+- **The pore fluid is held at the atmospheric pCO₂**, via a CO₂ gas phase at ~300 bar in `_equilibrium_block`.
+  This is an open system, and it is how pCO₂ enters the weathering law.
+- **The sediment volume has no porosity.** Deep-sea sediment in the top ~100 m is 60–80 % water
+  (Hamilton 1976), so τ_cover is probably ~3× too long. The terrigenous 5 m/Myr term is presumably a bulk
+  thickness, so the two terms may be on different bases.
+- **The §7 positivity clamp is inactive.** None of the 2,498 finished runs in the blank sweep ends with
+  alkalinity pinned at 0 against a negative charge balance.
+
+### 37.4 Crust production rate: 1/50 → 1/130 Myr (changed by the user)
+
+`EARTH_CRUST_PRODUCTION_RATE_PER_AREA` is now `1/(130e6 YR)`, derived from 2.7 ± 0.2 km²/yr. Cogné &
+Humler (2004) give a half-rate of 1.30 ± 0.28 km²/yr, and the draft now cites Cogné et al. (2006). J⊕ is
+unaffected, because J = J⊕ R̃; the rate enters only θ_r.
+
+Replaying stored final states confirmed that the running job used 1/50 throughout: the stored Damköhler
+numbers are reproduced exactly with 1/50 and are 10–50 % off with 1/130, for runs from both sweeps. **Note:
+`parameter_sweep.py` starts a new `ProcessPoolExecutor` for each sweep in a job, so later sweeps in the same
+job do import an edited `src/`.**
+
+### 37.5 Shelf precipitation is now area-scaled
+
+**Before.** The shelf term was the whole ocean relaxing towards calcite saturation at 1 km pressure, with the
+full τ_prec. It was added on top of the deep precipitation and switched on at full strength for any γ > 0,
+whatever the land area. So land planets relaxed calcite twice as fast as ocean worlds, and the land-fraction
+series had a step at γ = 0. Replaying the 9 Sep calibrated Earth: outgassing +7.50 Tmol C/yr, deep carbonate
+burial −3.32, shelf −4.18 (56 % of the burial).
+
+**After.** Carbonate precipitation is split by area rather than counted twice:
+- F_carb = (1 − f_s) F_deep + f_s F_shelf, where f_s is the shelf's share of the seafloor.
+- f_s = min(EARTH_SHELF_AREA × land_area / A_LAND_EARTH / seafloor_area, 1).
+- `EARTH_SHELF_AREA = 2.7e13` m² (Harris et al. 2014: ~27 million km², ~7 % of the ocean area).
+
+| γ | 0 | 0.001 | 0.03 | 0.3 | 0.9 |
+|---|---|---|---|---|---|
+| f_s | 0 | 1.8e-4 | 0.0055 | 0.0756 | 1 (capped) |
+
+- **Sedimentation rate unchanged.** `moles_prec` is left unweighted, because the deep share of the carbonate
+  lands on the deep share of the seafloor.
+- **Land-free runs unchanged,** because the split is guarded on f_s > 0.
+- **The old calibration no longer balances.** At the old calibrated state, burial becomes deep −3.07 plus shelf
+  −0.32 (9 %) = −3.39 Tmol/yr against +7.50 of outgassing, so the calibration had been relying on the
+  double-counted sink.
+- **Still open:** the shelf is still 1 km deep and uses the deep-water temperature. The mean shelf break is
+  140 m (Harris et al. 2014).
+
+### 37.6 SO₄ and K⁺ as explicit fixed backgrounds
+
+**Before.** The calibration used SO₄ = 23.45 mM, derived from the charge balance to give alkalinity 2.3
+meq/kg. It was standing in for K⁺ and every minor ion. A PHREEQC check at the calibration seawater (288 K,
+same alkalinity and dissolved carbon) shows the proxy itself is harmless:
+
+| | pH | pCO₂ | calcite SI |
+|---|---|---|---|
+| 23.45 mM SO₄, no K⁺ | 8.347 | 302 ppm | +0.702 |
+| 28.2 mM SO₄ + 10.2 mM K⁺ | 8.352 | 297 ppm | +0.695 |
+
+Using 28.2 mM without K⁺ would force alkalinity to −7.2 meq/kg.
+
+**Implemented (the user's decision):**
+- **`chemistry.py`:**
+  - K is added to the end of `elements`, so existing indices are unchanged, with `ION_CHARGE` +1.
+  - `'K+'` is mapped in the stoichiometry parser and removed from `IGNORED_SPECIES`.
+  - `SEAWATER_SO4 = 28.2e-3` and `SEAWATER_K = 10.2e-3` (Millero et al. 2008), and `seawater_seed()` sets both.
+- **`planet.py`:** K's net flux is set to zero, like SO₄'s.
+- **`calibrate_earth.py`:** the seed, the flux-anchor evaluation and the static α check all use the new values.
+- **Plotting:** `diagnostics.PLOT_ELEMENTS` excludes K; `plot_results` salinity includes K, and its Earth
+  reference now includes SO₄ and K (35.5 g/kg, previously 32.4).
+
+**Consequence, and an open decision.** The untracked Br⁻ (0.84 mM), F⁻ (0.07) and Sr²⁺ (0.09) now leave
++0.73 meq/kg in the derived alkalinity. The seed's alkalinity is 3.00 rather than 2.30, and at the seed's fixed
+dissolved carbon its pH is 9.16 rather than 8.35. Folding Br⁻ into Cl, which is what chlorinity means, brings
+alkalinity to 2.16 (−0.14 meq/kg). **Not done yet.**
+
+For the paper: the alkalinity definition is the explicit conservative alkalinity of Wolf-Gladrow et al.
+(2007), and SO₄ = 0 on anoxic ocean worlds is supported by Archean sulfate below 2.5 µM (Crowe et al. 2014).
+Old output files have one fewer element row, and resume only checks `pe` and the seeding flag, so don't mix
+them with new runs.
+
+### 37.7 Recalibration (run by the user, 2026-09-24)
+
+This includes the shelf, K⁺/SO₄ and crust-rate changes, but not the Br⁻ fold.
+
+| constant | before | after |
+|---|---|---|
+| `KD_MG_HT` | 1.969604e-02 | 2.361032e-02 |
+| `K_NA_CONT_REMOVAL` | 6.099720e-03 | 5.775040e-03 |
+| `ALPHA_REF` | 4.9 | 14.57 |
+| `K_CL_SUBDUCTION` | 1.961786e-04 | unchanged (analytic) |
+
+Best evaluation (`output/calib_ls_027.json`, converged at 0.91 Gyr):
+- T 294.4 K, pCO₂ 697 ppm.
+- Na 455.8 mM (−3 %), Ca 10.44 (+1 %), Mg 60.51 (+15 %).
+- Cl 546 (seeded and stationary), SO₄ 28.2 and K⁺ 10.2 (fixed).
+- Alkalinity 5.51 meq/kg (×2.4), dissolved carbon 4.82 mM (×2.3), Si 4.83 mM.
+- **Net seafloor alkalinity flux 0.042 Tmol/yr.** The α residual anchors the *primary-dissolution* flux at
+  1 Tmol/yr, and the pore clays remove almost all of it.
+
+The Mg offset falls from +36–40 % (§28.1, §35.6) to +15 %.
+
+Before the refit, the same Earth run with the new code but old constants gave T 294.4 K, pCO₂ 701 ppm, Na 433,
+Mg 72.0, Ca 10.5, alkalinity 5.43 and a net flux of 0.012 Tmol/yr.
+
+The run behind Fig. 4 (the continental baseline at S = 1: 3 km, blank start, 2 Gyr, still with Cl at the
+time) gave:
+- Cl 219 mM (40 % of seawater);
+- Ca 0.71 mM, alkalinity 366 meq/kg, dissolved carbon 231 mM;
+- surface pH 9.67.
+
+**Fig. 4 must be drawn from the calibration run.**
+
+### 37.8 The calibrated constants now live only in `constants.py`
+
+- **`constants.py`:** the only definition of `KD_MG_HT`, `K_NA_CONT_REMOVAL`, `K_CL_SUBDUCTION` and
+  `ALPHA_REF`.
+- **`planet.py` and `weathering.py`:** import them, so `from kamino.planet import KD_MG_HT` and similar still
+  work.
+- **`parameter_sweep.py`:** `KD_MG_CALIB = KD_MG_HT` and `K_NA_CALIB = K_NA_CONT_REMOVAL`. This closes the
+  drift in §3 and §34, and `_warn_constant_drift` is silent.
+- **`calibrate_earth.py`:** starts from the shipped constants (`K_NA_START` and the others are now `None`) and
+  prints paste instructions for `constants.py`.
+
+**Stale:** the α arms now centre on 14.57 (`alpha = [ALPHA_REF, 10, 50]`, and `ALPHA_PLANE`), but their
+comments still assume α increases from `ALPHA_REF` up to 50.
+
+### 37.9 Chlorine: removed from the sweeps
+
+**The problem.**
+- The Cl relaxation time is τ_Cl = ρ_w d / (η_Cl J) = 3.90 Gyr × (d / 3 km) / R̃: 4.81 Gyr at 3.7 km and
+  26.0 Gyr at 20 km.
+- From a blank start at 3 km, Cl reaches 40 % of steady state by 2 Gyr and 64 % by 4 Gyr (7 % and 14 % at
+  20 km). So running to 4 Gyr doesn't fix it.
+- The steady state, 0.38 M × F̃/R̃, is 38 mM at the defaults but spans 0.4 mM–380 M across the grid.
+- The blank sweep's median Cl of 15 mM is exactly 40 % of 38 mM.
+- Physically, a planet's Cl inventory is set during accretion (Sharp & Draper 2013), not by these fluxes.
+
+**The test.** 30 runs: 3 km, R̃ = 1, Mg/Si 1.25, ΔIW −2, pe −3, reverse weathering on, α = 14.57 and the
+recalibrated η. Four cases at S = 0.6–1.1:
+- the current model (Cl arriving as volcanic HCl);
+- no Cl (Cl/C = 0);
+- a fixed NaCl background of 55 mM;
+- a fixed NaCl background of 546 mM (Na = Cl seeded, with no Cl source or sink and no Na sink).
+
+The first two were run at 0.1× and 1× outgassing, the NaCl cases at 0.1× only.
+
+0.1× outgassing: T (K) / pCO₂ (mbar) / seafloor pH / salinity (g/kg):
+
+| S | current (Cl 15 mM) | no Cl | NaCl 55 mM | NaCl 546 mM |
+|---|---|---|---|---|
+| 0.6 | 242.6 / 5.3 / 7.90 / 2.3 | 244.1 / 8.5 / 7.97 / 2.6 | 243.9 / 8.0 / 8.01 / 5.8 | 243.1 / 6.2 / 8.05 / 34.5 |
+| 0.8 | 269.7 / 5.3 / 7.90 / 2.3 | 271.7 / 8.5 / 7.97 / 2.6 | 271.4 / 8.0 / 8.01 / 5.8 | 270.3 / 6.2 / 8.05 / 34.5 |
+| 0.9 | 285.4 / 5.5 / 8.11 / 2.2 | 286.8 / 7.3 / 8.28 / 2.5 | 286.6 / 7.1 / 8.29 / 5.7 | 285.9 / 6.2 / 8.24 / 34.4 |
+| 1.0 | 300.6 / 2.4 / 8.48 / 2.1 | 304.9 / 5.2 / 8.45 / 2.4 | 303.6 / 4.2 / 8.53 / 5.6 | 300.7 / 2.4 / 8.60 / 34.2 |
+| 1.1 | 360.8 / 150 / 6.88 / 2.3 | 364.7 / 301 / 6.90 / 2.2 | 363.4 / 231 / 7.00 / — ‡ | 359.0 / 113 / 7.17 / — ‡ |
+
+1× outgassing, current model (Cl 153 mM) vs no Cl:
+
+| S | current | no Cl |
+|---|---|---|
+| 0.6 | 311.3 / 1860 / 6.52 / 22.8 | 312.8 / 2030 / 6.76 / 26.3 |
+| 0.8 | 323.3 / 873 / 6.89 / 20.7 | 326.9 / 1140 / 7.07 / 23.9 |
+| 0.9 | 333.3 / 753 / 6.97 / 19.3 | 341.2 / 1730 / 6.95 / 22.5 |
+| 1.0 | 346.2 / 1190 / 6.77 / 17.8 | 354.1 / 3740 / 6.69 / — ‡ |
+| 1.1 | 354.4 / 1920 / 6.60 / — ‡ | 363.6 / 6640 / 6.46 / — ‡ |
+
+‡ Stopped at the 900 s wall-clock cap. The values are the state reached, and salinity is unavailable because
+no trajectory is stored.
+
+- **Temperature:** in temperate states the Cl choice moves T by ≤ 2 K at 0.1× outgassing and ≤ 4 K at 1×.
+  Near the inner edge the spread grows to 8–9 K and ×3 in pCO₂.
+- **pH:** moves by ≤ 0.3 everywhere.
+- **Salinity:** without Cl it is weathering-derived Mg bicarbonate (alkalinity ~32 meq/kg at 0.1×, ~300 at 1×;
+  Ca < 1 mM). HCl-derived Cl *lowers* salinity by 10–15 %, because each mole of HCl removes a mole of
+  alkalinity.
+- **Convergence:** every current-model run timed out at 2 Gyr. The no-Cl and NaCl runs converged, except the
+  capped hot cells.
+
+**Decision (the user's): the sweeps run with no Cl.** `parameter_sweep.CL_OUTGASSING_RATIO = 0.0` is passed to
+every Planet built by `run_simulation`: the ocean worlds, the continental baseline, and the land and α grids.
+Run names carry a `_cl0` tag. Cl stays only in `calibrate_earth.py`. The paper will note that the Cl inventory
+is a secondary effect and beyond its scope.
+
+Verified: the default S = 0.9 run through the sweep path converged at 286.8 K with Cl ≡ 0. The test scripts and
+outputs exist only in the session scratchpad.
+
+**Open:** how far the RWR limit moves with Cl near the inner edge.
+
+### 37.10 Corrections and smaller changes
+
+- **§33.4 corrected:** the OLR fit is Kadoya & Tajika (2019), not Haqq-Misra et al. (2016). The comment at
+  `plot_results.py:1310` still repeats the old attribution.
+- **`get_ocean_state` receives `pe`,** so the surface pCO₂ and pH are now computed at the model's redox state.
+  This change predates the recalibration, which includes it.
+- **The user changed sweep defaults** around this session:
+  - blank ocean by default (`KAMINO_SEED_OCEAN`, 2026-09-23);
+  - `pe=[PE_DEFAULT]` for most sweeps;
+  - an edited `DEFAULT_SWEEPS`.
+- **Seeded runs still carry Cl.** With `KAMINO_SEED_OCEAN=1`, the seed puts 546 mM of Cl into sweeps, which then
+  drains slowly through subduction because there is no Cl source.
+
+### 37.11 Status: before the rerun
+
+This mirrors `paper_issues.md` §10. Settle every item, recalibrate once, then rerun once.
+- [ ] Fold Br⁻ into Cl (chlorinity) for the calibration (§37.6).
+- [x] Shelf depth: 140 m (§37.23). [ ] Shelf-water temperature: still the deep-water value (§37.5).
+- [x] Seafloor temperature floor: lowered to 273.15 K (§37.14).
+- [x] Sediment porosity in τ_cover, with cited dust and cosmic-dust floor (§37.17).
+- [ ] Element-by-element weathering law and the pore fluid open to atmospheric pCO₂: keep and justify, or
+  change (§37.3).
+- [x] Calibration flux target: net flux, 0.9 Teq/yr (§37.16). **Still to do:** refit (expect α ≈ 425–440),
+  then recentre the α arms. The new-sedimentation pilot is done and the default outgassing is 1× (§37.18).
+  The calibration now alternates, and a test converged at α = 356 (§37.20). The real refit with τ_rw is
+  running (§37.21).
+- [x] τ_rw: calibrated to Dunlea et al. (2017)'s 0.02 Tmol Mg/yr; τ_rw = 39.2 Myr (§37.21).
+- [x] Refit: α = 348.3, η_HT 3.055e-2, η_Na 5.254e-3 in `constants.py` (§37.21). Still to do: recentre the α arms.
+- [x] Convergence check: windowed drift, no `r_avg` (§37.19).
+- [ ] RWR limit with and without Cl at two crust production rates (§37.9).
+- [ ] Rerun into a fresh output directory, or with `KAMINO_RERUN=1`.
+- [ ] Update the α comments in `parameter_sweep.py` (§37.8).
+- [ ] Redraw Fig. 4 from the calibration run (§37.7).
+
+### 37.12 Cross-cutting lessons
+
+- **A background ion that closes the charge balance carries more than its name.** SO₄ = 23.45 mM was standing
+  in for K⁺ and every minor ion; making it literal moved +0.73 meq of untracked charge into alkalinity. In a
+  model where alkalinity is derived from charge, a change to any background ion must conserve the net
+  background charge.
+- **A term that only exists on land planets can still dominate the calibration.** The shelf sink buried 56 % of
+  Earth's carbonate because it was a second whole-ocean sink, and the calibrated constants had absorbed it.
+- **A quantity whose relaxation time exceeds the planet's age across most of the grid is an input, not a
+  result.** For Cl, τ ∝ d/R̃. Measure whether it matters before adding a parameter to sweep: here it didn't,
+  for temperate climates.
+- **Check which code a stored run used by replaying a diagnostic,** rather than reasoning about process
+  lifetimes. The stored Damköhler number settled which crust rate the job had used.
+- **Check citations of the code against the code.** The paper cited the OLR fit correctly; this history had it
+  wrong since §33.4.
+- **State the physical basis of a weighting.** Weight fraction for `k_p` is defensible (equal surface area per
+  gram); mole fraction would depend on how the formula unit is written.
+
+### 37.13 References added this session
+
+- **Beckingham et al. (2016)**, *GCA* **188**, 310 — reactive surface area estimates (volume-fraction,
+  BET/mass-specific, image-based).
+- **Harris et al. (2014)**, *Mar. Geol.* **352**, 4 — continental shelves ~27 million km² (~7 % of the ocean),
+  mean shelf-break depth 140 m.
+- **Cogné & Humler (2004)**, *EPSL* **227**, 427 — seafloor generation half-rate 1.30 ± 0.28 km²/yr.
+- **Cogné et al. (2006)**, *G3* **7**, Q03012 — trends and rhythms in seafloor generation; cited in the draft
+  for 1/130 Myr.
+- **Gerlach (2011)**, *Eos* **92**, 201 — volcanic CO₂ 0.13–0.44 Gt/yr, preferred 0.15–0.26.
+- **Millero et al. (2008)**, *DSR I* **55**, 50 — reference composition of seawater (K⁺ 10.2, SO₄ 28.2
+  mmol/kg).
+- **Wolf-Gladrow et al. (2007)**, *Mar. Chem.* **106**, 287 — explicit conservative total alkalinity.
+- **Crowe et al. (2014)**, *Science* **346**, 735 — Archean seawater sulfate < 2.5 µM.
+- **Sharp & Draper (2013)**, *EPSL* **369**, 71 — Earth's halogen inventory set during accretion.
+- **Hamilton (1976)**, *J. Sediment. Petrol.* **46**, 280 — porosity and density of deep-sea sediments with
+  depth.
+- **Aagaard & Helgeson (1982)**, *Am. J. Sci.* **282**, 237; **Lasaga (1984)**, *JGR* **89**, 4009 —
+  transition-state rate laws with per-mineral affinity.
+- **Kadoya & Tajika (2019)**, *ApJ* **875**, 7 — the OLR fit used in `climate/analytic.py`.
+- **Jickells et al. (2005)**, *Science* **308**, 67 — aeolian dust deposition to the oceans, ~450 Tg/yr (§37.17).
+- **Love & Brownlee (1993)**, *Science* **262**, 550 — cosmic dust accretion, (4 ± 2) × 10⁷ kg/yr (§37.17).
+- **Coogan & Dosso (2022)**, *GCA* **329**, 22 — net low-temperature seafloor alkalinity flux, 0.90 Teq/yr
+  (1σ 0.16–1.64); now the α anchor (§37.16; see also §22.4).
+
+### 37.14 Seafloor temperature floor: 274 → 273.15 K (later the same day)
+
+The 274 K floor was chosen to keep water below freezing out of PHREEQC. It isn't needed for that: every
+PHREEQC call already clamps the temperature to 0.01 °C (`chemistry.py`, `_solution_block`). So the floor's only
+role is physical, setting the deep-water temperature that ocean precipitation sees. Weathering runs at the floor
++ 9 K, so it is always at 282 K or above.
+
+A composition-dependent freezing point was rejected as too complex for a second-order effect. Seawater freezes at
+−1.9 °C, and the model's fresher oceans (2–26 g/kg) at roughly −0.1 to −1.4 °C.
+
+**The floor is now `SEAFLOOR_T_FLOOR = 273.15` K** in `constants.py`: the freshwater freezing point and the lower
+limit of the thermodynamic data, within ~1.5 K of every model ocean's freezing point. It is used everywhere the
+floor appeared:
+- `planet.py` (the physics);
+- `calibrate_earth.py` (the flux-anchor evaluation);
+- `plot_results.py` (the "at floor" marker and its legend label);
+- `probe_saturation.py`.
+
+**Effect.** Only planets whose surface is below (273.15 + 16.7)/1.02 = 284.2 K are affected. Pore rates fall by
+~9 % for the 0.85 K drop (~10 % per K at 60–80 kJ/mol). The Earth calibration is unaffected: its seafloor sits at
+283.6 K, above both floors. Checked: an S = 0.6 planet at a 243.8 K surface gets a 273.15 K seafloor and a
+282.15 K pore.
+
+**A related limitation, for the paper.** On planets with a frozen surface, the surface pCO₂ is computed from ocean
+water clamped to 0.01 °C, because the model has no ice.
+
+### 37.15 Initial conditions don't change the result
+
+32 runs with the current code at sweep settings (no Cl, 273.15 K floor, α = 14.57, 3 km, Mg/Si 1.25, ΔIW −2,
+0.1× outgassing): S = 0.4–1.1 at R̃ = 1, and S = 0.8 and 1.0 at R̃ = 0.1, each from four starts:
+- blank ocean with pCO₂ 1000 Pa (the default);
+- blank with pCO₂ 10 Pa;
+- blank with pCO₂ 1 bar;
+- a concentrated start: 100 mM Mg(HCO₃)₂ + 10 mM Ca(HCO₃)₂ + 1 mM Si, charge-consistent.
+
+**Every configuration reaches the same final state from all four starts,** within 0.3 K and ~2 % in pCO₂, with
+the ocean chemistry within ~1 %. So there is a single steady state, approached from below and from above. The
+calcite bistability seen in the calibration came from the old Cl charge problem and doesn't appear in Cl-free
+ocean worlds.
+
+- **Only the convergence time differs.** The concentrated start takes up to 1.6 Gyr at R̃ = 1. At R̃ = 0.1 it is
+  the only start that meets the convergence criterion within 2 Gyr, but the blank starts end within 0.3 K of it.
+  So a 2 Gyr timeout is effectively steady state there.
+- **Initial pCO₂ is forgotten within ~10 kyr,** as the atmosphere relaxes to the ocean.
+- **S = 0.4–0.8 give identical chemistry and pCO₂ (10.3 mbar);** only the surface T differs. All three sit on the
+  seafloor temperature floor.
+- **The existing blank-era sweep never hit the cold wall.** Its 186 hot-wall stops before 1 Myr are all at
+  S ≥ 1.15, which is past the runaway even at the 1 Pa CO₂ floor. So the domain walls don't depend on the start.
+
+### 37.16 The α flux anchor: from primary to net flux
+
+**The defect.** `calibrate_earth.seafloor_alk_flux_tmol`, which α was fitted against, called
+`get_weathering_flux(..., precipitating_minerals=[])` without `pe`. It therefore measured the *primary* flux,
+before the pore kaolinite and goethite, at PHREEQC's default pe = +4. It also used a textbook seawater
+composition (Si 0.1 mM) rather than the run's own ocean. Decomposed at the recalibrated Earth
+(`calib_ls_027`, α = 14.57), in Teq/yr:
+
+| step | alkalinity | Fe | Mg | Al |
+|---|---|---|---|---|
+| A. anchor as coded (primary, pe +4, textbook seawater) | 1.177 | +1.098 | +0.060 | +0.019 |
+| B. A at pe −3 | 0.113 | +0.007 | +0.058 | +0.048 |
+| C. B with pore kaolinite and goethite | 0.059 | 0 | +0.058 | +0.001 |
+| D. C with the run's actual ocean | 0.042 | 0 | +0.042 | 0 |
+| E. what `dY_dt` applies | 0.042 | | | |
+
+So 93 % of the fitted "1 Tmol/yr" was iron that only dissolves in an oxidising pore fluid. The model's actual net
+flux, 0.042 Teq/yr, is all Mg with no Ca. It is ~20× below Coogan & Dosso's (2022) net 0.90 Teq/yr (1σ range
+0.16–1.64), which is mostly Ca release (§22.4).
+
+**The fix, now in `calibrate_earth.py`:**
+- `run_planet` returns the run's own `diagnostics["alk_flux"]`, the net flux `dY_dt` applied at the final state.
+- `seafloor_alk_flux_tmol` now simply reads it, so the pore clays, the redox state and the ocean composition are
+  all the model's.
+- `FLUX_TARGET = FLUX_TARGET_NET = 0.9` Teq/yr (Coogan & Dosso 2022).
+- The start-up α diagnostic now uses the pore clays and `pe`.
+- The old primary-only function is deleted.
+
+**Earth α scan** (calibration setup, current η, old sedimentation):
+
+| α | net flux (Teq/yr) | Da | T (K) | pCO₂ (ppm) | Mg (mM) | Ca (mM) |
+|---|---|---|---|---|---|---|
+| 14.57 | 0.042 | 0.004 | 294.4 | 697 | 60.5 | 10.4 |
+| 150 | 0.377 | 0.038 | 294.2 | 671 | 64.2 | 11.7 |
+| 300 | 0.670 | 0.076 | 294.1 | 648 | 67.4 | 12.8 |
+| 450 | 0.914 | 0.112 | 293.9 | 629 | 70.0 | 13.7 |
+
+- **0.9 Teq/yr needs α ≈ 440.** The flux grows more slowly than α.
+- **Earth's climate barely moves,** because continental weathering dominates its carbon budget.
+- **Mg drifts up**, which the joint refit has to re-balance.
+
+**The transfer problem, quantified.** At the *same* α = 14.57, the ocean worlds already deliver 1.4–2.0 Teq/yr of
+net flux (normalised to Earth's seafloor area), against Earth's 0.042. The steady state needs 2 × the outgassed
+carbon, i.e. 1.5 Teq/yr at 0.1× outgassing. That's 30–50× more per unit α, for two reasons:
+- a ~7× larger reactive fraction of the crust, because Earth's crust is buried by terrigenous sediment (§37.17);
+- no element-by-element suppression of Ca and Mg release in dilute oceans (§37.3).
+
+**Ocean-world pilot at α = 440** (old sedimentation, since it ran before §37.17), against α = 14.57, 3 km, R̃ = 1,
+no Cl. Each entry is T (K) / pCO₂ (mbar) / Da:
+
+| S | 0.1×, α 14.57 | 0.1×, α 440 | 1×, α 14.57 | 1×, α 440 |
+|---|---|---|---|---|
+| 0.4 | 216.4 / 10.3 / 0.026 | 211.1 / 0.38 / 4.8 | 268.6 / 2760 (CO₂ ceiling) | 221.9 / 59 / 0.08 |
+| 0.6 | 244.7 / 10.3 / 0.026 | 237.3 / 0.38 / 4.8 | 312.8 / 2030 / 0.05 | 253.5 / 60 / 0.08 |
+| 0.8 | 272.6 / 10.3 / 0.026 | 261.9 / 0.38 / 4.8 | 326.9 / 1140 / 0.35 | 284.8 / 57 / 0.09 |
+| 0.9 | 286.7 / 7.3 / 0.049 | 275.4 / 0.38 / 4.8 | 341.2 / 1730 / 2.4 | 334.0 / 822 / 51 † |
+| 1.0 | 304.9 / 5.2 / 1.10 | 297.9 / 1.4 / 20 | 354.1 / 3740 / 8.8 † | 352.6 / 3130 / 259 † |
+| 1.1 | 364.7 / 301 / 299 | 364.6 / 296 / 9030 | 363.6 / 6640 / 20 † | 362.7 / 6000 / 595 † |
+
+† stopped at the 900 s wall-clock cap.
+
+- **At 0.1× outgassing, α = 440 leaves no negative-feedback band.** Every S ≤ 0.9 sits on the seafloor floor and is
+  thermodynamically limited (Da ≈ 5), and S = 1.0 is already on the positive branch.
+- **At 1×, S = 0.4–0.8 are temperate or cold and kinetically limited (Da ≈ 0.08).** The RWR transition falls
+  between S = 0.8 and 0.9, at the same instellation as at α = 14.57, but 40–60 K cooler below it.
+- **So the default outgassing would move towards 1×,** and the window with a negative feedback (kinetic *and*
+  above the floor) is narrow.
+- **This needs re-running with the §37.17 sedimentation and the refitted constants** before any conclusion.
+
+### 37.17 Sedimentation: cited dust, a cosmic-dust floor and porosity
+
+**The problem.** The terrigenous rate (5 m/Myr at 30 % land) and the 0.3 m/Myr floor had no source, and there was no
+porosity. `h_cover` = 100 m is a bulk thickness, but the precipitates were counted as solid mineral volume. On
+Earth the uncited 5 m/Myr was most of the sedimentation (plus 1.39 m/Myr of precipitates), so θ/α = 0.12. Ocean
+worlds had only 0.24–0.34 m/Myr, at or near the floor, so θ/α ≈ 0.82. That made the terrigenous number a hidden ~7×
+multiplier on ocean-world weathering relative to the calibrated Earth.
+
+**Implemented** (constants in `constants.py`):
+- `EARTH_DUST_FLUX_TO_OCEAN = 450 Tg/yr` (Jickells et al. 2005): dust reaching ridge flanks, scaled by land area
+  relative to Earth's and spread over the planet's seafloor. That is 0.476 m/Myr of solid at Earth, and zero on
+  land-free planets.
+- `COSMIC_DUST_FLUX_PER_AREA` from 4×10⁷ kg/yr (Love & Brownlee 1993), about 1×10⁻⁴ m/Myr bulk. It replaces the
+  0.3 m/Myr floor. A land-free planet has no continental dust, and volcanic ash remains unmodelled.
+- `SEDIMENT_GRAIN_DENSITY = 2650` kg/m³.
+- `SEDIMENT_POROSITY = 0.7` (Hamilton 1976; ~0.6–0.8 in the upper 100 m).
+- `planet.py` computes the bulk rate as (precipitates + dust solid volume) / (1 − φ).
+- `seafloor_reactive_area` uses the cosmic-dust floor, and falls back to Earth's dust alone (1.59 m/Myr bulk)
+  only when no rate is passed.
+- The old `_S_TERR_EARTH` / `_s_terr` are removed.
+
+**Effect:**
+
+| | θ/α before | θ/α after |
+|---|---|---|
+| Earth calibration | 0.120 | 0.124 |
+| ocean world S = 0.6 / 0.9 / 1.0 | 0.827 / 0.808 / 0.828 | 0.557 / 0.523 / 0.624 |
+
+- **Earth barely moves,** because the cited dust plus porosity happens to reproduce the old total.
+- **Ocean worlds lose ~30–35 % of their reactive area** relative to the calibrated Earth.
+- **With no sediment at all, θ/α → 1**: the crust is never buried.
+
+**Earth α scan with the new sedimentation** (calibration setup, current η):
+
+| α | net flux (Teq/yr) | Da | T (K) | pCO₂ (ppm) |
+|---|---|---|---|---|
+| 300 | 0.663 | 0.075 | 294.1 | 649 |
+| 400 | 0.827 | 0.099 | 294.0 | 636 |
+| 500 | 0.976 | 0.123 | 293.9 | 625 |
+
+So 0.9 Teq/yr now needs **α ≈ 450** (was ≈ 440). This is a scan, not the refit, which is still pending.
+
+### 37.18 The new-sedimentation pilot, and the default outgassing (1×)
+
+> **Superseded by §37.22** for the numbers: that section reruns this pilot on the refitted constants. The
+> choice of 1× as the default stands.
+
+The user changed `parameter_sweep.outgassing_default` to `[1]`. Tested at α = 450, 3 km, R̃ = 1, no Cl, blank
+ocean, with the §37.17 sedimentation. The numbers below are from the rerun under §37.19's convergence check. In the
+first run, 6 of the 24 hit the 900 s wall-clock cap and 5 ran to 2 Gyr. The rerun matches every state that both
+runs reached (§37.19).
+
+Seafloor T = 1.02 T_s − 16.7 K, so the 273.15 K floor binds whenever T_s < 284.2 K.
+
+| S | 1× outgassing: T_s (K) / pCO₂ (bar) / Da | 0.3× | 3× |
+|---|---|---|---|
+| 0.4 | 244.0 / 0.73 / 0.025 (floor) | 214 / 0.0038 / 0.35 (floor) | CO₂ ceiling at 43 Myr |
+| 0.6 | 286.9 / 0.58 / 0.028 | 242 / 0.0038 / 0.35 (floor) | 322.1 / 4.18 / 0.30 |
+| 0.8 | 297.3 / 0.155 / 0.13 | 269 / 0.0038 / 0.35 (floor) | CO₂ ceiling |
+| 0.85 | 304.7 / 0.14 / 0.41 | | |
+| 0.9 | 334.2 / 0.85 / 21 | 284 / 0.0039 / 0.34 (floor) | CO₂ ceiling |
+| 0.95 | 346.0 / 2.01 / 59 | | |
+| 1.0 | 352.7 / 3.15 / 103 | 339.7 / 0.28 / 229 | CO₂ ceiling |
+| 1.1 | 362.7 / 6.00 / 231 | 358.9 / 1.03 / 1128 | CO₂ ceiling |
+
+Crust production at 1× outgassing: 0.1× hits the CO₂ ceiling at S 0.8 and 0.9. 10× sits on the floor at
+pCO₂ ≈ 1 mbar (S 0.8: 264 K; S 0.9: 279 K).
+
+- **1× is the only one of the three with a negative-feedback band above the floor.** Over S 0.6–0.85, pCO₂
+  falls from 0.58 to 0.14 bar as S rises, with Da < 1 and T_s 287–305 K. So 1× is the right default. It is
+  also Earth's outgassing, the value used in the calibration.
+- **The transition is between S 0.85 and 0.9.** Da jumps from 0.4 to 21 and pCO₂ rises sixfold. With the old
+  sedimentation (§37.16) it was between S 0.8 and 0.9, so it has barely moved.
+- **0.3× is floor-bound.** Every S ≤ 0.9 has the same pCO₂, because the seafloor never leaves 273.15 K, and
+  S = 1.0 jumps straight to the hot branch. This matches 0.1× in §37.16.
+- **3× has no weathering steady state, except a hot one.** The kinetic flux tops out below twice the
+  outgassed carbon, so pCO₂ runs to the maximum greenhouse at every S except 0.6. S 0.6 settles hot, at
+  322 K and 4.2 bar.
+- ⚠️ **Past the transition the planet settles hot rather than running away.** At 1×, S 0.9–1.1 are steady at
+  334–363 K and 0.85–6 bar, below the maximum greenhouse. Before §37.19 these runs hit the wall-clock cap or
+  ran to 2 Gyr, which made them look like runaways. The paper's "retrograde weathering runaway" wording needs
+  to match: in this part of parameter space it is a jump to a hot branch.
+
+### 37.19 Convergence check: windowed drift replaces the smoothed rate
+
+**The old check.** `r_avg` was an extra ODE state that relaxed towards max|F_net|/b with τ = 30 Myr, and
+`event_converged` fired when it fell below 0.05/Gyr. It dates from commit 608c8df. It replaced an event that
+called `dY_dt` itself, which was costly and impure, since solve_ivp events must be pure functions of (t, y).
+Its problems:
+- **It averaged the magnitude of noisy rates.** PHREEQC jitter in Si, Na and Ca kept it above threshold long
+  after the state had settled. Replaying 50 saved runs: one was steady by ~470 Myr but was held until 1883 Myr.
+- **It throttled the integrator.** `r_avg` sat in the error norm with a tight atol and a noisy, non-smooth
+  right-hand side. Runs that end at the same wall now take 2–50 % fewer steps.
+- **It cost a Jacobian column** (2 `dY_dt` calls per Jacobian).
+- **Its start value set a minimum run length.** Decaying from 1/Myr to 0.05/Gyr takes ~300 Myr.
+
+**The new check (`planet.time_evolve`).**
+- **The rule:** a run is converged once no species above 1e-6 mol/kgw (1e-7 until §37.22) has changed by more than
+  `convergence_threshold` (0.05/Gyr) × `convergence_window` (50 Myr) = 0.25 % over the last window. The
+  denominator is floored at 1e-6, as before.
+- **Why a window:** measuring net displacement over a baseline cancels step-to-step noise instead of averaging
+  its magnitude.
+- **The loop:** `solve_ivp` is replaced by a loop over `scipy.integrate.LSODA.step()`, the same integrator,
+  tolerances and `max_step`, so the check can see the history.
+- **The domain event:** checked after each accepted step. The crossing is located with `brentq` on the
+  step's dense output, copying solve_ivp's `solve_event_equation`.
+- **Clean-up:** `r_avg`, `tau_r_avg`, `event_converged` and `min_time` are gone. The state is now
+  `[P_CO2, P_H2O, *elements]`.
+- **Jacobian:** `macro_jacobian` also skips the pinned SO₄ and K columns. This is exact: their rows are zero,
+  so their Newton updates are zero. It closes §10's "dead Jacobian columns" item. A Jacobian now costs 20
+  `dY_dt` calls, down from 26.
+- **Readers:** `diagnostics.diagnose` truncates Y to `2 + len(elements)`, so old outputs with the `r_avg` row
+  still load. `plot_results` reads `len(elements)` ions.
+- ⚠️ **Old and new files can't be told apart by row count.** New files have 13 rows
+  (`[P_CO2, P_H2O, 11 elements]`), and so do the pre-K sweep files (10 elements + `r_avg`). In a pre-K file the
+  13th row is `r_avg`, ~1e-17 s⁻¹, which would be read as K ≈ 0. Tell them apart by the `_cl0` tag or the date.
+
+**Test: A/B against the old check,** same code otherwise.
+
+| | old check | new check |
+|---|---|---|
+| ocean pilot (§37.18), total wall time, 24 runs | 7805 s | 505 s |
+| runs stopped by the 900 s cap / reaching 2 Gyr | 6 / 5 | 0 / 0 |
+| Earth α = 300 / 400 / 500, wall time per run | 15 / 15 / 19 s | 10 / 10 / 10 s |
+
+- **Converged states:** ΔT ≤ 0.04 K, ΔpCO₂ ≤ 0.4 %, major species ≤ 0.8 %. The worst is Na in the slow 1×
+  S 0.4 run.
+- **Domain-wall runs:** the same wall at the same time, to 1 Myr, with the same state.
+- **Earth:** pCO₂ within 0.002 % and species within 0.1 %. The α–flux relation is unchanged.
+- **Formerly capped runs:** each converged state matches the capped run's last state. For example, 1× S 1.0
+  gives 3.15 bar at 442 Myr, against 3.13 bar at 741 Myr before.
+
+⚠️ **`diagnostics.diagnose` is still broken, independently.** It reads `planet.f_bio` and a
+`crust_composition` config key, and neither exists any more. The file carries its own "STALE" note.
+
+### 37.20 The first net-flux refit failed; the calibration now alternates
+
+**What the user's refit returned:** α = 55.43, η_HT = 5.806×10⁻², η_Na = 4.831×10⁻³. It was not a converged
+answer. `calibrate()` keeps the lowest-cost evaluation, and that was `calib_ls_045`, a finite-difference
+probe, not a trust-region iterate. The iterates ended at α ≈ 29.4. That best point gave:
+
+| | target | calib_ls_045 |
+|---|---|---|
+| net seafloor flux | 0.9 Teq/yr | 0.40 |
+| Mg | 52.8 mM | 26.3 |
+| Ca | 10.3 mM | 7.5 |
+| Na | 469 mM | 531 |
+
+**Cause 1: the finite-difference steps were far too large.** `diff_step=0.2` on ln(x) means a step of
+0.2 × |ln x|, and scipy scales `diff_step` by max(1, |x|). That gave probes of ×0.36 in K_na, ×0.47 in η_HT
+and ×1.7 in α. Every K_na and η_HT probe landed on the Ca-collapsed branch (Ca 0.70 mM, Na 1400–1700 mM), so
+two of the three Jacobian columns measured a jump between branches, not a slope.
+
+**Cause 2: the flux residual dominated the cost.** ln(0.05/0.9) ≈ −2.9. The fitter found that raising η_HT
+lowers Mg, which weakens the element-by-element Mg suppression and raises the flux. So it traded Mg (down to
+24 mM) for flux while α crept up.
+
+**The fix (`calibrate_earth.py`).**
+- **Inner step:** `least_squares` on (ln K_na, ln η_HT) against (Na, Ca, Mg) at fixed α, with
+  `diff_step` ≈ 0.05 in ln(p).
+- **Outer step:** α ← α × 0.9/flux. The flux is ~linear in α (exponent 0.99), and α moves the ions by ~1 % over
+  a ×1.7 step. The docstring's objection to separating the fit (§36: "the ocean moves the flux") is handled by
+  iterating.
+- **Probe direction:** a 5 % *drop* in K_na still tips Earth onto the collapsed branch (Na 475 → 551 mM,
+  Ca 10 → 0.8 mM). So the parameters are shifted, x = ln p + 20, which makes scipy's forward probes step
+  *up*, away from the collapse. Earth's calibrated state sits within ~5 % of K_na of the calcite tipping point.
+- **Round cap:** `MAX_RUNS_PER_ROUND` caps the solver steps per round. scipy's `max_nfev` doesn't count
+  Jacobian probes, so a round takes ~20–50 runs.
+- **`ALPHA_PINNED`:** still available, to fit the ions at a fixed α.
+
+**Scratch test** (before the probe-direction fix). It converged in 4 rounds and 78 runs (~13 min). α went
+55 → 259 → 340 → 356; at α = 55 the ions fitted to cost 0.0015 but the flux was 0.19 Teq/yr. The final state:
+
+| Quantity | Value |
+|---|---|
+| α | 356.4 |
+| η_HT | 2.864×10⁻² |
+| η_Na | 5.390×10⁻³ |
+| net seafloor flux | 0.900 Teq/yr |
+| Na / Ca / Mg | 461 mM (−1.7 %) / 10.7 mM (+4.2 %) / 57.6 mM (+9.0 %) |
+| Alk / C | ×2.3 / ×2.2 (the usual abiotic offset) |
+| T / pCO₂ | 293.9 K / 631 ppm |
+
+Mg was still improving when the round cap hit; every K_na probe was still landing on the collapsed branch.
+`constants.py` was set to these values as the starting point for the real refit (§37.21).
+
+**Side effect.** The first scratch attempt wrote `output/calib_ls_000.json` into the repo, because
+`Planet.output_path` isn't set from `OUTPUT_DIR`. So the user's original eval 000 was overwritten.
+
+### 37.21 τ_rw calibrated to the modern authigenic-clay Mg sink
+
+**The gap.** τ_rw = 5 Myr had no source (the draft's own comment at L432 calls it a guess). Sepiolite(d) stays
+~4 log units supersaturated, so τ_rw *is* the reverse-weathering flux (§26.3). It is not a relaxation
+constant, and it matters on hot worlds: 5 → 33 Myr cooled a 20 km world by 25 K (§26.2).
+
+**The constraint.** Dunlea et al. (2017, Nat. Commun. 8, 844) quantified authigenic clay in South Pacific
+Gyre sediment:
+- typical deep-sea sediment removes ~**0.02 Tmol Mg/yr**;
+- if Si-rich (chert-forming) sedimentation covered 50–100 % of the seafloor, it would remove
+  **0.4–0.8 Tmol Mg/yr**.
+
+Deltaic clay formation (Michalopoulos & Aller 1995, Science 270, 614) is a river-fed process that ocean worlds
+lack. At Earth, with τ_rw = 5 Myr and the current code, reverse weathering removes ~0.16 Tmol Mg/yr, so
+τ_rw ≈ 40 Myr is expected.
+
+**Implemented:**
+- **`constants.py`:** `TAU_RW_REF` moved here from `planet.py`, into the calibrated block, which now has five
+  constants to update together.
+- **`planet._final_diagnostics`:** records `rw_mg_flux`, the Tmol Mg/yr removed by reverse-weathering clays
+  (positive means a sink).
+- **`calibrate_earth.py`:**
+  - `RW_MG_TARGET = 0.02` (Dunlea et al. 2017).
+  - The outer loop also updates τ_rw ← τ_rw × rw/0.02, since flux ~ excess/τ_rw.
+  - It stops when the flux is within 3 % *and* the Mg sink is within 5 %.
+  - `RW_MG_TARGET = None` holds τ_rw fixed. Use it for the Si-rich sensitivity case (τ_rw ≈ 1–2 Myr).
+- **Justification for the paper:** τ_rw is a calibrated *effective* rate, not a mineral precipitation rate.
+
+**Result** (`output/calib_ls_000`–`019`, 2026-09-24). It converged in 2 rounds and 20 runs. None of the
+finite-difference probes landed on the collapsed branch, so the upward-probe fix works.
+
+| constant | before | fitted |
+|---|---|---|
+| `ALPHA_REF` | 356.4 (test) | **348.3** |
+| `KD_MG_HT` | 2.864×10⁻² | **3.055×10⁻²** |
+| `K_NA_CONT_REMOVAL` | 5.390×10⁻³ | **5.254×10⁻³** |
+| `TAU_RW_REF` | 5 Myr | **39.2 Myr** |
+| `K_CL_SUBDUCTION` | 1.962×10⁻⁴ | unchanged (analytic) |
+
+The fitted Earth:
+
+| Quantity | Value | Target |
+|---|---|---|
+| Na | 464 mM (−1.0 %) | 469 |
+| Ca | 10.5 mM (+1.8 %) | 10.3 |
+| Mg | 56.2 mM (+6.4 %) | 52.8 |
+| Alk | 5.35 mM (×2.3) | 2.3 |
+| C | 4.65 mM (×2.2) | 2.1 |
+| net seafloor flux | 0.888 Teq/yr | 0.9 |
+| reverse-weathering Mg sink | 0.0200 Tmol/yr | 0.02 |
+| T | 293.8 K | |
+| pCO₂ | 611 ppm | |
+
+- **τ_rw = 39.2 Myr** is 7.8× slower than before. The Earth sink was 0.157 Tmol/yr at 5 Myr, so one rescaling
+  landed on target; flux ∝ 1/τ_rw holds.
+- **Earth's climate hardly moves** (T 293.9 → 293.8 K), as expected, because reverse weathering is under 1 % of its
+  alkalinity sink.
+- **The effect is on hot ocean worlds.** There reverse weathering is a CO₂ source, now 7.8× weaker (§36.2). The
+  §37.18 pilot numbers above the RWR transition are therefore stale.
+- **Pasted into `constants.py`** (all five).
+
+### 37.22 The ocean pilot on the refitted constants, and the convergence cut-off
+
+This reruns the §37.18 pilot, 24 runs: no Cl, blank ocean, 3 km, with `ALPHA_REF` = 348.3 and `TAU_RW_REF` =
+39.2 Myr taken from `constants.py` (§37.21). Total wall time was 370 s. Seafloor T = 1.02 T_s − 16.7 K, with a
+floor at 273.15 K.
+
+| S | 1×: T_s (K) / pCO₂ (bar) / Da | vs §37.18 (α 450, τ_rw 5 Myr) |
+|---|---|---|
+| 0.4 | 247.2 / 0.83 / 0.023 (floor) | +3.1 K |
+| 0.6 | 287.2 / 0.59 / 0.026 | +0.3 K |
+| 0.8 | 294.5 / 0.128 / 0.090 | −2.7 K |
+| 0.85 | 299.8 / 0.098 / 0.22 | −4.9 K |
+| 0.9 | **310.1 / 0.106 / 1.45** | **−24.1 K** (was on the hot branch) |
+| 0.95 | 341.2 / 1.10 / 45 | −4.8 K |
+| 1.0 | 348.5 / 1.85 / 86 | −4.1 K |
+| 1.1 | 358.5 / 3.62 / 194 | −4.2 K |
+
+- **The RWR transition moves from S 0.85–0.9 to S 0.9–0.95.** Reverse weathering, which is a CO₂ source on hot
+  worlds (§36.2), is 7.8× weaker. S = 0.9 now stays on the cool branch at Da ≈ 1.5, right at the
+  kinetic/thermodynamic boundary.
+- **The negative-feedback band is S ≈ 0.6–0.9** (T_s 287–310 K). pCO₂ flattens to its minimum (~0.1 bar) around
+  S 0.85–0.9, just before the jump.
+- **The hot branch is 4–5 K cooler,** at ~40 % lower pCO₂. It is still steady, not a runaway.
+- **The cold end is 3 K warmer.** α fell from 450 to 348, so there is less weathering and more CO₂ at the floor.
+
+Other arms:
+- **0.3×:** still floor-bound for S ≤ 0.9, at pCO₂ 2.2 mbar (was 3.8). S 1.0 jumps to 334 K, 0.15 bar.
+- **3×:** S 0.8 now settles hot (347 K, 7.5 bar) instead of hitting the CO₂ ceiling. S 0.6 settles at 319 K,
+  3.2 bar. S 0.4 and 0.9–1.1 still hit the ceiling.
+- **Crust 0.1×:** CO₂ ceiling at S 0.8 and 0.9. **Crust 10×:** floor-bound, ~0.85 mbar.
+
+**Convergence cut-off: 1e-7 → 1e-6 mol/kgw.** The 10× crust S 0.9 run reached 2 Gyr without converging.
+Trace Na at 0.26–0.6 µM flickered, and with the denominator floored at 1e-6 that read as ~5.7/Gyr of drift.
+Species below 1 µM are now ignored in the drift test. Rerunning the whole pilot, 20 runs are bit-identical.
+Four stop earlier: 2000 → 95, 433 → 333, 341 → 321 and 96 → 81 Myr. Their states differ by ≤ 0.12 % in major
+species and ≤ 0.03 K. Wall time was unchanged (369 s).
+
+Not yet explained: 1× S 0.4 and 0.6, and 0.3× S 1.1, converge only at 1.5–1.9 Gyr. They are cheap (≤ 20 s), so
+this was left alone.
+
+### 37.23 Shelf depth: 1000 → 140 m
+
+`EARTH_SHELF_DEPTH = 140.0` m in `constants.py`, the mean depth of the shelf break (Harris et al. 2014, Mar.
+Geol. 352, 4), replaces the uncited 1000 m in `planet.py`. It sets only the pressure at which shelf carbonate
+precipitates.
+
+**Earth A/B at the calibration setup** (land 0.3, 3.7 km, seeded ocean, current constants):
+
+| shelf depth | T (K) | pCO₂ (ppm) | net seafloor flux (Teq/yr) | RW Mg sink (Tmol/yr) | Na / Ca / Mg (mM) |
+|---|---|---|---|---|---|
+| 1000 m | 293.79 | 610.7 | 0.8884 | 0.0200 | 464.2 / 10.490 / 56.19 |
+| 140 m | 293.79 | 610.5 | 0.8901 | 0.0199 | 464.1 / 10.493 / 56.20 |
+
+Every quantity moves by < 0.3 %, so the §37.21 calibration stands without a refit. Ocean worlds have no shelf, so
+they are unaffected. Still open: the shelf uses the deep-water temperature, not the warmer shelf water.
+
+### 37.24 The full rerun (24–25 Sep), and why its first figures zigzagged
+
+The rerun is in `/data/pt426/sweep_output`: 5,491 ocean-world runs, all at pe −3, with the §37.21 constants, no
+Cl, a blank ocean and the §37.19 convergence check. The old set was moved to `/data/pt426/sweep_output_seeded`.
+The first figures had jagged lines, repeated Da = 1 circles and pH zigzags, all in the crust = 1 panels.
+
+**Cause 1, plotting: the Cl sweep leaked into every figure.** `plot_results.load_data` didn't record the Cl
+ratio or the run length, and `_sweep_mask` didn't filter on them. The 133 `basic_cl` runs (Cl 0.02, 4.5 Gyr)
+share every other axis with `basic` at crust = 1, so each line alternated between the two runs at each S. This
+affected the basic 1× panels, the 3 km depth line, the Mg/Si cross-section and the composition figures.
+**Fix:**
+- `load_data` records `cl_ratio` and `t_end_gyr`: `t_end_yr` from the output when present, else the
+  `_tend` name tag, else 2 Gyr.
+- `_ref_setup` pins both to their most-run values in `_sweep_mask` (`setup=False` keeps all of them), in the
+  same way `_ref_chem` pins α.
+- `planet.time_evolve` now writes `t_end_yr` to the output.
+
+**Cause 2, plotting: three smaller selection bugs.**
+- **Duplicate runs.** The α × outgassing plane wrote `out_1.0` and `out_10.0` beside `basic`'s `out_1` and
+  `out_10`: 14 identical duplicate runs. `load_data` now drops duplicate configurations, and `OUTGASSING_PLANE`
+  uses ints.
+- **The α sensitivity figure plotted 0.01× outgassing.** `_best_operating_point` took the first of several
+  tied (outgassing, crust) pairs. There every planet is CO₂-starved, so all α values sat on one line. Ties now
+  go to the pair nearest (1×, 1×).
+- **The depth figure dropped 3 km.** The continental baseline's 3.7 km ocean arm displaced it. The figure now
+  uses `DEPTHS_SHOWN = (300, 1000, 3000, 20000, 50000)` when those depths are available.
+
+**Cause 3, model: runs that aren't at steady state are drawn as if they were.**
+- **39 `wall_timeout` runs.** One is the S = 0.55 dip on the 0.1× crust, 0.3× outgassing line, which stopped
+  at 1186 Myr. `DA_TRUSTWORTHY` includes `wall_timeout`, so they're drawn as line points.
+- **2 Gyr timeouts still moving.** 343 of the 583 2 Gyr timeouts have pCO₂ still changing by > 10 % over the
+  last 500 Myr. By crust production: 292 of 400 at 0.01–0.03×, 9 of 84 at 0.1×, 12 of 36 at ≥ 1×. By depth:
+  30 of 42 at ≥ 20 km. Relaxation time scales as depth / crust production, so these are 2 Gyr snapshots. The
+  draft's "runs that reach 2 Gyr are treated as converged" doesn't hold for them.
+- **Deep oceans oscillate.**
+  - 20 km at S 0.55: pCO₂ 0.49–0.99 bar, period ~300–400 Myr.
+  - 50 km at S 0.7: Ca 33–68 mM, period ~200 Myr, with a 2.3 bar pCO₂ spike at 1.3 Gyr.
+  - Both reproduce at rtol 1e-5 with max_step 2 Myr (100× and 10× tighter), with no chemistry fallbacks, so
+    this is model dynamics, not numerics.
+  - A scan finds 31 oscillating runs above the 1 Pa climate floor, mostly at ≥ 20 km. Many more flicker at
+    pCO₂ ≈ 0 in the CO₂-starved corner, which is climatically irrelevant.
+  - The old seeded set shows both behaviours too: every deep run was unsettled at 2 Gyr, and some oscillated
+    (20 km at S 0.55–0.6). So neither is a regression.
+
+**Cause 4, model: 11 `solver_failure` runs.** All are at S 1.1, 1× outgassing, Mg/Si 1.75–2.0. PHREEQC's
+weathering step fails ("Maximum iterations exceeded") from the blank, hot start at t = 0, so every derivative
+is the outgassing-only fallback. LSODA takes a 20 Myr step on that constant derivative, then fails Newton
+convergence at 40 Myr. It is a narrow corner whose neighbours are on the hot wall anyway.
+
+**Also fixed: a data hazard in `rerun_wall_timeouts.py`.** It rebuilt names without the Cl ratio or run length,
+and only checked that *some* file had the rebuilt name. So the one `basic_cl` wall-timeout would have rerun and
+overwritten the converged `basic` `_cl0` run instead. Now:
+- each rebuilt name must equal its own source file;
+- Cl and `_tend` runs are skipped with a message.
+
+A dry run lists 43 runs to redo, 5 of them continental.
+
+**Termination counts (ocean worlds):**
+- **New:** converged 2936, out_of_domain 1741, timeout 676, chemistry_void 49, wall_timeout 39,
+  fallback_limit 39, solver_failure 11. The 27 fallback_limit runs in the α arm are at 10× and 30× `ALPHA_REF`.
+- **Old:** timeout 6428, out_of_domain 4424, fallback_limit 28, chemistry_void 6, converged 8.
+
+### 37.25 The continental baseline ran without Cl; the 'earth' sweep
+
+**The problem.** The new `continental_baseline_ions` figure showed:
+- Cl off the axis;
+- Alk ≈ 590 mM and DIC ≈ 360 mM;
+- Ca 0.7 mM;
+- Na ≈ 490 mM.
+
+`continental_baseline.py` runs through `parameter_sweep.run_simulation`, so it had inherited the sweep settings
+(no Cl, blank ocean). The user had already moved it to 3.7 km. With no Cl⁻, the continental Na⁺ is balanced by
+alkalinity. That makes a soda ocean, supersaturated with calcite, on the Ca-collapsed branch.
+
+**Test at S = 1, land 0.3, 3.7 km** (mM):
+
+| setup | T (K) | pCO₂ (ppm) | Alk | C | Ca | Mg | Na | Cl |
+|---|---|---|---|---|---|---|---|---|
+| blank, no Cl (as run) | 294.3 | 688 | 587 | 360 | 0.70 | 46 | 493 | 0 |
+| seeded, Cl 0.02 (calibration setup) | 293.8 | 611 | 5.3 | 4.6 | 10.5 | 56.2 | 464 | 546 |
+| blank, Cl 0.02, 4 Gyr | 294.4 | 698 | 288 | 183 | 0.71 | 47 | 501 | 308, still rising |
+
+- **The calibration setup reproduces the calibration exactly.**
+- **Cl alone isn't enough.** From a blank ocean, Cl is still rising at 4 Gyr and the ocean stays collapsed.
+- **The climate barely moves,** because continental weathering sets Earth's carbon balance.
+
+**Implemented:**
+- **`parameter_sweep.run_simulation`** takes a per-run `seed`, and the resume guard now compares against it.
+- **`continental_baseline.py`** has `SWEEP = 'earth'`: land 0.3, S 0.3–1.45 (24 runs), every other axis at
+  Earth. It uses `EARTH_SEED` (seawater: Cl 546, SO₄ 28.2, K 10.2 mM), `EARTH_CL_RATIO` = 0.02 and
+  `EARTH_T_END_GYR` = 4, as in `calibrate_earth.py`.
+  - Names end `_land0.3_tend4`, distinct from the baseline's `_land0.3_cl0`.
+  - `'all'` now includes it.
+  - `run()` passes `cl`, `t_end_gyr` and `seed` through.
+- **`plot_results.plot_continental_baseline`** draws `continental_baseline_{tp,chem,ions}` from these runs. It
+  pins the Cl ratio and run length through `_arm(..., setup)`, and skips with a message if there are none.
+  The other continental figures still use the sweep-setup baseline arms.
+
+**Status.**
+- The 24 runs were made in scratch and copied into `sweep_output` (no name clashes). The figures were redrawn.
+- At S = 1: 293.79 K, 611 ppm, Na 464, Ca 10.5, Mg 56.2, Cl 546 mM.
+- S 1.2–1.35 hit the 900 s cap on the hot branch (365–376 K). Rerun them with a longer
+  `KAMINO_WALL_SHALLOW`, since `rerun_wall_timeouts.py` skips Cl runs.
+- The earlier `SWEEP = 'all'` job stopped before its land-fraction series and full baseline line. Both 3.7 km
+  arms have only the 9 coarse S points, and 9 half-written files remain.
+
+### 37.26 The new sweep against the old one
+
+Compared run by run: `/data/pt426/sweep_output` (new) against `/data/pt426/sweep_output_seeded` (old, 9–18 Sep).
+
+| | old | new |
+|---|---|---|
+| α | 4.9 (anchored to a primary flux at pe +4, mostly Fe) | 348.3 (net 0.9 Teq/yr, Coogan & Dosso 2022) |
+| η_HT / η_Na / τ_rw | 1.97e-2 / 6.1e-3 / 5 Myr | 3.05e-2 / 5.25e-3 / 39.2 Myr |
+| Cl and initial ocean | Cl 0.02, seeded (Cl 546, SO₄ 23.45 mM) | no Cl, blank |
+| crust rate in θ_r; sedimentation; floor | 1/50 Myr; old terrigenous + 0.3 m/Myr floor; 274 K | 1/130 Myr; dust + cosmic floor + porosity; 273.15 K |
+| convergence | `r_avg` EMA | 50 Myr windowed drift |
+| depth and composition sweeps | 0.1× outgassing, pe −3 and +4 | 1× outgassing, pe −3 only |
+
+**Basic plane** (3 km, Earth crust, reverse weathering on, pe −3; 931 paired runs):
+
+| | old | new |
+|---|---|---|
+| steady (converged or 2 Gyr timeout) | 438 (47 %) | 541 (58 %) |
+| stopped at the CO₂ ceiling / hot wall | 392 / 98 | 294 / 88 |
+| temperate, 273–320 K | 171 (18 %) | 126 (14 %) |
+| steady with the seafloor at its floor | 193 | 370 |
+| kinetic (Da < 1) and above the floor | 198 | 55 |
+| median Da of steady runs, by crust rate | 0.01–0.13 (0.82 at 0.01×) | 3.8–16 |
+| how steady runs ended | all 438 ran to 2 Gyr | 417 converged, median 716 Myr |
+
+- **Climate.**
+  - Runs steady in both are a median 6.4 K colder, with pCO₂ 0.8 dex lower (IQR −31 to 0 K).
+  - By crust rate: 0.01× −44 K and −2.4 dex; 0.03× −27 K; 0.1× −7 K; ≥ 0.3× about 0.
+  - By outgassing: 0.3–3× −29 to −35 K; 10× −5 K; ≤ 0.03× unchanged, because both sets are floored there.
+  - 93 runs that hit the CO₂ ceiling in the old set now have a steady state.
+- **The kinetic band** (Da < 1, above the floor) and the first thermodynamic S:
+  - Old: the band existed at every outgassing down to 0.01×.
+  - New: there is none at ≤ 0.03× outgassing, and none at 0.1× outgassing for crust ≥ 0.1×. It has moved to
+    0.1–10× outgassing and narrowed.
+  - At 1× outgassing and 1× crust: S 0.60–1.00 with the transition at 1.05, now S 0.55–0.85 with the transition
+    at 0.90.
+- **Chemistry.** Medians over runs steady in both, in mM:
+
+  | | Cl | Ca | Mg | Alk | DIC | Si | SO₄ | Na | pH | salinity (g/kg) |
+  |---|---|---|---|---|---|---|---|---|---|---|
+  | old | 373 | 60 | 18 | 12 | 14 | 4.5 | 23.5 | 0.02 | 6.7 | 24 |
+  | new | 0 | 0.14 | 12 | 23 | 21 | 2.9 | 0 | ≈ 0 | 9.2 | 1.7 |
+
+**Earth arm** (land 0.3, seeded with Cl in both; the old one at 3 km, the new one at 3.7 km):
+- **T is within 1.2 K for S ≥ 0.9.** At S = 1 it is 294.3 → 293.8 K and 686 → 611 ppm.
+- **It is 2–10 K colder at S 0.35–0.85,** where seafloor weathering matters more.
+- **S 0.35 now converges.** Before, it hit the CO₂ ceiling.
+- **The S = 1 seafloor flux rose 27×,** from 0.033 to 0.89 Teq/yr, with Da 0.0035 → 0.084.
+- **The ions moved towards their targets:** Mg 74 → 56 mM (target 52.8), Na 427 → 464 (469), and SO₄ is now
+  an explicit 28.2 mM.
+
+**Composition** (not directly comparable: the old set is at 0.1× outgassing, the new at 1×):
+- **The Mg/Si pattern holds.** Mg/Si ≥ 1.75 is cold and on the floor in both, with identical T, because the
+  floor decouples T from outgassing. Mg/Si 0.5 is hot in both.
+- **At Mg/Si 0.8–1.5, S 0.6–0.8,** the new 1× runs are within 2–7 K of the old 0.1× runs. The larger α roughly
+  offsets the 10× higher outgassing.
+- **At S = 1** the new runs are on the hot branch (348 K), where the old ones were at 299 K.
+- **The depth sweep** also moved from 0.1× to 1× outgassing.
+
+**Why.**
+1. **α is up about 70×, and it sets the climate differences.**
+   - The old anchor left the model's net seafloor flux at ~0.04 Teq/yr, ~20× below Coogan & Dosso (§37.16).
+   - At a given outgassing, weathering now draws CO₂ lower. Planets are colder, more of them sit on the seafloor
+     floor (no feedback there), and some are CO₂-starved.
+   - Da ∝ α, so planets become thermodynamic at lower S. Together these shift and shrink the negative-feedback
+     band.
+   - The stronger sink also balances more outgassing, so more runs have steady states.
+   - The §37.17 sedimentation (−30–35 % ocean-world reactive area) and the 1/130 Myr crust rate in θ_r partly
+     offset the α increase.
+   - Isolated test (§37.16): at 1× outgassing, α 14.6 → 440 cooled S 0.4–0.8 by 40–60 K.
+2. **No Cl and a blank ocean set the chemistry differences.**
+   - The old seed put in 546 mM NaCl. Ocean worlds have no Na source, so the Na sink removed the Na. Cl has no
+     fast sink (~4 Gyr), so it stayed. Charge balance then left a Ca–Mg chloride brine: Ca 60 mM, low
+     alkalinity, pH 6.7.
+   - Without Cl, weathering cations are balanced by alkalinity. The result is a dilute, alkaline Mg-bicarbonate
+     ocean, with Ca held low by calcite saturation.
+   - The climate effect of Cl is second-order (§37.9): ≤ 2–4 K in temperate states, 8–9 K near the inner edge.
+3. **τ_rw 5 → 39 Myr** weakens reverse weathering, a CO₂ source on hot worlds. The hot branch is 4–5 K cooler,
+   and the transition moves by about +0.05 in S (§37.22).
+4. **Minor:** the floor 274 → 273.15 K, and the convergence check, which stops runs earlier without changing
+   their states (≤ 0.8 %, §37.19). The old EMA almost never fired, so nearly every old run ran to 2 Gyr.
+5. **Earth barely moves** because continental weathering sets its carbon balance. The seafloor increase shows
+   only at low S.
+
+**Caveat.** The new deep (≥ 20 km) and low-crust (0.01–0.03×) runs are 2 Gyr snapshots, and some oscillate
+(§37.24). Numbers from those parts of the grid aren't steady states.
